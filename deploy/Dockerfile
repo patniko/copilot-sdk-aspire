@@ -22,6 +22,7 @@ COPY src/inference-gateway/package.json src/inference-gateway/
 COPY src/agent-executor/package.json src/agent-executor/
 COPY src/harness-hosting/package.json src/harness-hosting/
 COPY tests/package.json tests/
+COPY configurator/package.json configurator/
 RUN pnpm install --frozen-lockfile --filter "./contracts" --filter "./src/**"
 COPY contracts contracts
 COPY src src

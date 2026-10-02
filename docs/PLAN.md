@@ -902,7 +902,7 @@ boundary-by-boundary detail.
 | M1 secure reference execution | Done, with acknowledged gaps | External gateway with job-scoped capabilities; TypeScript reference runner using a pinned Python tool; customer Python runner on the same contract; no provider, database, or service credential in runner environments (inspected on live processes). Gaps: egress not enforced (explicitly acknowledged in policy), MCP integrations not implemented. |
 | M2 durable service | Done | PostgreSQL ledger with idempotent admission, fenced leases, heartbeats, lease recovery, retry/backoff, `needs_review` for uncertain effects, cancellation with capability revocation, ordered events with SSE cursors, output schema validation. Covered by integration tests. |
 | M3 reproducible Azure deployment | Done | `aspire deploy` from a clean checkout created Container Apps, ACR, PostgreSQL (Entra-only), identities, and a least-privilege model role on the existing Foundry account. TypeScript and Python agent jobs succeeded in Azure; cancellation verified; internal services not routable from the internet. |
-| M4 starter and configurator export | Not started | |
+| M4 starter and configurator export | Partial | Local configurator (`pnpm configure`, [CONFIGURATOR.md](CONFIGURATOR.md)) edits harnesses and policy in place with contract validation, manages local and Azure parameters, and drives build, local run, try, and `aspire deploy`; a harness created in it was deployed to Azure from the UI. Remaining: exporting a new customer repository and importing Harness Builder planner JSON. |
 | M5 customer automation and distribution | Not started | OIDC deployment workflow and template releases remain. |
 
 ### Decisions taken during implementation

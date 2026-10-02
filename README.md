@@ -12,10 +12,22 @@ running through the same job contract and security boundaries.
 See the [architecture and delivery plan](docs/PLAN.md) for the full design and the
 [implementation status](docs/PLAN.md#24-implementation-status) for what is built and which gates remain open.
 
+## Quick start: the configurator
+
+```powershell
+pnpm install
+pnpm configure
+```
+
+This opens a local web app to create and edit harnesses and the execution policy, set local and Azure parameters,
+build, run the stack locally, try jobs, and deploy to your subscription. See [docs/CONFIGURATOR.md](docs/CONFIGURATOR.md).
+The rest of this README covers the same steps from the command line.
+
 ## What is here
 
 ```text
 apphost.mts                  Aspire TypeScript AppHost (local run + Azure Container Apps deployment)
+configurator/                Local web app + companion server: configure, build, run, try, deploy (pnpm configure)
 contracts/                   Versioned schemas: harness, execution profile/policy, jobs, events, runner protocol
 src/agent-api                Public job API (submit, list, status, SSE events, cancel, retry) and browser console
 src/job-dispatcher           Authoritative job ledger owner: leases, fencing, retries, capability minting
@@ -25,7 +37,8 @@ src/harness-hosting          TypeScript Copilot SDK reference runner (no Aspire 
 src/job-store                PostgreSQL ledger and migrations
 src/service-defaults         Shared config, logging, HTTP, auth, Postgres, registry, capability helpers
 execution-profiles/          Operator-approved runner profiles (node-ts-agent, python-agent sample runner)
-harnesses/dataset-analyst    Sample read-only harness with JSON Schema input and output
+harnesses/dataset-analyst    Sample read-only harness with JSON Schema input and output, using a Python tool
+harnesses/text-summarizer    Minimal harness created from the configurator template (no tools)
 policy/                      Operator execution policy (ceilings and acknowledged security gaps)
 tools/python/                Pinned Python tool packaged into execution images
 deploy/Dockerfile            Multi-stage images for every service

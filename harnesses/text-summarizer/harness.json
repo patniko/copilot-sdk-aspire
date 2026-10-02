@@ -1,0 +1,66 @@
+{
+  "schemaVersion": "1",
+  "name": "text-summarizer",
+  "version": "1.0.0",
+  "description": "Summarizes a request in two sentences.",
+  "instructionsFile": "instructions.md",
+  "model": {
+    "preferred": "grok-4.6",
+    "allowed": [
+      "grok-4.6"
+    ]
+  },
+  "tools": [],
+  "input": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request"
+      ],
+      "examples": [
+        {
+          "request": "Summarize: Aspire composes services locally and deploys the same app model to Azure Container Apps, while the gateway keeps model credentials out of agents."
+        }
+      ],
+      "properties": {
+        "request": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        }
+      }
+    }
+  },
+  "output": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer"
+      ],
+      "properties": {
+        "answer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        }
+      }
+    }
+  },
+  "limits": {
+    "maxDurationSeconds": 120,
+    "maxInferenceTokens": 100000
+  },
+  "retry": {
+    "safeToRetry": true,
+    "maxAttempts": 2
+  },
+  "runners": {
+    "allowedProfiles": [
+      "node-ts-agent",
+      "python-agent"
+    ],
+    "defaultProfile": "node-ts-agent"
+  }
+}

@@ -1,0 +1,74 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+  .dark {
+    color-scheme: dark;
+  }
+  body {
+    @apply text-sm;
+  }
+  h1,
+  h2,
+  h3 {
+    @apply font-semibold tracking-tight;
+  }
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-500 ring-offset-1 dark:ring-offset-slate-900;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900;
+  }
+  .card-pad {
+    @apply p-5;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg border px-3 py-1.5 text-sm font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn border-brand-600 bg-brand-600 text-white hover:bg-brand-700;
+  }
+  .btn-secondary {
+    @apply btn border-slate-300 bg-white text-slate-800 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800;
+  }
+  .btn-ghost {
+    @apply btn border-transparent text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800;
+  }
+  .btn-danger {
+    @apply btn border-red-300 bg-white text-red-700 hover:bg-red-50 dark:border-red-800 dark:bg-slate-900 dark:text-red-400 dark:hover:bg-red-950;
+  }
+  .btn-sm {
+    @apply px-2 py-1 text-xs;
+  }
+  .input {
+    @apply w-full rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-sm text-slate-900 placeholder:text-slate-400 focus:border-brand-500 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100;
+  }
+  .input-mono {
+    @apply input font-mono text-xs leading-relaxed;
+  }
+  .label {
+    @apply mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400;
+  }
+  .hint {
+    @apply mt-1 text-xs text-slate-500 dark:text-slate-400;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-semibold;
+  }
+  .tab {
+    @apply whitespace-nowrap border-b-2 border-transparent px-3 py-2 text-sm font-medium text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100;
+  }
+  .tab-active {
+    @apply border-brand-600 text-brand-700 dark:text-brand-300;
+  }
+  .table-cell {
+    @apply border-b border-slate-100 px-2 py-1.5 text-left dark:border-slate-800;
+  }
+}

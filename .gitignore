@@ -9,3 +9,6 @@ __pycache__/
 *.pyc
 .env
 .env.*
+
+# Local configurator settings (deployment targets; no secrets)
+.configurator/

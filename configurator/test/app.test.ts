@@ -1,0 +1,170 @@
+import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { FastifyInstance } from "fastify";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { buildApp } from "../server/app.js";
+
+const repoRoot = join(import.meta.dirname, "..", "..");
+const token = "test-token-0123456789abcdef";
+const port = 4999;
+let root: string;
+let app: FastifyInstance;
+
+const headers = (extra: Record<string, string> = {}) => ({ host: `127.0.0.1:${port}`, "x-configurator-token": token, ...extra });
+
+beforeAll(async () => {
+  root = await mkdtemp(join(tmpdir(), "configurator-test-"));
+  for (const dir of ["harnesses", "policy", "execution-profiles"]) {
+    await cp(join(repoRoot, dir), join(root, dir), { recursive: true });
+  }
+  app = await buildApp({ root, token, port });
+});
+
+afterAll(async () => {
+  await app?.close();
+  await rm(root, { recursive: true, force: true });
+});
+
+describe("request security", () => {
+  it("requires the session token for API calls", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/workspace", headers: { host: `127.0.0.1:${port}` } });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it("rejects unexpected Host headers (DNS rebinding)", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/workspace", headers: headers({ host: `attacker.example:${port}` }) });
+    expect(response.statusCode).toBe(421);
+  });
+
+  it("rejects cross-origin browser requests", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/workspace", headers: headers({ origin: "https://attacker.example" }) });
+    expect(response.statusCode).toBe(403);
+  });
+
+  it("serves the workspace with a valid token", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/workspace", headers: headers({ origin: `http://127.0.0.1:${port}` }) });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.harnesses.map((h: { name: string }) => h.name)).toContain("dataset-analyst");
+    expect(body.profiles.map((p: { id: string }) => p.id)).toEqual(["node-ts-agent", "python-agent"]);
+  });
+
+  it("rejects harness folder traversal", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/harnesses/..%2Fpolicy", headers: headers() });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("only runs tasks from the fixed catalog", async () => {
+    const response = await app.inject({ method: "POST", url: "/api/tasks", headers: headers(), payload: { kind: "rm -rf" } });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("serves the UI with a restrictive content security policy and 404s unknown API paths", async () => {
+    const staticApp = await buildApp({ root, token, port, staticDir: join(repoRoot, "configurator", "dist") });
+    try {
+      const page = await staticApp.inject({ method: "GET", url: "/", headers: { host: `127.0.0.1:${port}` } });
+      expect(page.statusCode).toBe(200);
+      expect(page.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+      const unknown = await staticApp.inject({ method: "GET", url: "/api/nope", headers: headers() });
+      expect(unknown.statusCode).toBe(404);
+      const traversal = await staticApp.inject({ method: "GET", url: "/..%2F..%2Fpackage.json", headers: { host: `127.0.0.1:${port}` } });
+      expect(traversal.statusCode).toBe(404);
+    } finally {
+      await staticApp.close();
+    }
+  });
+});
+
+describe("harness lifecycle", () => {
+  it("creates a valid harness from the template", async () => {
+    const response = await app.inject({ method: "POST", url: "/api/harnesses", headers: headers(), payload: { mode: "new", name: "test-harness" } });
+    expect(response.statusCode).toBe(200);
+    const detail = response.json();
+    expect(detail.document.folder).toBe("test-harness");
+    expect(detail.issues.filter((i: { level: string }) => i.level === "error")).toEqual([]);
+    const written = JSON.parse(await readFile(join(root, "harnesses", "test-harness", "harness.json"), "utf8"));
+    expect(written).toMatchObject({ name: "test-harness", version: "1.0.0", instructionsFile: "instructions.md" });
+  });
+
+  it("refuses a second harness with the same name", async () => {
+    const response = await app.inject({ method: "POST", url: "/api/harnesses", headers: headers(), payload: { mode: "new", name: "test-harness" } });
+    expect(response.statusCode).toBe(409);
+  });
+
+  it("creates a new version in its own folder", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/harnesses",
+      headers: headers(),
+      payload: { mode: "version", name: "test-harness", from: "test-harness" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().document).toMatchObject({ folder: "test-harness@1.0.1", manifest: { version: "1.0.1" } });
+  });
+
+  it("refuses to save a harness with errors and leaves the file unchanged", async () => {
+    const before = await readFile(join(root, "harnesses", "test-harness", "harness.json"), "utf8");
+    const detail = (await app.inject({ method: "GET", url: "/api/harnesses/test-harness", headers: headers() })).json();
+    detail.document.manifest.model = { preferred: "unapproved-model", allowed: ["unapproved-model"] };
+    const response = await app.inject({ method: "PUT", url: "/api/harnesses/test-harness", headers: headers(), payload: { document: detail.document } });
+    expect(response.statusCode).toBe(422);
+    expect(await readFile(join(root, "harnesses", "test-harness", "harness.json"), "utf8")).toBe(before);
+  });
+
+  it("saves valid edits", async () => {
+    const detail = (await app.inject({ method: "GET", url: "/api/harnesses/test-harness", headers: headers() })).json();
+    detail.document.manifest.description = "Edited by a test.";
+    detail.document.instructions = "Answer briefly.";
+    const response = await app.inject({ method: "PUT", url: "/api/harnesses/test-harness", headers: headers(), payload: { document: detail.document } });
+    expect(response.statusCode).toBe(200);
+    expect(await readFile(join(root, "harnesses", "test-harness", "instructions.md"), "utf8")).toBe("Answer briefly.\n");
+  });
+
+  it("deletes a version", async () => {
+    const response = await app.inject({ method: "DELETE", url: "/api/harnesses/test-harness@1.0.1", headers: headers() });
+    expect(response.statusCode).toBe(200);
+    const workspace = (await app.inject({ method: "GET", url: "/api/workspace", headers: headers() })).json();
+    expect(workspace.harnesses.map((h: { folder: string }) => h.folder)).not.toContain("test-harness@1.0.1");
+  });
+});
+
+describe("policy", () => {
+  it("rejects a policy that approves an unknown profile", async () => {
+    const current = (await app.inject({ method: "GET", url: "/api/policy", headers: headers() })).json().policy;
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/policy",
+      headers: headers(),
+      payload: { policy: { ...current, allowedProfiles: ["missing-profile"] } },
+    });
+    expect(response.statusCode).toBe(422);
+  });
+});
+
+describe("deployment targets", () => {
+  it("rejects values that could reach a command line", async () => {
+    const response = await app.inject({
+      method: "PUT",
+      url: "/api/settings/targets",
+      headers: headers(),
+      payload: {
+        targets: [
+          {
+            name: "prod",
+            tenantId: "00000000-0000-0000-0000-000000000000",
+            subscriptionId: "00000000-0000-0000-0000-000000000000",
+            location: "westus2",
+            resourceGroup: "rg & calc.exe",
+            foundryAccount: "acct",
+            foundryResourceGroup: "rg",
+            foundryEndpoint: "https://acct.openai.azure.com/openai/v1",
+            foundryDeployments: ["gpt"],
+          },
+        ],
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().issues.map((i: { path: string }) => i.path)).toContain("targets.0.resourceGroup");
+  });
+});

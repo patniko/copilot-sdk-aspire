@@ -13,3 +13,6 @@ tests
 NuGet.config
 *.md
 !harnesses/**/*.md
+
+configurator
+!configurator/package.json

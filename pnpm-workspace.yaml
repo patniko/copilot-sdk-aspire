@@ -2,6 +2,7 @@ packages:
   - contracts
   - src/*
   - tests
+  - configurator
 
 # Build scripts are allowed only for packages that need them.
 onlyBuiltDependencies:
