@@ -35,6 +35,16 @@ export async function migrate(pool: pg.Pool): Promise<string[]> {
         throw error;
       }
     }
+    // On Azure Database for PostgreSQL each service connects as its own Entra administrator role.
+    // Share ledger objects through the azure_pg_admin group so every control-plane role can use them.
+    await client.query(`
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'azure_pg_admin') THEN
+          EXECUTE 'GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES ON ALL TABLES IN SCHEMA public TO azure_pg_admin';
+          EXECUTE 'GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO azure_pg_admin';
+        END IF;
+      END $$;`);
   } finally {
     await client.query("SELECT pg_advisory_unlock($1)", [MIGRATION_LOCK_ID]).catch(() => undefined);
     client.release();

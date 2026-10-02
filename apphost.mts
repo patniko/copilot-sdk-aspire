@@ -85,8 +85,11 @@ const dispatcher = service('job-dispatcher')
   .withEnvironment('GATEWAY_KEY', gatewayKey)
   .withEnvironment('CAPABILITY_SIGNING_KEY', signingKey);
 
+// Reference endpoints (not resources) so the same wiring works for Node apps and containers.
+const dispatcherEndpoint = await dispatcher.getEndpoint('http');
+
 const gateway = service('inference-gateway')
-  .withReference(dispatcher)
+  .withReference(dispatcherEndpoint)
   .withEnvironment('GATEWAY_KEY', gatewayKey)
   .withEnvironment('CAPABILITY_SIGNING_KEY', signingKey)
   .withEnvironment('FOUNDRY_ENDPOINT', foundryEndpoint)
@@ -117,8 +120,8 @@ builder
       await ctx.targetPlatform.set(ContainerTargetPlatform.LinuxAmd64);
     }
   })
-  .withReference(dispatcher)
-  .withReference(gateway)
+  .withReference(dispatcherEndpoint)
+  .withReference(await gateway.getEndpoint('http'))
   .waitFor(dispatcher)
   .waitFor(gateway)
   .withEnvironment('EXECUTOR_KEY', executorKey)

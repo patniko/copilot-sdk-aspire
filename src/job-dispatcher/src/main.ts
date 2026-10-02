@@ -10,7 +10,7 @@ import {
 import { buildDispatcher } from "./server.js";
 
 const policy = await loadPolicy();
-const pool = createPostgresPool(readPostgresConnection("jobsdb"));
+const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);
 const store = new JobStore(pool);
 

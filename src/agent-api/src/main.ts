@@ -14,7 +14,7 @@ import { Admission } from "./admission.js";
 import { buildApi } from "./server.js";
 
 const [harnesses, profiles, policy] = await Promise.all([loadHarnesses(), loadProfiles(), loadPolicy()]);
-const pool = createPostgresPool(readPostgresConnection("jobsdb"));
+const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);
 
 const store = new JobStore(pool);

@@ -9,6 +9,7 @@
 artifacts
 docs
 tests
+!tests/package.json
 NuGet.config
 *.md
 !harnesses/**/*.md

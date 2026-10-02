@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { SignJWT } from "jose";
 import { describe, expect, it } from "vitest";
-import { parsePostgresConnectionString, signCapability, verifyCapability } from "@copilot-agent/service-defaults";
+import { entraPrincipalName, parsePostgresConnectionString, signCapability, verifyCapability } from "@copilot-agent/service-defaults";
 
 const key = "k".repeat(64);
 const grant = () => ({
@@ -57,9 +57,19 @@ describe("postgres connection strings", () => {
   });
 
   it("uses Entra authentication and TLS for Azure servers without a password", () => {
-    const info = parsePostgresConnectionString("Host=x.postgres.database.azure.com;Username=mi-api;Database=jobsdb");
+    const info = parsePostgresConnectionString("Host=x.postgres.database.azure.com;Database=jobsdb");
     expect(info.password).toBeUndefined();
+    expect(info.user).toBeUndefined();
     expect(info.ssl).toBe(true);
+  });
+
+  it("derives the Postgres role from a managed identity token", () => {
+    const encode = (value: object) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const token = `${encode({ alg: "none" })}.${encode({
+      xms_mirid: "/subscriptions/s/resourcegroups/rg/providers/Microsoft.ManagedIdentity/userAssignedIdentities/agent-api-identity",
+    })}.sig`;
+    expect(entraPrincipalName(token)).toBe("agent-api-identity");
+    expect(entraPrincipalName(`${encode({})}.${encode({ upn: "dev@example.com" })}.sig`)).toBe("dev@example.com");
   });
 
   it("parses URIs", () => {

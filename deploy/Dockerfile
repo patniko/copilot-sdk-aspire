@@ -21,12 +21,13 @@ COPY src/job-dispatcher/package.json src/job-dispatcher/
 COPY src/inference-gateway/package.json src/inference-gateway/
 COPY src/agent-executor/package.json src/agent-executor/
 COPY src/harness-hosting/package.json src/harness-hosting/
+COPY tests/package.json tests/
 RUN pnpm install --frozen-lockfile --filter "./contracts" --filter "./src/**"
 COPY contracts contracts
 COPY src src
 RUN pnpm -r --filter "./contracts" --filter "./src/**" run build
 RUN for service in agent-api job-dispatcher inference-gateway agent-executor harness-hosting; do \
-      pnpm --filter "@copilot-agent/${service}" deploy --prod "/out/${service}" || exit 1; \
+      pnpm --filter "@copilot-agent/${service}" deploy --legacy --prod "/out/${service}" || exit 1; \
     done
 
 # ---------------------------------------------------------------------------

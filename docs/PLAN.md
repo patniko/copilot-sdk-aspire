@@ -2,7 +2,7 @@
 
 Date: 2026-10-01
 
-Status: proposed implementation plan. No service or Azure deployment has been implemented by this document.
+Status: plan with a reference implementation through M3 (secure execution, durable service, Azure deployment). See [section 24](#24-implementation-status) for what is built, how it was verified, and the gates that remain open.
 
 ## 1. Product goal
 
@@ -647,7 +647,7 @@ The TypeScript SDK integration must explicitly wire the supported trace-context 
 
 ## 17. Local developer workflow
 
-The commands below describe the intended generated solution. They are not runnable against this planning-only repository yet.
+The commands below run against this repository's reference implementation; the README has the exact parameters. A generated customer repository would expose the same commands.
 
 Prerequisites:
 
@@ -877,3 +877,56 @@ Local paths are relative to the repository root and assume sibling research chec
 - [Azure role assignment prerequisites](https://learn.microsoft.com/en-us/azure/role-based-access-control/role-assignments-template)
 - [Deploy to Azure button](https://learn.microsoft.com/en-us/azure/azure-resource-manager/templates/deploy-to-azure-button)
 - [Microsoft identity authorization code flow and PKCE](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-auth-code-flow)
+
+## 24. Implementation status
+
+Date: 2026-10-02. This section records what the reference implementation in this repository delivers against the
+milestones in section 20, how it was verified, and which gates remain open. [SECURITY.md](SECURITY.md) has the
+boundary-by-boundary detail.
+
+### Pinned compatibility set
+
+| Component | Version | Notes |
+| --- | --- | --- |
+| Aspire CLI and hosting integrations | 13.6.0 | TypeScript AppHost (`apphost.mts`); integrations restored through NuGet |
+| `@github/copilot-sdk` | 1.0.16 | Bundles runtime 1.0.90; BYOK provider requires no GitHub authentication |
+| `github-copilot-sdk` (Python) | 1.0.14 | Runtime 1.0.85 downloaded into the execution image at build time |
+| Node.js / Python in execution image | 24 / 3.11 | Debian bookworm base |
+| Model route | Foundry `grok-4.6` | OpenAI v1 chat completions, Entra authentication |
+
+### Milestones
+
+| Milestone | State | Evidence |
+| --- | --- | --- |
+| M0 compatibility and threat model | Partial | SDK BYOK verified for TypeScript and Python against Foundry with Entra tokens; runner protocol v1 defined ([RUNNER-PROTOCOL.md](RUNNER-PROTOCOL.md)); uid-based runner isolation verified locally and on Container Apps. Runtime OS sandbox and egress enforcement on Container Apps not yet probed or available. |
+| M1 secure reference execution | Done, with acknowledged gaps | External gateway with job-scoped capabilities; TypeScript reference runner using a pinned Python tool; customer Python runner on the same contract; no provider, database, or service credential in runner environments (inspected on live processes). Gaps: egress not enforced (explicitly acknowledged in policy), MCP integrations not implemented. |
+| M2 durable service | Done | PostgreSQL ledger with idempotent admission, fenced leases, heartbeats, lease recovery, retry/backoff, `needs_review` for uncertain effects, cancellation with capability revocation, ordered events with SSE cursors, output schema validation. Covered by integration tests. |
+| M3 reproducible Azure deployment | Done | `aspire deploy` from a clean checkout created Container Apps, ACR, PostgreSQL (Entra-only), identities, and a least-privilege model role on the existing Foundry account. TypeScript and Python agent jobs succeeded in Azure; cancellation verified; internal services not routable from the internet. |
+| M4 starter and configurator export | Not started | |
+| M5 customer automation and distribution | Not started | OIDC deployment workflow and template releases remain. |
+
+### Decisions taken during implementation
+
+- **Inference capability.** Runners authenticate to the gateway with an HS256 JWT minted per attempt (models,
+  token budget, expiry). The gateway checks revocation and remaining budget with the dispatcher on each request
+  (2-second cache) and reports usage back. Capabilities are revoked on cancellation and attempt completion.
+- **Executor eligibility.** Executors report the controls they enforce. A policy requirement that an executor
+  cannot meet blocks claiming unless the operator lists it in `acknowledgedGaps`; acknowledged gaps are stored on
+  each attempt and returned with the job. The shipped policy requires uid isolation and gateway-only egress and
+  acknowledges only `egress-not-enforced`.
+- **Execution placement.** Runners execute as child processes of the executor container under a dedicated uid.
+  Per-job outer isolation (Dynamic Sessions, VM pools) remains future work behind the same runner protocol.
+- **Configuration publication.** Harnesses, execution profiles, and policy are file-published and baked into
+  images, matching the "file/Git-based publication first" decision in section 13.
+- **Deployment inputs.** `aspire deploy` runs in the Production environment and reads `Azure__*` and
+  `Parameters__*` environment variables; user secrets are a development convenience only.
+
+### Open gates before production claims
+
+1. Enforce egress (dedicated execution environment with network rules or per-job sandbox) and remove the
+   `egress-not-enforced` acknowledgement.
+2. Probe and enable the Copilot runtime sandbox on the execution target once the SDK exposes safe initialization.
+3. Private networking for PostgreSQL and least-privilege database roles.
+4. Key Vault-backed service keys with rotation; Entra ID caller authentication instead of API keys.
+5. Local and remote MCP placements through the gateway/connector model.
+6. CI with OIDC deployment (M5) and the configurator export (M4).

@@ -1,6 +1,7 @@
 packages:
   - contracts
   - src/*
+  - tests
 
 # Build scripts are allowed only for packages that need them.
 onlyBuiltDependencies:
@@ -10,5 +11,5 @@ onlyBuiltDependencies:
 ignoredBuiltDependencies:
   - koffi
 
-# Keep workspace packages copied (not symlinked) when deploying service images.
-injectWorkspacePackages: true
+# Note: keep lockfile-affecting settings out of this file. `aspire run`/`aspire deploy` install the
+# AppHost with `pnpm install --ignore-workspace`, which rewrites the lockfile without them.
