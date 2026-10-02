@@ -41,6 +41,9 @@ lines.on("line", async (line) => {
     await new Promise((resolve) => setTimeout(resolve, 60_000));
     return;
   }
+  if (question === "crash") {
+    process.exit(1);
+  }
   if (cancelled) {
     return;
   }

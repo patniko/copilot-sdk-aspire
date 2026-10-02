@@ -106,6 +106,10 @@ separately.
 
 ## Troubleshooting
 
+- **Deployments interrupt running attempts.** When a new revision replaces the executor, Container Apps signals
+  every process in the old container. Attempts in flight end as `executor_lost`: read-only harnesses are retried
+  on the new replica; harnesses with external effects go to `needs_review`. Deploy during quiet periods, or drain
+  by stopping submissions first.
 - **Aspire dashboard.** The Container Apps environment also hosts an Aspire dashboard behind Microsoft Entra
   sign-in. It is a development aid, not the job ledger or a customer UI.
 - **`WinError 32` while compiling Bicep on Windows.** Parallel `az bicep build` calls race on the Bicep binary.

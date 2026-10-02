@@ -43,6 +43,7 @@ logger.info(
 );
 
 const shutdown = new AbortController();
+const drainSignal = new AbortController();
 let draining = false;
 const active = new Set<Promise<void>>();
 
@@ -79,6 +80,7 @@ async function slot(index: number): Promise<void> {
         imageDigest,
         logger,
         shutdown: shutdown.signal,
+        draining: drainSignal.signal,
       });
       if (outcome) {
         const state = await dispatcher.complete(claim.attempt.id, claim.attempt.leaseToken, outcome);
@@ -108,6 +110,7 @@ for (let i = 0; i < parallelism; i++) {
 const stop = async (signal: string) => {
   logger.info({ signal }, "draining executor");
   draining = true;
+  drainSignal.abort();
   setTimeout(() => shutdown.abort(), 20_000).unref();
   await Promise.race([Promise.allSettled([...active]), sleep(28_000)]);
   process.exit(0);

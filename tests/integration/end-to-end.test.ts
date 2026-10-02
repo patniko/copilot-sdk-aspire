@@ -64,7 +64,7 @@ async function job(id: string): Promise<JobView> {
   return (await (await fetch(`${apiUrl}/v1/jobs/${id}`, { headers: { authorization: `Bearer ${apiKey}` } })).json()) as JobView;
 }
 
-async function execute(client: DispatcherClient, shutdown = new AbortController()) {
+async function execute(client: DispatcherClient, shutdown = new AbortController(), draining?: AbortSignal) {
   const claim = await client.claim(capabilities());
   expect(claim).toBeDefined();
   const outcome = await runAttempt({
@@ -77,6 +77,7 @@ async function execute(client: DispatcherClient, shutdown = new AbortController(
     gatewayBaseUrl: `${gatewayUrl}/openai/v1/`,
     logger: createLogger("e2e"),
     shutdown: shutdown.signal,
+    draining,
   });
   return { claim: claim!, outcome, state: outcome ? await client.complete(claim!.attempt.id, claim!.attempt.leaseToken, outcome) : undefined };
 }
@@ -254,5 +255,24 @@ describe("job console and listing", () => {
     expect(older.jobs.every((j) => new Date(j.createdAt) < new Date(page.next!))).toBe(true);
     const unauthenticated = await fetch(`${apiUrl}/v1/jobs`);
     expect(unauthenticated.status).toBe(401);
+  });
+});
+
+describe("runner exits without a result", () => {
+  it("reports a runner fault, and retries read-only work", async () => {
+    const submitted = await submit("crash");
+    const { outcome, state } = await execute(new DispatcherClient(dispatcherUrl, executorKey));
+    expect(outcome).toMatchObject({ kind: "failed", code: "runner_exited", uncertainEffects: true });
+    expect(state).toBe("retry_wait");
+    await fetch(`${apiUrl}/v1/jobs/${submitted.id}:cancel`, { method: "POST", headers: { authorization: `Bearer ${apiKey}` } });
+  });
+
+  it("reports executor loss when the executor is draining", async () => {
+    const submitted = await submit("crash");
+    const draining = new AbortController();
+    draining.abort();
+    const { outcome } = await execute(new DispatcherClient(dispatcherUrl, executorKey), new AbortController(), draining.signal);
+    expect(outcome).toMatchObject({ kind: "failed", code: "executor_lost", retryable: true, uncertainEffects: true });
+    await fetch(`${apiUrl}/v1/jobs/${submitted.id}:cancel`, { method: "POST", headers: { authorization: `Bearer ${apiKey}` } });
   });
 });

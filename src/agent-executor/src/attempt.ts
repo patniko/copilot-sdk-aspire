@@ -26,6 +26,11 @@ export interface AttemptContext {
   logger: Logger;
   /** Aborted when the executor is shutting down. */
   shutdown: AbortSignal;
+  /**
+   * Aborted as soon as the executor starts draining. Container platforms may signal every process in the
+   * container at that moment, so a runner that dies then is reported as executor loss, not a runner fault.
+   */
+  draining?: AbortSignal;
 }
 
 const HELLO_TIMEOUT_MS = 60_000;
@@ -262,14 +267,23 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
       return undefined;
     }
     if (!outcome) {
-      log.warn({ exitCode, stderr: stderrTail.join("").slice(-1000) }, "runner exited without a result");
-      outcome = {
-        kind: "failed",
-        code: "runner_exited",
-        message: `The runner exited (code ${exitCode}) without reporting a result.`,
-        retryable: true,
-        uncertainEffects: true,
-      };
+      const draining = ctx.draining?.aborted || ctx.shutdown.aborted;
+      log.warn({ exitCode, draining, stderr: stderrTail.join("").slice(-1000) }, "runner exited without a result");
+      outcome = draining
+        ? {
+            kind: "failed",
+            code: "executor_lost",
+            message: "The executor shut down during the attempt.",
+            retryable: true,
+            uncertainEffects: true,
+          }
+        : {
+            kind: "failed",
+            code: "runner_exited",
+            message: `The runner exited (code ${exitCode}) without reporting a result.`,
+            retryable: true,
+            uncertainEffects: true,
+          };
     }
     return outcome;
   } finally {
