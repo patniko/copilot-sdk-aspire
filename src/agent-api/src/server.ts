@@ -17,6 +17,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export function buildApi(deps: ApiDependencies): FastifyInstance {
   const app = createService({ name: "agent-api", bodyLimit: 2 * 1024 * 1024, ready: () => deps.store.ping() });
+  // Custom methods like :cancel carry no body; accept (and ignore) non-JSON content types.
+  app.addContentTypeParser("*", { parseAs: "string" }, (_request, _body, done) => done(null, undefined));
 
   const principalOf = (request: FastifyRequest) => deps.authenticator.authenticate(request).id;
   const jobIdOf = (request: FastifyRequest) => {

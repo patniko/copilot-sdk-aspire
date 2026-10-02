@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance, type FastifyRequest } from "fastify";
+import Fastify, { LogController, type FastifyInstance, type FastifyRequest } from "fastify";
 import { REDACT_PATHS } from "./logging.js";
 
 export interface ServiceOptions {
@@ -35,7 +35,7 @@ export function createService(options: ServiceOptions): FastifyInstance {
         req: (req: FastifyRequest) => ({ method: req.method, url: redactUrl(req.url), id: req.id }),
       },
     },
-    disableRequestLogging: process.env.LOG_REQUESTS !== "true",
+    logController: new LogController({ disableRequestLogging: process.env.LOG_REQUESTS !== "true" }),
     trustProxy: true,
   });
 
