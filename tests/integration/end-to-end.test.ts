@@ -223,3 +223,36 @@ describe("end-to-end job execution", () => {
     await fetch(`${apiUrl}/v1/jobs/${submitted.id}:cancel`, { method: "POST", headers: { authorization: `Bearer ${apiKey}` } });
   });
 });
+
+describe("job console and listing", () => {
+  it("serves the console with a restrictive content security policy", async () => {
+    const page = await fetch(`${apiUrl}/`);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("content-type")).toContain("text/html");
+    const csp = page.headers.get("content-security-policy") ?? "";
+    expect(csp).toContain("default-src 'none'");
+    expect(csp).toContain("script-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(await page.text()).toContain("/console/app.js");
+    const script = await fetch(`${apiUrl}/console/app.js`);
+    expect(script.headers.get("content-type")).toContain("javascript");
+  });
+
+  it("lists only the caller's jobs, newest first, without results", async () => {
+    const response = await fetch(`${apiUrl}/v1/jobs?limit=2`, { headers: { authorization: `Bearer ${apiKey}` } });
+    expect(response.status).toBe(200);
+    const page = (await response.json()) as { jobs: JobView[]; next?: string };
+    expect(page.jobs.length).toBe(2);
+    expect(page.jobs.every((j) => j.result === undefined)).toBe(true);
+    expect(new Date(page.jobs[0]!.createdAt) >= new Date(page.jobs[1]!.createdAt)).toBe(true);
+    expect(page.next).toBe(page.jobs[1]!.createdAt);
+    const older = (await (
+      await fetch(`${apiUrl}/v1/jobs?limit=100&before=${encodeURIComponent(page.next!)}`, {
+        headers: { authorization: `Bearer ${apiKey}` },
+      })
+    ).json()) as { jobs: JobView[] };
+    expect(older.jobs.every((j) => new Date(j.createdAt) < new Date(page.next!))).toBe(true);
+    const unauthenticated = await fetch(`${apiUrl}/v1/jobs`);
+    expect(unauthenticated.status).toBe(401);
+  });
+});

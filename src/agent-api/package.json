@@ -2,7 +2,7 @@
   "name": "@copilot-agent/agent-api",
   "version": "0.1.0",
   "private": true,
-  "files": ["dist"],
+  "files": ["dist", "public"],
   "type": "module",
   "main": "./dist/main.js",
   "scripts": {

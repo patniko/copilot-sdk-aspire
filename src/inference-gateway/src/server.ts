@@ -193,6 +193,8 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
           ms: Date.now() - started,
           inputTokens: usage.input,
           outputTokens: usage.output,
+          // Shape only (never content) when the provider omits usage or fails, to diagnose odd responses.
+          ...(usage.input === 0 && usage.output === 0 && !isEventStream ? { shape: responseShape(buffered) } : {}),
         },
         "inference completed",
       );
@@ -237,5 +239,28 @@ function extractUsage(json: string): { input: number; output: number } | undefin
     return { input: parsed.usage.prompt_tokens ?? 0, output: parsed.usage.completion_tokens ?? 0 };
   } catch {
     return undefined;
+  }
+}
+
+/** Describes a provider response without its content: top-level keys, finish reasons, and error codes. */
+export function responseShape(json: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(json) as {
+      object?: unknown;
+      choices?: Array<{ finish_reason?: unknown; message?: { tool_calls?: unknown[]; content?: unknown } }>;
+      error?: { code?: unknown; type?: unknown };
+    };
+    return {
+      bytes: json.length,
+      keys: Object.keys(parsed).slice(0, 20),
+      object: typeof parsed.object === "string" ? parsed.object : undefined,
+      choices: parsed.choices?.length,
+      finishReasons: parsed.choices?.map((c) => c.finish_reason),
+      toolCalls: parsed.choices?.map((c) => c.message?.tool_calls?.length ?? 0),
+      contentChars: parsed.choices?.map((c) => (typeof c.message?.content === "string" ? c.message.content.length : null)),
+      error: parsed.error ? { code: parsed.error.code, type: parsed.error.type } : undefined,
+    };
+  } catch {
+    return { bytes: json.length, parseable: false };
   }
 }

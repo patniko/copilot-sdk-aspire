@@ -3,6 +3,7 @@ import { JobEventListener, JobStore, StoreError } from "@copilot-agent/job-store
 import { ApiKeyAuthenticator, createService, HttpError } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Admission } from "./admission.js";
+import { registerConsole } from "./console.js";
 
 export interface ApiDependencies {
   store: JobStore;
@@ -11,6 +12,8 @@ export interface ApiDependencies {
   authenticator: ApiKeyAuthenticator;
   harnesses: Map<string, HarnessSnapshot[]>;
   maxOpenJobsPerPrincipal: number;
+  /** Serve the browser job console at `/`. Defaults to true. */
+  console?: boolean;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -19,6 +22,9 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
   const app = createService({ name: "agent-api", bodyLimit: 2 * 1024 * 1024, ready: () => deps.store.ping() });
   // Custom methods like :cancel carry no body; accept (and ignore) non-JSON content types.
   app.addContentTypeParser("*", { parseAs: "string" }, (_request, _body, done) => done(null, undefined));
+  if (deps.console !== false) {
+    registerConsole(app);
+  }
 
   const principalOf = (request: FastifyRequest) => deps.authenticator.authenticate(request).id;
   const jobIdOf = (request: FastifyRequest) => {
@@ -45,6 +51,18 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
         })),
       })),
     };
+  });
+
+  app.get("/v1/jobs", async (request) => {
+    const principal = principalOf(request);
+    const query = request.query as { limit?: string; before?: string };
+    const limit = Math.min(Math.max(Number.parseInt(query.limit ?? "25", 10) || 25, 1), 100);
+    const before = query.before ? new Date(query.before) : undefined;
+    if (before && Number.isNaN(before.getTime())) {
+      throw new HttpError(400, "invalid_request", "'before' must be an ISO 8601 timestamp.");
+    }
+    const jobs = await deps.store.listJobs(principal, limit, before);
+    return { jobs, next: jobs.length === limit ? jobs.at(-1)?.createdAt : undefined };
   });
 
   app.post("/v1/jobs", async (request, reply) => {

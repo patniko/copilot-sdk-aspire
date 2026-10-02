@@ -76,6 +76,8 @@ Invoke-RestMethod "$api/health"
 Invoke-RestMethod "$api/v1/harnesses" -Headers @{ Authorization = "Bearer $key" }
 ```
 
+Or open `$api` in a browser for the job console and paste the key, or use `http/agent-api.http`.
+
 Then submit a job as shown in the README. Executor logs report the enforced controls at startup:
 
 ```powershell

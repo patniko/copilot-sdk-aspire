@@ -17,7 +17,7 @@ See the [architecture and delivery plan](docs/PLAN.md) for the full design and t
 ```text
 apphost.mts                  Aspire TypeScript AppHost (local run + Azure Container Apps deployment)
 contracts/                   Versioned schemas: harness, execution profile/policy, jobs, events, runner protocol
-src/agent-api                Public job API: submit, status, SSE events, cancel, retry, artifacts
+src/agent-api                Public job API (submit, list, status, SSE events, cancel, retry) and browser console
 src/job-dispatcher           Authoritative job ledger owner: leases, fencing, retries, capability minting
 src/inference-gateway        OpenAI-compatible gateway; owns the Foundry identity, enforces job capabilities
 src/agent-executor           Claims attempts and runs runners as an unprivileged user with a minimal environment
@@ -29,6 +29,7 @@ harnesses/dataset-analyst    Sample read-only harness with JSON Schema input and
 policy/                      Operator execution policy (ceilings and acknowledged security gaps)
 tools/python/                Pinned Python tool packaged into execution images
 deploy/Dockerfile            Multi-stage images for every service
+http/agent-api.http          VS Code REST Client requests for every endpoint
 tests/                       Unit and integration tests (Vitest)
 ```
 
@@ -81,7 +82,23 @@ aspire run --apphost ./apphost.mts
 ```
 
 The AppHost starts PostgreSQL in a container, runs the API, dispatcher, and gateway as Node processes, and builds
-and runs the executor container. A dev API key is generated on first run:
+and runs the executor container. A dev API key is generated on first run (`aspire secret get "Parameters:dev-api-key"`).
+
+### Job console
+
+Open the `agent-api` URL (from the Aspire dashboard, or the deployed `https://agent-api…azurecontainerapps.io`) in a
+browser and paste the API key. The console lists published harnesses, prefills input from the schema's `examples`,
+submits jobs with either agent profile, streams live events, renders results in the output schema's order, and can
+cancel or retry. It is static, same-origin, and served with a strict Content Security Policy; the key stays in the
+page (or in `sessionStorage` if you choose "Keep for this tab"). Set `CONSOLE_ENABLED=false` on `agent-api` to turn
+it off.
+
+### REST client
+
+[`http/agent-api.http`](http/agent-api.http) covers every endpoint, including negative checks, for the VS Code
+REST Client extension. Put `AGENT_API_URL` and `AGENT_API_KEY` in `http/.env` (git-ignored).
+
+### PowerShell
 
 ```powershell
 $key = aspire secret get "Parameters:dev-api-key"
@@ -107,12 +124,14 @@ Add `"profile": "python-agent"` to run the same harness with the customer Python
 | Method | Path | Notes |
 | --- | --- | --- |
 | `POST` | `/v1/jobs` | Submit; optional `Idempotency-Key` header (scoped to the caller) |
+| `GET` | `/v1/jobs` | The caller's jobs, newest first (`?limit=`, `?before=<createdAt>`); results omitted |
 | `GET` | `/v1/jobs/{id}` | Status, result, error, usage, acknowledged gaps |
 | `GET` | `/v1/jobs/{id}/events` | JSON page (`?after=<seq>`) or SSE with `Accept: text/event-stream` and `Last-Event-ID` |
 | `POST` | `/v1/jobs/{id}:cancel` | Cancels queued jobs immediately; running attempts are aborted and their capability revoked |
 | `POST` | `/v1/jobs/{id}:retry` | Grants one more attempt to a `failed` or `needs_review` job |
 | `GET` | `/v1/jobs/{id}/artifacts` | Lists `result.json` for succeeded jobs |
 | `GET` | `/v1/harnesses` | Published harnesses with their input and output schemas |
+| `GET` | `/` | Browser job console |
 | `GET` | `/health`, `/alive` | Readiness (database) and liveness |
 
 ## Test

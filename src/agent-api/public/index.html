@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Agent job console</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/console/app.css" />
+    <script type="module" src="/console/app.js"></script>
+  </head>
+  <body>
+    <header class="bar">
+      <h1>Agent job console</h1>
+      <form id="auth" class="auth" autocomplete="off">
+        <label for="api-key">API key</label>
+        <input id="api-key" type="password" placeholder="Paste an API key" spellcheck="false" />
+        <label class="check"><input id="remember" type="checkbox" /> Keep for this tab</label>
+        <button type="submit">Connect</button>
+        <span id="auth-status" class="muted" role="status"></span>
+      </form>
+    </header>
+
+    <main id="main" class="layout" hidden>
+      <section class="panel" aria-labelledby="submit-title">
+        <h2 id="submit-title">New job</h2>
+        <form id="submit-form">
+          <label for="harness">Harness</label>
+          <select id="harness"></select>
+          <p id="harness-description" class="muted small"></p>
+
+          <div class="row">
+            <div>
+              <label for="version">Version</label>
+              <select id="version"></select>
+            </div>
+            <div>
+              <label for="profile">Agent profile</label>
+              <select id="profile"></select>
+            </div>
+          </div>
+
+          <label for="input">Input (JSON)</label>
+          <textarea id="input" rows="16" spellcheck="false"></textarea>
+          <div class="row">
+            <div>
+              <label for="deadline">Deadline seconds (optional)</label>
+              <input id="deadline" type="number" min="10" max="3600" placeholder="harness default" />
+            </div>
+            <div>
+              <label for="idempotency">Idempotency key (optional)</label>
+              <input id="idempotency" type="text" maxlength="200" spellcheck="false" />
+            </div>
+          </div>
+          <div class="actions">
+            <button type="submit" class="primary">Submit job</button>
+            <button type="button" id="reset-input">Reset input</button>
+            <button type="button" id="show-schema">Output schema</button>
+          </div>
+          <pre id="submit-error" class="error" hidden></pre>
+          <pre id="schema-view" class="code" hidden></pre>
+        </form>
+      </section>
+
+      <section class="panel" aria-labelledby="jobs-title">
+        <div class="panel-head">
+          <h2 id="jobs-title">Jobs</h2>
+          <button type="button" id="refresh-jobs">Refresh</button>
+        </div>
+        <ul id="jobs" class="jobs"></ul>
+        <button type="button" id="more-jobs" hidden>Load more</button>
+      </section>
+
+      <section class="panel detail" aria-labelledby="detail-title">
+        <div class="panel-head">
+          <h2 id="detail-title">Job</h2>
+          <div class="actions">
+            <button type="button" id="cancel-job" disabled>Cancel</button>
+            <button type="button" id="retry-job" disabled>Retry</button>
+          </div>
+        </div>
+        <p id="detail-empty" class="muted">Select or submit a job.</p>
+        <div id="detail" hidden>
+          <dl id="summary" class="summary"></dl>
+          <div id="gaps" class="warning" hidden></div>
+          <div id="error-box" class="error" hidden></div>
+          <h3>Result</h3>
+          <div id="result" class="result"><p class="muted">No result yet.</p></div>
+          <h3>Events <span id="stream-status" class="muted small"></span></h3>
+          <ol id="events" class="events"></ol>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

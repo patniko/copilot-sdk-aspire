@@ -1,0 +1,93 @@
+# Agent job API — VS Code REST Client (humao.rest-client)
+#
+# Create http/.env (git-ignored) with:
+#   AGENT_API_URL=https://agent-api.<env>.<region>.azurecontainerapps.io   (or the local URL from the Aspire dashboard)
+#   AGENT_API_KEY=<key>
+#
+# Azure key:  az containerapp secret show -g <rg> -n agent-api --secret-name api-keys --query value -o tsv   (drop "dev:")
+# Local key:  aspire secret get "Parameters:dev-api-key"
+#
+# Run requests top to bottom: "Submit" stores the job id that later requests use.
+
+@baseUrl = {{$dotenv AGENT_API_URL}}
+@apiKey = {{$dotenv AGENT_API_KEY}}
+
+### Health (no key needed)
+GET {{baseUrl}}/health
+
+### Published harnesses, with input and output schemas
+GET {{baseUrl}}/v1/harnesses
+Authorization: Bearer {{apiKey}}
+
+### Submit a job with the TypeScript agent (change "profile" to "python-agent" for the Python agent)
+# @name submit
+POST {{baseUrl}}/v1/jobs
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+Idempotency-Key: rest-client-{{$timestamp}}
+
+{
+  "harness": { "name": "dataset-analyst" },
+  "profile": "node-ts-agent",
+  "input": {
+    "question": "Which region had the highest average monthly revenue, and how variable was it?",
+    "dataset": {
+      "name": "q3-sales",
+      "columns": ["region", "month", "revenue"],
+      "rows": [
+        ["north", "jul", 120.5], ["north", "aug", 130.0], ["north", "sep", 128.25],
+        ["south", "jul", 90.0], ["south", "aug", 210.0], ["south", "sep", 95.5],
+        ["west", "jul", 150.0], ["west", "aug", 149.0], ["west", "sep", 151.5]
+      ]
+    }
+  }
+}
+
+@jobId = {{submit.response.body.$.id}}
+
+### Job status and result
+GET {{baseUrl}}/v1/jobs/{{jobId}}
+Authorization: Bearer {{apiKey}}
+
+### Events so far (JSON page; add ?after=<seq> to resume)
+GET {{baseUrl}}/v1/jobs/{{jobId}}/events
+Authorization: Bearer {{apiKey}}
+
+### Live events (SSE; the response completes when the job finishes)
+GET {{baseUrl}}/v1/jobs/{{jobId}}/events
+Authorization: Bearer {{apiKey}}
+Accept: text/event-stream
+
+### Cancel
+POST {{baseUrl}}/v1/jobs/{{jobId}}:cancel
+Authorization: Bearer {{apiKey}}
+
+### Retry a failed or needs_review job
+POST {{baseUrl}}/v1/jobs/{{jobId}}:retry
+Authorization: Bearer {{apiKey}}
+
+### Result artifact
+GET {{baseUrl}}/v1/jobs/{{jobId}}/artifacts/result.json
+Authorization: Bearer {{apiKey}}
+
+### Recent jobs (newest first; pass ?before=<createdAt> for the next page)
+GET {{baseUrl}}/v1/jobs?limit=10
+Authorization: Bearer {{apiKey}}
+
+### Negative check: invalid input is rejected before queuing (expect 400 invalid_input)
+POST {{baseUrl}}/v1/jobs
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{ "harness": { "name": "dataset-analyst" }, "input": { "question": "missing dataset" } }
+
+### Negative check: unapproved profile (expect 422 policy_rejected)
+POST {{baseUrl}}/v1/jobs
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{ "harness": { "name": "dataset-analyst" }, "profile": "rogue-image", "input": {} }
+
+### Negative check: bad key (expect 401)
+GET {{baseUrl}}/v1/jobs
+Authorization: Bearer not-a-valid-key-000000000000000000

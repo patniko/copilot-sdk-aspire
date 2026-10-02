@@ -197,6 +197,20 @@ export class JobStore {
     return row ? toView(row) : undefined;
   }
 
+  /** Lists the principal's most recent jobs, newest first. Results are omitted to keep pages small. */
+  async listJobs(principal: string, limit: number, before?: Date): Promise<JobView[]> {
+    const result = await this.pool.query<JobRow>(
+      `${JOB_VIEW_SELECT} WHERE j.principal = $1 AND ($2::timestamptz IS NULL OR j.created_at < $2)
+       ORDER BY j.created_at DESC LIMIT $3`,
+      [principal, before ?? null, limit],
+    );
+    return result.rows.map((row) => {
+      const view = toView(row);
+      delete view.result;
+      return view;
+    });
+  }
+
   async listEvents(principal: string, jobId: string, afterSeq: number, limit: number): Promise<JobEventView[]> {
     const result = await this.pool.query<{ seq: string; at: Date; body: JobEventBody }>(
       `SELECT e.seq::text AS seq, e.at, e.body FROM job_events e

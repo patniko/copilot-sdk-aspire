@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1",
   "name": "dataset-analyst",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Read-only analysis of a small tabular dataset. Computes descriptive statistics with a pinned Python tool and answers a question with a structured result.",
   "instructionsFile": "instructions.md",
   "model": {
@@ -21,6 +21,26 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["question", "dataset"],
+      "examples": [
+        {
+          "question": "Which region had the highest average monthly revenue, and how variable was it?",
+          "dataset": {
+            "name": "q3-sales",
+            "columns": ["region", "month", "revenue", "units"],
+            "rows": [
+              ["north", "jul", 120.5, 30],
+              ["north", "aug", 130.0, 33],
+              ["north", "sep", 128.25, 31],
+              ["south", "jul", 90.0, 25],
+              ["south", "aug", 210.0, 60],
+              ["south", "sep", 95.5, 26],
+              ["west", "jul", 150.0, 40],
+              ["west", "aug", 149.0, 41],
+              ["west", "sep", 151.5, 39]
+            ]
+          }
+        }
+      ],
       "properties": {
         "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
         "dataset": {

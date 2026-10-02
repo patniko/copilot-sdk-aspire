@@ -7,6 +7,7 @@ import {
   loadHarnesses,
   loadPolicy,
   loadProfiles,
+  optionalEnv,
   readPostgresConnection,
   requireEnv,
 } from "@copilot-agent/service-defaults";
@@ -28,6 +29,7 @@ const app = buildApi({
   authenticator: new ApiKeyAuthenticator(requireEnv("API_KEYS")),
   harnesses,
   maxOpenJobsPerPrincipal: policy.maxQueuedJobsPerPrincipal,
+  console: optionalEnv("CONSOLE_ENABLED", "true") !== "false",
 });
 
 await listen(app, listenPort(8080));
