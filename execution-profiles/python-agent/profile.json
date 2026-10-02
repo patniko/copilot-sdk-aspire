@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "1",
+  "id": "python-agent",
+  "displayName": "Customer-authored Python Copilot SDK agent",
+  "runnerProtocol": "1",
+  "agent": {
+    "language": "python",
+    "sdk": "github-copilot-sdk",
+    "sdkVersion": "1.0.14",
+    "firstParty": false
+  },
+  "entrypoint": {
+    "command": "/opt/python-agent/bin/python",
+    "args": ["-u", "runner.py"],
+    "directory": "execution-profiles/python-agent",
+    "env": {
+      "TOOLS_ROOT": "{root}/tools",
+      "COPILOT_CLI_EXTRACT_DIR": "/opt/copilot-cli",
+      "COPILOT_SKIP_CLI_DOWNLOAD": "1"
+    }
+  },
+  "toolchains": [{ "name": "python", "version": "3.11" }],
+  "toolBindings": ["python:stats"],
+  "capabilities": ["cancel", "structured-result"]
+}

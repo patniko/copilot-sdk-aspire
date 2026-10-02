@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.aspire/
+*.tsbuildinfo
+coverage/
+artifacts/
+.venv/
+__pycache__/
+*.pyc
+.env
+.env.*

@@ -1,0 +1,27 @@
+{
+  "name": "@copilot-agent/harness-hosting",
+  "version": "0.1.0",
+  "private": true,
+  "files": ["dist"],
+  "type": "module",
+  "description": "Copilot SDK reference runner for the job runner protocol. Has no Aspire dependency.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "copilot-ts-runner": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@copilot-agent/contracts": "workspace:*",
+    "@github/copilot-sdk": "1.0.16",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

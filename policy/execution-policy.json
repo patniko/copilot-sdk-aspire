@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "1",
+  "allowedProfiles": ["node-ts-agent", "python-agent"],
+  "allowedModels": ["grok-4.6"],
+  "maxDurationSeconds": 600,
+  "maxInferenceTokensPerJob": 500000,
+  "maxConcurrentAttemptsPerPrincipal": 4,
+  "maxQueuedJobsPerPrincipal": 100,
+  "retry": {
+    "maxAttempts": 3,
+    "backoffSeconds": 5
+  },
+  "leaseSeconds": 30,
+  "requirements": {
+    "processIsolation": "uid",
+    "egress": "gateway-only"
+  },
+  "acknowledgedGaps": ["egress-not-enforced"]
+}

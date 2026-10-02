@@ -1,0 +1,14 @@
+packages:
+  - contracts
+  - src/*
+
+# Build scripts are allowed only for packages that need them.
+onlyBuiltDependencies:
+  - esbuild
+
+# koffi backs the SDK's experimental in-process runtime host, which is not used (stdio runtime only).
+ignoredBuiltDependencies:
+  - koffi
+
+# Keep workspace packages copied (not symlinked) when deploying service images.
+injectWorkspacePackages: true

@@ -1,0 +1,14 @@
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+**/__pycache__
+**/.venv
+.git
+.aspire
+.github
+artifacts
+docs
+tests
+NuGet.config
+*.md
+!harnesses/**/*.md

@@ -1,0 +1,98 @@
+{
+  "schemaVersion": "1",
+  "name": "dataset-analyst",
+  "version": "1.0.0",
+  "description": "Read-only analysis of a small tabular dataset. Computes descriptive statistics with a pinned Python tool and answers a question with a structured result.",
+  "instructionsFile": "instructions.md",
+  "model": {
+    "preferred": "grok-4.6",
+    "allowed": ["grok-4.6"]
+  },
+  "tools": [
+    {
+      "name": "compute_statistics",
+      "kind": "python",
+      "description": "Compute descriptive statistics (count, mean, median, stdev, min, max, quartiles, sum) for one numeric series. Call once per numeric column.",
+      "binding": "python:stats"
+    }
+  ],
+  "input": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["question", "dataset"],
+      "properties": {
+        "question": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "dataset": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "columns", "rows"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+            "columns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 50,
+              "items": { "type": "string", "minLength": 1, "maxLength": 100 }
+            },
+            "rows": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1000,
+              "items": {
+                "type": "array",
+                "maxItems": 50,
+                "items": { "type": ["number", "string", "null"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "output": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["answer", "statistics", "observations"],
+      "properties": {
+        "answer": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "statistics": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["column", "count", "mean", "median", "min", "max"],
+            "properties": {
+              "column": { "type": "string" },
+              "count": { "type": "integer", "minimum": 0 },
+              "mean": { "type": "number" },
+              "median": { "type": "number" },
+              "stdev": { "type": ["number", "null"] },
+              "min": { "type": "number" },
+              "max": { "type": "number" }
+            }
+          }
+        },
+        "observations": {
+          "type": "array",
+          "maxItems": 10,
+          "items": { "type": "string", "maxLength": 1000 }
+        }
+      }
+    }
+  },
+  "limits": {
+    "maxDurationSeconds": 300,
+    "maxInferenceTokens": 300000
+  },
+  "retry": {
+    "safeToRetry": true,
+    "maxAttempts": 2
+  },
+  "runners": {
+    "allowedProfiles": ["node-ts-agent", "python-agent"],
+    "defaultProfile": "node-ts-agent"
+  }
+}
