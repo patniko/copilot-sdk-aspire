@@ -63,7 +63,7 @@ export function ResultView({ value, schema, depth = 0 }: { value: unknown; schem
     <div className="space-y-3">
       {orderedKeys(Object.keys(record), schema).map((key) => (
         <div key={key}>
-          <div className="label">{key}</div>
+          <div className="section-label">{key}</div>
           <ResultView value={record[key]} schema={schema?.properties?.[key]} depth={depth + 1} />
         </div>
       ))}

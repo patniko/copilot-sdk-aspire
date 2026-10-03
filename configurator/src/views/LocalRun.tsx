@@ -1,4 +1,4 @@
-import { ExternalLink, FlaskConical, Hammer, Play, RefreshCw, RotateCw, Save, Square } from "lucide-react";
+import { ExternalLink, FlaskConical, Hammer, Play, RefreshCw, RotateCw, Save, Square } from "../components/icons";
 import { useEffect, useState } from "react";
 import type { LocalSettings } from "../../server/types";
 import { api, errorMessage } from "../api";
@@ -164,13 +164,13 @@ export function LocalRunView() {
                 }
               />
             </div>
-            <Field label="Foundry endpoint" hint="OpenAI v1 endpoint, e.g. https://<account>.openai.azure.com/openai/v1" error={fieldErrors.foundryEndpoint}>
+            <Field label="Foundry endpoint" help="local.foundryEndpoint" hint="OpenAI v1 endpoint, e.g. https://<account>.openai.azure.com/openai/v1" error={fieldErrors.foundryEndpoint}>
               <input className="input font-mono" value={draft.foundryEndpoint} onChange={(e) => setDraft({ ...draft, foundryEndpoint: e.target.value })} />
             </Field>
-            <Field label="Model deployments" hint="Deployment names the gateway routes; jobs use the policy-approved model names." error={fieldErrors.foundryDeployments}>
+            <Field label="Model deployments" help="local.foundryDeployments" hint="Deployment names the gateway routes; jobs use the policy-approved model names." error={fieldErrors.foundryDeployments}>
               <ChipsInput values={draft.foundryDeployments} onChange={(values) => setDraft({ ...draft, foundryDeployments: values })} pattern={/^[A-Za-z0-9._-]{1,64}$/} />
             </Field>
-            <Field label="npm registry for image builds" hint="Leave empty for registry.npmjs.org." error={fieldErrors.npmRegistry}>
+            <Field label="npm registry for image builds" help="local.registries" hint="Leave empty for registry.npmjs.org." error={fieldErrors.npmRegistry}>
               <input className="input font-mono" value={draft.npmRegistry} onChange={(e) => setDraft({ ...draft, npmRegistry: e.target.value })} />
             </Field>
             <Field label="PyPI index for image builds" hint="Leave empty for pypi.org." error={fieldErrors.pipIndexUrl}>

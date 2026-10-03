@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { SLUG } from "./harness.js";
+import { REASONING_EFFORTS, RUNNER_FEATURES, SLUG } from "./harness.js";
 import { RUNNER_PROTOCOL_VERSION } from "./runner-protocol.js";
 
 export const ProcessIsolation = z.enum(["none", "uid"]);
@@ -42,7 +42,7 @@ export const ExecutionProfile = z
     toolchains: z.array(z.object({ name: z.string(), version: z.string() }).strict()),
     /** Tool bindings this profile can satisfy. */
     toolBindings: z.array(z.string().min(1)),
-    capabilities: z.array(z.enum(["cancel", "structured-result", "trace-context", "local-mcp"])),
+    capabilities: z.array(z.enum(["cancel", "structured-result", "trace-context", "local-mcp", ...RUNNER_FEATURES])),
   })
   .strict();
 export type ExecutionProfile = z.infer<typeof ExecutionProfile>;
@@ -76,10 +76,39 @@ export const ExecutionPolicy = z
      * Acknowledged gaps are recorded on every attempt.
      */
     acknowledgedGaps: z.array(z.enum(["egress-not-enforced", "process-isolation-not-enforced"])),
+    /** Highest reasoning effort a harness or sub-agent may request. Omitted means no cap. */
+    maxReasoningEffort: z.enum(REASONING_EFFORTS).optional(),
+    /** Whether harnesses may request the long-context model tier. Omitted means not allowed. */
+    allowLongContext: z.boolean().optional(),
   })
   .strict();
 export type ExecutionPolicy = z.infer<typeof ExecutionPolicy>;
 export type SecurityGap = ExecutionPolicy["acknowledgedGaps"][number];
+
+/**
+ * Checks a harness's model options against policy ceilings. Returns field-scoped problems; the
+ * agent API rejects such jobs, and the configurator shows them as errors.
+ */
+export function modelOptionViolations(
+  definition: { model: { reasoningEffort?: string; contextTier?: string }; agents?: Array<{ name: string; reasoningEffort?: string }> },
+  policy: Pick<ExecutionPolicy, "maxReasoningEffort" | "allowLongContext">,
+): Array<{ path: string; message: string }> {
+  const problems: Array<{ path: string; message: string }> = [];
+  const rank = (effort: string | undefined) => (effort ? REASONING_EFFORTS.indexOf(effort as never) : -1);
+  const cap = policy.maxReasoningEffort;
+  if (cap && rank(definition.model.reasoningEffort) > rank(cap)) {
+    problems.push({ path: "model.reasoningEffort", message: `Reasoning effort exceeds the policy maximum (${cap}).` });
+  }
+  definition.agents?.forEach((agent, index) => {
+    if (cap && rank(agent.reasoningEffort) > rank(cap)) {
+      problems.push({ path: `agents.${index}.reasoningEffort`, message: `Reasoning effort exceeds the policy maximum (${cap}).` });
+    }
+  });
+  if (definition.model.contextTier === "long_context" && !policy.allowLongContext) {
+    problems.push({ path: "model.contextTier", message: "The operator policy does not allow the long-context tier." });
+  }
+  return problems;
+}
 
 /** What an executor actually enforces, reported on every claim. */
 export const ExecutorCapabilities = z

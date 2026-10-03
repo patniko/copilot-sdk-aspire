@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type {
   AzureStatus,
   EnvironmentStatus,
+  HarnessDetail,
   LocalStackStatus,
   SettingsInfo,
   TaskInfo,
@@ -37,6 +38,9 @@ interface AppState {
   runTask: (kind: TaskKind) => Promise<TaskInfo | undefined>;
   toast: (message: string, tone?: "info" | "error" | "success") => void;
   toasts: Array<{ id: number; message: string; tone: "info" | "error" | "success" }>;
+  /** Live validation result of the harness being edited (shown in the Live plan). */
+  editorDetail?: HarnessDetail;
+  setEditorDetail: (detail: HarnessDetail | undefined) => void;
 }
 
 const Context = createContext<AppState | undefined>(undefined);
@@ -61,6 +65,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [selectedHarness, setSelectedHarness] = useState<string>();
   const [loadError, setLoadError] = useState<string>();
   const [toasts, setToasts] = useState<AppState["toasts"]>([]);
+  const [editorDetail, setEditorDetail] = useState<HarnessDetail>();
   const toastId = useRef(0);
 
   const toast = useCallback((message: string, tone: "info" | "error" | "success" = "info") => {
@@ -210,6 +215,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       runTask,
       toast,
       toasts,
+      editorDetail,
+      setEditorDetail,
     }),
     [
       view,
@@ -233,6 +240,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       runTask,
       toast,
       toasts,
+      editorDetail,
     ],
   );
   return <Context.Provider value={value}>{children}</Context.Provider>;

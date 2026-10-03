@@ -1,10 +1,10 @@
 import clsx from "clsx";
-import { Cloud, ExternalLink, FileCode2, LogIn, Plus, RefreshCw, Rocket, Save, Trash2 } from "lucide-react";
+import { Cloud, ExternalLink, FileCode2, LogIn, Plus, RefreshCw, Rocket, Save, Trash2 } from "../components/icons";
 import { useEffect, useMemo, useState } from "react";
 import type { DeployTarget, Issue } from "../../server/types";
 import { api, errorMessage } from "../api";
 import { FoundryPicker } from "../components/FoundryPicker";
-import { Badge, Card, ChipsInput, CopyButton, Empty, Field, Modal, PageHeader, Spinner, StatusLine, stateTone } from "../components/ui";
+import { Badge, Card, ChipsInput, CopyButton, Empty, Field, HelpButton, Modal, PageHeader, Spinner, StatusLine, stateTone } from "../components/ui";
 import { useApp } from "../state";
 
 type Check = { ok: boolean; errors: Array<Issue & { scope: string }>; warnings: number };
@@ -147,7 +147,7 @@ export function DeployView() {
                   className={clsx(
                     "btn",
                     t.name === selected
-                      ? "border-brand-300 bg-brand-50 text-brand-700 dark:border-brand-700 dark:bg-brand-700/20 dark:text-brand-200"
+                      ? "border-[var(--borderColor-accent-emphasis)] bg-[var(--bgColor-accent-muted)]"
                       : "border-slate-200 dark:border-slate-700",
                   )}
                 >
@@ -171,13 +171,13 @@ export function DeployView() {
                 <Field label="Region" error={fieldErrors.location}>
                   <input className="input font-mono" value={target.location} onChange={(e) => update({ location: e.target.value })} />
                 </Field>
-                <Field label="Resource group" hint="Created if it does not exist." error={fieldErrors.resourceGroup}>
+                <Field label="Resource group" help="target.resourceGroup" hint="Created if it does not exist." error={fieldErrors.resourceGroup}>
                   <input className="input font-mono" value={target.resourceGroup} onChange={(e) => update({ resourceGroup: e.target.value })} />
                 </Field>
                 <Field label="Tenant ID" error={fieldErrors.tenantId}>
                   <input className="input font-mono" value={target.tenantId} onChange={(e) => update({ tenantId: e.target.value })} />
                 </Field>
-                <Field label="Subscription ID" error={fieldErrors.subscriptionId}>
+                <Field label="Subscription ID" help="target.subscription" error={fieldErrors.subscriptionId}>
                   <input className="input font-mono" value={target.subscriptionId} onChange={(e) => update({ subscriptionId: e.target.value })} />
                 </Field>
                 <div className="flex items-end">
@@ -191,7 +191,7 @@ export function DeployView() {
                   </button>
                 </div>
                 <div className="md:col-span-2 xl:col-span-3">
-                  <div className="label">Model provider (existing Foundry account)</div>
+                  <div className="flex items-center gap-1"><span className="label !mb-0">Model provider (existing Foundry account)</span><HelpButton topic="target.foundry" /></div>
                   <FoundryPicker
                     subscriptionId={/^[0-9a-f-]{36}$/i.test(target.subscriptionId) ? target.subscriptionId : undefined}
                     onPick={(account, deployments) =>

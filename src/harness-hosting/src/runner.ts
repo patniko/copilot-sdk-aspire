@@ -1,9 +1,10 @@
-import { mkdir } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import type { RunnerEventBody, RunnerFailureCode, RunnerStart } from "@copilot-agent/contracts";
+import { renderSkillMarkdown, type RunnerEventBody, type RunnerFailureCode, type RunnerStart } from "@copilot-agent/contracts";
 import { CopilotClient, defineTool, type SessionEvent } from "@github/copilot-sdk";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
+import { buildSessionOptions } from "./session-config.js";
 import { bindTools, UnsupportedBindingError, type ToolEnvironment } from "./tools.js";
 
 export interface RunnerSink {
@@ -19,12 +20,6 @@ export interface RunOptions {
   toolsRoot: string;
   pythonBin: string;
 }
-
-const RESULT_CONTRACT = `
-
-## Result contract
-When you have finished, call the \`submit_result\` tool exactly once with the complete final result.
-The arguments must satisfy the tool's JSON schema. Do not put the final result in a chat message.`;
 
 /**
  * Runs one harness attempt with the Copilot SDK. The session uses empty mode, an explicit tool
@@ -47,6 +42,11 @@ export async function runHarness(options: RunOptions): Promise<void> {
   const workspace = start.workspace;
   const files = join(workspace, "files");
   await mkdir(files, { recursive: true });
+  const skillsDirectory = join(workspace, "skills");
+  for (const skill of definition.skills ?? []) {
+    await mkdir(join(skillsDirectory, skill.name), { recursive: true });
+    await writeFile(join(skillsDirectory, skill.name, "SKILL.md"), renderSkillMarkdown(skill), "utf8");
+  }
   const toolEnv: ToolEnvironment = { toolsRoot: options.toolsRoot, pythonBin: options.pythonBin, workspace: files };
 
   let tools;
@@ -79,6 +79,11 @@ export async function runHarness(options: RunOptions): Promise<void> {
     },
   });
   const allTools = [...tools, submitResult];
+  const sessionOptions = buildSessionOptions(
+    definition,
+    allTools.map((t) => t.name),
+    skillsDirectory,
+  );
 
   const runtimeEnv: Record<string, string> = {};
   for (const key of ["PATH", "HOME", "TMPDIR", "TMP", "TEMP", "LANG", "SystemRoot", "windir", "PATHEXT", "LOCALAPPDATA", "APPDATA"]) {
@@ -118,6 +123,18 @@ export async function runHarness(options: RunOptions): Promise<void> {
           ok: event.data.success,
         });
         break;
+      case "subagent.started":
+        sink.event({ kind: "subagent.started", agent: event.data.agentName.slice(0, 100) });
+        break;
+      case "subagent.completed":
+        sink.event({ kind: "subagent.completed", agent: event.data.agentName.slice(0, 100), ok: true });
+        break;
+      case "subagent.failed":
+        sink.event({ kind: "subagent.completed", agent: event.data.agentName.slice(0, 100), ok: false });
+        break;
+      case "skill.invoked":
+        sink.event({ kind: "skill.used", skill: event.data.name.slice(0, 100) });
+        break;
       case "session.error":
         lastError = { message: event.data.message, statusCode: event.data.statusCode };
         break;
@@ -136,9 +153,8 @@ export async function runHarness(options: RunOptions): Promise<void> {
         apiKey: start.inference.token,
         wireApi: "completions",
       },
-      systemMessage: { mode: "replace", content: definition.instructions + RESULT_CONTRACT },
       tools: allTools,
-      availableTools: allTools.map((t) => `custom:${t.name}`),
+      ...sessionOptions,
       onPermissionRequest: () => ({ kind: "reject", feedback: "Not permitted by the job policy." }),
       enableConfigDiscovery: false,
       skipCustomInstructions: true,

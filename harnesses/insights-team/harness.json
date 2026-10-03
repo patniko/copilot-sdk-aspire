@@ -1,0 +1,311 @@
+{
+  "schemaVersion": "1",
+  "name": "insights-team",
+  "version": "1.0.0",
+  "description": "A lead analyst coordinates two sub-agents: a statistician that alone can run the pinned statistics tool, and a reviewer that checks the draft against a review skill. Shows prompt customization, sub-agents, delegated-only tools and skills.",
+  "instructionsFile": "instructions.md",
+  "prompt": {
+    "mode": "customize",
+    "sections": [
+      {
+        "name": "identity",
+        "action": "replace",
+        "content": "You are the lead analyst of a small insights team. You coordinate specialists and own the final answer."
+      },
+      {
+        "name": "tone",
+        "action": "replace",
+        "content": "Be concise and plain-spoken. Prefer short sentences and exact figures."
+      },
+      {
+        "name": "code_change_rules",
+        "action": "remove",
+        "content": ""
+      },
+      {
+        "name": "environment_context",
+        "action": "remove",
+        "content": ""
+      }
+    ]
+  },
+  "model": {
+    "preferred": "grok-4.6",
+    "allowed": [
+      "grok-4.6"
+    ],
+    "reasoningEffort": "medium"
+  },
+  "tools": [
+    {
+      "name": "compute_statistics",
+      "kind": "python",
+      "description": "Compute descriptive statistics (count, mean, median, stdev, min, max, quartiles, sum) for one numeric series. Call once per numeric column.",
+      "binding": "python:stats",
+      "delegatedOnly": true
+    }
+  ],
+  "skills": [
+    "insight-review"
+  ],
+  "agents": [
+    {
+      "name": "statistician",
+      "displayName": "Statistician",
+      "description": "Computes descriptive statistics for numeric columns with the pinned statistics tool. Give it column names and their numeric values.",
+      "instructions": "You compute descriptive statistics and nothing else.\n\nFor each numeric series you are given, call `compute_statistics` once with the values and `label` set to the column name. Reply with a JSON array containing one object per column with the keys column, count, mean, median, stdev, min and max, copied exactly from the tool results. Do not interpret the numbers.",
+      "tools": [
+        "compute_statistics"
+      ]
+    },
+    {
+      "name": "reviewer",
+      "displayName": "Reviewer",
+      "description": "Reviews draft findings against the insight-review checklist and corrects them. Give it the question, the statistics and the draft.",
+      "instructions": "You review draft findings for a data question using the insight-review checklist in your context.\n\nReply with:\n- verdict: approved (no changes needed) or revised\n- the corrected answer and observations, if you changed anything\n- up to five short review notes, one per checklist item that needed attention",
+      "tools": [],
+      "skills": [
+        "insight-review"
+      ]
+    }
+  ],
+  "input": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "question",
+        "dataset"
+      ],
+      "examples": [
+        {
+          "question": "Which region had the highest average monthly revenue, and how variable was it?",
+          "dataset": {
+            "name": "q3-sales",
+            "columns": [
+              "region",
+              "month",
+              "revenue",
+              "units"
+            ],
+            "rows": [
+              [
+                "north",
+                "jul",
+                120.5,
+                30
+              ],
+              [
+                "north",
+                "aug",
+                130,
+                33
+              ],
+              [
+                "north",
+                "sep",
+                128.25,
+                31
+              ],
+              [
+                "south",
+                "jul",
+                90,
+                25
+              ],
+              [
+                "south",
+                "aug",
+                210,
+                60
+              ],
+              [
+                "south",
+                "sep",
+                95.5,
+                26
+              ],
+              [
+                "west",
+                "jul",
+                150,
+                40
+              ],
+              [
+                "west",
+                "aug",
+                149,
+                41
+              ],
+              [
+                "west",
+                "sep",
+                151.5,
+                39
+              ]
+            ]
+          }
+        }
+      ],
+      "properties": {
+        "question": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "dataset": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "columns",
+            "rows"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 200
+            },
+            "columns": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 50,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              }
+            },
+            "rows": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 1000,
+              "items": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": [
+                    "number",
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "output": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "answer",
+        "statistics",
+        "observations",
+        "review"
+      ],
+      "properties": {
+        "answer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4000
+        },
+        "statistics": {
+          "type": "array",
+          "maxItems": 50,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "column",
+              "count",
+              "mean",
+              "median",
+              "min",
+              "max"
+            ],
+            "properties": {
+              "column": {
+                "type": "string"
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "mean": {
+                "type": "number"
+              },
+              "median": {
+                "type": "number"
+              },
+              "stdev": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "min": {
+                "type": "number"
+              },
+              "max": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "observations": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        },
+        "review": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "verdict",
+            "notes"
+          ],
+          "properties": {
+            "verdict": {
+              "type": "string",
+              "enum": [
+                "approved",
+                "revised"
+              ]
+            },
+            "notes": {
+              "type": "array",
+              "maxItems": 5,
+              "items": {
+                "type": "string",
+                "maxLength": 500
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "limits": {
+    "maxDurationSeconds": 600,
+    "maxInferenceTokens": 500000
+  },
+  "retry": {
+    "safeToRetry": true,
+    "maxAttempts": 2
+  },
+  "runners": {
+    "allowedProfiles": [
+      "node-ts-agent",
+      "python-agent"
+    ],
+    "defaultProfile": "node-ts-agent"
+  }
+}

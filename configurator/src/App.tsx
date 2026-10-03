@@ -1,10 +1,27 @@
 import clsx from "clsx";
-import { Boxes, Cloud, FlaskConical, GitBranch, Laptop, LayoutDashboard, Moon, ShieldCheck, Sun } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { hasToken } from "./api";
+import {
+  Boxes,
+  Copilot,
+  Download,
+  FlaskConical,
+  GitBranch,
+  GitHubMark,
+  Laptop,
+  LayoutDashboard,
+  Moon,
+  Redo,
+  Rocket,
+  Save,
+  ShieldCheck,
+  Sun,
+  Undo,
+} from "./components/icons";
 import { LivePlan } from "./components/LivePlan";
 import { TaskDrawer } from "./components/TaskDrawer";
-import { Badge } from "./components/ui";
+import { Badge, Counter, Spinner } from "./components/ui";
+import { useEditorActions, useEditorShortcuts } from "./history";
 import { useApp, type View } from "./state";
 import { DeployView } from "./views/Deploy";
 import { HarnessesView } from "./views/Harnesses";
@@ -13,13 +30,13 @@ import { OverviewView } from "./views/Overview";
 import { PolicyView } from "./views/Policy";
 import { TryView } from "./views/Try";
 
-const NAV: Array<{ id: View; label: string; detail: string; icon: ReactNode }> = [
-  { id: "overview", label: "Overview", detail: "Pipeline & environment", icon: <LayoutDashboard className="h-5 w-5" /> },
-  { id: "harnesses", label: "Harnesses", detail: "Prompt, model, tools, schemas", icon: <Boxes className="h-5 w-5" /> },
-  { id: "policy", label: "Policy", detail: "Operator ceilings & controls", icon: <ShieldCheck className="h-5 w-5" /> },
-  { id: "local", label: "Local run", detail: "Parameters, tests, local stack", icon: <Laptop className="h-5 w-5" /> },
-  { id: "deploy", label: "Deploy", detail: "Azure target & rollout", icon: <Cloud className="h-5 w-5" /> },
-  { id: "try", label: "Try it", detail: "Run a job end to end", icon: <FlaskConical className="h-5 w-5" /> },
+const NAV: Array<{ id: View; label: string; icon: ReactNode }> = [
+  { id: "overview", label: "Overview", icon: <LayoutDashboard /> },
+  { id: "harnesses", label: "Harnesses", icon: <Boxes /> },
+  { id: "policy", label: "Policy", icon: <ShieldCheck /> },
+  { id: "local", label: "Local run", icon: <Laptop /> },
+  { id: "deploy", label: "Deploy", icon: <Rocket /> },
+  { id: "try", label: "Try it", icon: <FlaskConical /> },
 ];
 
 function useTheme(): [boolean, () => void] {
@@ -28,10 +45,43 @@ function useTheme(): [boolean, () => void] {
     return stored ? stored === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
   });
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", dark);
+    const root = document.documentElement;
+    root.classList.toggle("dark", dark);
+    root.dataset.colorMode = dark ? "dark" : "light";
+    root.dataset.lightTheme = "light";
+    root.dataset.darkTheme = "dark";
     localStorage.setItem("configurator-theme", dark ? "dark" : "light");
   }, [dark]);
   return [dark, () => setDark((d) => !d)];
+}
+
+function EditorToolbar() {
+  const actions = useEditorActions();
+  useEditorShortcuts(actions);
+  if (!actions) return null;
+  const mod = navigator.platform.toLowerCase().includes("mac") ? "⌘" : "Ctrl+";
+  return (
+    <div className="flex items-center gap-1 border-r border-muted pr-3" aria-label={`Editing ${actions.label}`}>
+      <span className="mr-1 hidden max-w-[180px] truncate text-xs fg-muted xl:inline" title={actions.label}>
+        {actions.label}
+        {actions.dirty && <span className="ml-1 fg-attention">• unsaved</span>}
+      </span>
+      <button type="button" className="btn-ghost btn-sm btn-icon" aria-label="Undo" title={`Undo (${mod}Z)`} disabled={!actions.canUndo} onClick={actions.undo}>
+        <Undo />
+      </button>
+      <button type="button" className="btn-ghost btn-sm btn-icon" aria-label="Redo" title={`Redo (${mod}Shift+Z)`} disabled={!actions.canRedo} onClick={actions.redo}>
+        <Redo />
+      </button>
+      {actions.exportJson && (
+        <button type="button" className="btn-ghost btn-sm btn-icon" aria-label="Export resolved JSON" title="Export resolved harness JSON" onClick={actions.exportJson}>
+          <Download />
+        </button>
+      )}
+      <button type="button" className="btn-primary btn-sm" title={`Save (${mod}S)`} disabled={!actions.dirty || actions.saving} onClick={actions.save}>
+        {actions.saving ? <Spinner /> : <Save />} Save
+      </button>
+    </div>
+  );
 }
 
 export function App() {
@@ -42,7 +92,7 @@ export function App() {
     return (
       <div className="mx-auto mt-24 max-w-lg card card-pad">
         <h1 className="text-xl">Session token missing</h1>
-        <p className="mt-2 text-slate-500">
+        <p className="mt-2 fg-muted">
           Open the configurator with the URL printed by <code>pnpm configure</code>. It contains a one-time session token that
           protects the local server.
         </p>
@@ -50,75 +100,72 @@ export function App() {
     );
   }
 
-  const configErrors = workspace ? workspace.harnesses.reduce((n, h) => n + h.errors, 0) + workspace.policyIssues.filter((i) => i.level === "error").length : 0;
+  const harnessErrors = workspace ? workspace.harnesses.reduce((n, h) => n + h.errors, 0) : 0;
+  const policyErrors = workspace ? workspace.policyIssues.filter((i) => i.level === "error").length : 0;
 
   return (
     <div className={clsx("min-h-screen", tasks.length > 0 && "pb-12")}>
-      <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/90 backdrop-blur dark:border-slate-800 dark:bg-slate-900/90">
-        <div className="flex items-center gap-4 px-6 py-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-brand-100 text-brand-700 dark:bg-brand-700/30 dark:text-brand-200">
-            <Boxes className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="text-lg font-semibold leading-tight">Agent Service Configurator</div>
-            <div className="text-xs text-slate-500">Copilot SDK + Aspire</div>
-          </div>
+      <header className="sticky top-0 z-30 border-b border-default bg-gh-header">
+        <div className="flex h-14 items-center gap-3 px-4 lg:px-6">
+          <GitHubMark size={32} aria-label="GitHub" />
+          <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm">
+            <span className="flex items-center gap-1.5 font-semibold">
+              <Copilot className="fg-done" /> GitHub Copilot SDK
+            </span>
+            <span className="fg-muted">/</span>
+            <span className="truncate font-semibold">Agent Service Configurator</span>
+            <Badge tone="done">Aspire</Badge>
+          </nav>
           {workspace && (
-            <div className="ml-4 hidden items-center gap-2 border-l border-slate-200 pl-4 text-xs text-slate-500 dark:border-slate-800 md:flex">
-              <GitBranch className="h-3.5 w-3.5" />
-              <span className="font-medium text-slate-700 dark:text-slate-300">{workspace.git.branch}</span>
-              {workspace.git.changedConfig.length > 0 && <Badge tone="amber">{workspace.git.changedConfig.length} uncommitted config change(s)</Badge>}
-              {configErrors > 0 && <Badge tone="red">{configErrors} config error(s)</Badge>}
+            <div className="ml-2 hidden items-center gap-2 text-xs md:flex">
+              <span className="flex items-center gap-1 fg-muted">
+                <GitBranch /> <span className="font-semibold text-[var(--fgColor-default)]">{workspace.git.branch}</span>
+              </span>
+              {workspace.git.changedConfig.length > 0 && <Badge tone="amber">{workspace.git.changedConfig.length} uncommitted</Badge>}
             </div>
           )}
-          <div className="ml-auto flex items-center gap-2">
-            <Badge tone={environment?.docker.ok ? "green" : environment ? "red" : "neutral"}>Docker</Badge>
-            <Badge
-              tone={environment?.azure.ok ? "green" : environment ? "red" : "neutral"}
-              title={environment?.azure.ok ? `${environment.azure.user} · ${environment.azure.subscriptionName}` : environment?.azure.detail}
-            >
-              Azure
-            </Badge>
-            <Badge tone={local?.running ? "green" : "neutral"}>Local stack {local?.running ? "running" : "stopped"}</Badge>
-            <button type="button" className="btn-ghost" aria-label="Toggle theme" onClick={toggleTheme}>
-              {dark ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+          <div className="ml-auto flex items-center gap-3">
+            <EditorToolbar />
+            <div className="hidden items-center gap-1.5 lg:flex">
+              <Badge tone={environment?.docker.ok ? "green" : environment ? "red" : "neutral"}>Docker</Badge>
+              <Badge
+                tone={environment?.azure.ok ? "green" : environment ? "red" : "neutral"}
+                title={environment?.azure.ok ? `${environment.azure.user} · ${environment.azure.subscriptionName}` : environment?.azure.detail}
+              >
+                Azure
+              </Badge>
+              <Badge tone={local?.running ? "green" : "neutral"}>Local {local?.running ? "running" : "stopped"}</Badge>
+            </div>
+            <button type="button" className="btn-secondary btn-sm btn-icon" aria-label="Toggle theme" onClick={toggleTheme}>
+              {dark ? <Sun /> : <Moon />}
             </button>
           </div>
         </div>
+        <nav aria-label="Configure" className="flex gap-2 overflow-x-auto px-4 lg:px-6">
+          {NAV.map((item) => {
+            const count =
+              item.id === "harnesses" ? workspace?.harnesses.length : item.id === "policy" && policyErrors > 0 ? policyErrors : undefined;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setView(item.id)}
+                aria-current={view === item.id ? "page" : undefined}
+                className={clsx("tab mb-2 mt-0", view === item.id && "tab-active")}
+              >
+                {item.icon}
+                {item.label}
+                {count !== undefined && <Counter>{count}</Counter>}
+                {item.id === "harnesses" && harnessErrors > 0 && <Badge tone="red">{harnessErrors}</Badge>}
+              </button>
+            );
+          })}
+        </nav>
       </header>
 
-      <div className="grid grid-cols-1 gap-6 px-6 py-6 lg:grid-cols-[240px_minmax(0,1fr)] 2xl:grid-cols-[240px_minmax(0,1fr)_320px]">
-        <nav aria-label="Configure" className="lg:sticky lg:top-[84px] lg:self-start">
-          <div className="label mb-3 px-2">Configure</div>
-          <ul className="space-y-1">
-            {NAV.map((item) => (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  onClick={() => setView(item.id)}
-                  aria-current={view === item.id ? "page" : undefined}
-                  className={clsx(
-                    "flex w-full items-start gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors",
-                    view === item.id
-                      ? "border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-700 dark:bg-brand-700/20 dark:text-brand-200"
-                      : "border-transparent hover:bg-slate-100 dark:hover:bg-slate-800",
-                  )}
-                >
-                  <span className="mt-0.5 opacity-80">{item.icon}</span>
-                  <span>
-                    <span className="block font-medium">{item.label}</span>
-                    <span className="block text-xs text-slate-500 dark:text-slate-400">{item.detail}</span>
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        </nav>
-
+      <div className="mx-auto grid max-w-[1600px] grid-cols-1 gap-6 px-4 py-6 lg:px-6 2xl:grid-cols-[minmax(0,1fr)_320px]">
         <main className="min-w-0">
-          {loadError && (
-            <div className="mb-4 rounded-xl border border-red-300 bg-red-50 p-4 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200">{loadError}</div>
-          )}
+          {loadError && <div className="flash flash-error mb-4">{loadError}</div>}
           {view === "overview" && <OverviewView />}
           {view === "harnesses" && <HarnessesView />}
           {view === "policy" && <PolicyView />}
@@ -127,22 +174,22 @@ export function App() {
           {view === "try" && <TryView />}
         </main>
 
-        <aside className="hidden 2xl:block 2xl:sticky 2xl:top-[84px] 2xl:self-start">
+        <aside className="hidden 2xl:block 2xl:sticky 2xl:top-[120px] 2xl:self-start">
           <LivePlan />
         </aside>
       </div>
 
       <TaskDrawer />
 
-      <div className="fixed right-4 top-20 z-50 space-y-2" aria-live="polite">
+      <div className="fixed right-4 top-28 z-50 space-y-2" aria-live="polite">
         {toasts.map((t) => (
           <div
             key={t.id}
             className={clsx(
-              "max-w-sm rounded-xl border px-4 py-3 text-sm shadow-lg",
-              t.tone === "error" && "border-red-300 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-950 dark:text-red-200",
-              t.tone === "success" && "border-emerald-300 bg-emerald-50 text-emerald-800 dark:border-emerald-800 dark:bg-emerald-950 dark:text-emerald-200",
-              t.tone === "info" && "border-slate-300 bg-white text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100",
+              "overlay flash max-w-sm text-sm",
+              t.tone === "error" && "flash-error",
+              t.tone === "success" && "flash-success",
+              t.tone === "info" && "!border-[var(--borderColor-default)] !bg-[var(--overlay-bgColor)]",
             )}
           >
             {t.message}

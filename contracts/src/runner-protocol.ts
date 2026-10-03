@@ -75,6 +75,9 @@ export const RunnerEventBody = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("agent.turn_completed") }).strict(),
   z.object({ kind: z.literal("tool.started"), tool: z.string().max(100) }).strict(),
   z.object({ kind: z.literal("tool.completed"), tool: z.string().max(100), ok: z.boolean() }).strict(),
+  z.object({ kind: z.literal("subagent.started"), agent: z.string().max(100) }).strict(),
+  z.object({ kind: z.literal("subagent.completed"), agent: z.string().max(100), ok: z.boolean() }).strict(),
+  z.object({ kind: z.literal("skill.used"), skill: z.string().max(100) }).strict(),
   z.object({ kind: z.literal("progress"), message: z.string().max(500) }).strict(),
 ]);
 export type RunnerEventBody = z.infer<typeof RunnerEventBody>;

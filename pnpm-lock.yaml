@@ -49,6 +49,12 @@ importers:
         specifier: ^4.1.0
         version: 4.6.5
     devDependencies:
+      '@primer/octicons-react':
+        specifier: ^19.38.0
+        version: 19.38.0(react@19.3.0)
+      '@primer/primitives':
+        specifier: ^11.10.0
+        version: 11.10.0
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.4
@@ -67,9 +73,6 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
-      lucide-react:
-        specifier: ^1.45.0
-        version: 1.48.0(react@19.3.0)
       postcss:
         specifier: ^8.5.0
         version: 8.5.28
@@ -738,6 +741,14 @@ packages:
 
   '@pinojs/redact@0.4.0':
     resolution: {integrity: sha1-w94GDdEmQNzIOFFqoqaAPMey6dY=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@pinojs/redact/-/redact-0.4.0.tgz}
+
+  '@primer/octicons-react@19.38.0':
+    resolution: {integrity: sha512-ZzWVrX6kluBaCepsDj/jAxagBOMaRX18LEf723IKpr4E/jdkTdCOtlsN+60Oj7IV9YEVrlUpo9Oky0Tn1heSCA==, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@primer/octicons-react/-/octicons-react-19.38.0.tgz}
+    peerDependencies:
+      react: '>=16.3'
+
+  '@primer/primitives@11.10.0':
+    resolution: {integrity: sha1-r/yDrgIingXbxZnZkDZD87CNw70=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@primer/primitives/-/primitives-11.10.0.tgz}
 
   '@rolldown/binding-android-arm-eabi@1.2.11':
     resolution: {integrity: sha512-A5kXfGKvKWWZE0TtPrfsvT+q4Y5d1QG8gGUzpYjGydM+fARM9MuX90PrXYXe0XbsDVgyxxNzHo6giCj90bsFNw==, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@rolldown/binding-android-arm-eabi/-/binding-android-arm-eabi-1.2.11.tgz}
@@ -1533,11 +1544,6 @@ packages:
 
   lodash.once@4.1.1:
     resolution: {integrity: sha1-DdOXEhPHxW34gJd9UEyI+0cal6w=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/lodash.once/-/lodash.once-4.1.1.tgz}
-
-  lucide-react@1.48.0:
-    resolution: {integrity: sha512-R0CIKY/fXiC6y9xRBADgsK+VW2p/pcTJOMhLZf1T+uG+vJUvyUR02nGOgmIIC7MPkiNK4Ox8QDnbqF8rJYWPZQ==, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/lucide-react/-/lucide-react-1.48.0.tgz}
-    peerDependencies:
-      react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
 
   magic-string@0.30.21:
     resolution: {integrity: sha1-VnY+wJoPqAkd8nh5/ZTRkHjADZE=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/magic-string/-/magic-string-0.30.21.tgz}
@@ -2467,6 +2473,12 @@ snapshots:
 
   '@pinojs/redact@0.4.0': {}
 
+  '@primer/octicons-react@19.38.0(react@19.3.0)':
+    dependencies:
+      react: 19.3.0
+
+  '@primer/primitives@11.10.0': {}
+
   '@rolldown/binding-android-arm-eabi@1.2.11':
     optional: true
 
@@ -3264,10 +3276,6 @@ snapshots:
   lodash.isstring@4.0.1: {}
 
   lodash.once@4.1.1: {}
-
-  lucide-react@1.48.0(react@19.3.0):
-    dependencies:
-      react: 19.3.0
 
   magic-string@0.30.21:
     dependencies:

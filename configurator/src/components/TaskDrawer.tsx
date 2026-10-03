@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { ChevronDown, ChevronUp, Square, TerminalSquare } from "lucide-react";
+import { ChevronDown, ChevronUp, Square, TerminalSquare } from "./icons";
 import { useEffect, useRef, useState } from "react";
 import type { TaskInfo, TaskLine } from "../../server/types";
 import { api } from "../api";
@@ -94,14 +94,14 @@ export function TaskDrawer() {
                 className={clsx(
                   "btn btn-sm",
                   task.id === current.id
-                    ? "border-brand-300 bg-brand-50 text-brand-700 dark:border-brand-700 dark:bg-brand-700/20 dark:text-brand-200"
+                    ? "border-[var(--borderColor-accent-emphasis)] bg-[var(--bgColor-accent-muted)]"
                     : "border-slate-200 dark:border-slate-700",
                 )}
               >
                 <span className={clsx("h-2 w-2 rounded-full", {
-                  "bg-amber-500": task.status === "running",
-                  "bg-emerald-500": task.status === "succeeded",
-                  "bg-red-500": task.status === "failed",
+                  "bg-[var(--bgColor-attention-emphasis)]": task.status === "running",
+                  "bg-[var(--bgColor-success-emphasis)]": task.status === "succeeded",
+                  "bg-[var(--bgColor-danger-emphasis)]": task.status === "failed",
                   "bg-slate-400": task.status === "cancelled",
                 })} />
                 {task.title}

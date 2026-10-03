@@ -15,5 +15,6 @@
     "processIsolation": "uid",
     "egress": "gateway-only"
   },
-  "acknowledgedGaps": ["egress-not-enforced"]
+  "acknowledgedGaps": ["egress-not-enforced"],
+  "maxReasoningEffort": "high"
 }

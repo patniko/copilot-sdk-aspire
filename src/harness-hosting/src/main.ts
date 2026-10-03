@@ -66,7 +66,7 @@ write({
   type: "hello",
   protocol: RUNNER_PROTOCOL_VERSION,
   runner: { name: "copilot-ts-reference-runner", version: "0.1.0", language: "typescript", sdkVersion },
-  capabilities: ["cancel", "structured-result"],
+  capabilities: ["cancel", "structured-result", "prompt-sections", "model-options", "custom-agents", "skills"],
 });
 
 const cancel = new AbortController();

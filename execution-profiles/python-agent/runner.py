@@ -28,6 +28,8 @@ RESULT_CONTRACT = (
     "\n\n## Result contract\nWhen you have finished, call the `submit_result` tool exactly once with the "
     "complete final result. The arguments must satisfy the tool's JSON schema."
 )
+# Built-in SDK agents stay unreachable; only the harness's own sub-agents can be delegated to.
+BUILTIN_AGENTS = ["explore", "task", "general-purpose", "code-review", "research", "rubber-duck", "security-review", "rem-agent"]
 
 _terminal = False
 
@@ -134,6 +136,76 @@ def bind_tools(requests: list[dict[str, Any]], workspace: str) -> list[Tool]:
     return tools
 
 
+def write_skills(skills: list[dict[str, Any]], directory: str) -> None:
+    """Materializes harness skills as <directory>/<name>/SKILL.md for the SDK skill loader."""
+    for skill in skills:
+        folder = os.path.join(directory, skill["name"])
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "SKILL.md"), "w", encoding="utf-8") as handle:
+            handle.write(
+                f"---\nname: {skill['name']}\ndescription: {json.dumps(skill['description'])}\n---\n\n"
+                f"{skill['content'].strip()}\n"
+            )
+
+
+def session_options(definition: dict[str, Any], tool_names: list[str], skills_directory: str) -> dict[str, Any]:
+    """Maps a harness definition to Python SDK session options (mirrors session-config.ts)."""
+    content = definition["instructions"] + RESULT_CONTRACT
+    prompt = definition.get("prompt") or {"mode": "replace"}
+    if prompt["mode"] == "customize":
+        sections = {
+            s["name"]: {"action": "remove"} if s["action"] == "remove" else {"action": s["action"], "content": s["content"]}
+            for s in prompt.get("sections", [])
+        }
+        system_message: dict[str, Any] = {"mode": "customize", "content": content, "sections": sections}
+    else:
+        system_message = {"mode": prompt["mode"], "content": content}
+
+    agents = definition.get("agents") or []
+    skills = definition.get("skills") or []
+    available = [f"custom:{name}" for name in tool_names]
+    if agents:
+        available.append("builtin:task")
+    if skills:
+        available.append("builtin:skill")
+    options: dict[str, Any] = {
+        "system_message": system_message,
+        "available_tools": available,
+        "excluded_builtin_agents": list(BUILTIN_AGENTS),
+    }
+    model = definition["model"]
+    if model.get("reasoningEffort"):
+        options["reasoning_effort"] = model["reasoningEffort"]
+    if model.get("contextTier"):
+        options["context_tier"] = model["contextTier"]
+    if agents:
+        custom_agents = []
+        for agent in agents:
+            config: dict[str, Any] = {
+                "name": agent["name"],
+                "display_name": agent.get("displayName") or agent["name"],
+                "description": agent["description"],
+                "prompt": agent["instructions"],
+                "tools": list(agent["tools"]),
+                "infer": True,
+            }
+            if agent.get("skills"):
+                config["skills"] = list(agent["skills"])
+            if agent.get("model"):
+                config["model"] = agent["model"]
+            if agent.get("reasoningEffort"):
+                config["reasoning_effort"] = agent["reasoningEffort"]
+            custom_agents.append(config)
+        options["custom_agents"] = custom_agents
+        delegated = [t["name"] for t in definition["tools"] if t.get("delegatedOnly")]
+        if delegated:
+            options["default_agent"] = {"excluded_tools": delegated}
+    if skills:
+        options["enable_skills"] = True
+        options["skill_directories"] = [skills_directory]
+    return options
+
+
 async def run(start: dict[str, Any], cancelled: asyncio.Event) -> None:
     definition = start["harness"]["definition"]
     if errors := list(Draft202012Validator(definition["input"]["schema"]).iter_errors(start["input"])):
@@ -143,6 +215,8 @@ async def run(start: dict[str, Any], cancelled: asyncio.Event) -> None:
     workspace = start["workspace"]
     files = os.path.join(workspace, "files")
     os.makedirs(files, exist_ok=True)
+    skills_directory = os.path.join(workspace, "skills")
+    write_skills(definition.get("skills") or [], skills_directory)
     try:
         tools = bind_tools(definition["tools"], files)
     except LookupError as error:
@@ -186,6 +260,12 @@ async def run(start: dict[str, Any], cancelled: asyncio.Event) -> None:
         elif kind == "tool.execution_complete":
             name = tool_names.get(evt.data.tool_call_id, "unknown")
             event({"kind": "tool.completed", "tool": name[:100], "ok": bool(evt.data.success)})
+        elif kind == "subagent.started":
+            event({"kind": "subagent.started", "agent": str(evt.data.agent_name)[:100]})
+        elif kind in ("subagent.completed", "subagent.failed"):
+            event({"kind": "subagent.completed", "agent": str(evt.data.agent_name)[:100], "ok": kind == "subagent.completed"})
+        elif kind == "skill.invoked":
+            event({"kind": "skill.used", "skill": str(evt.data.name)[:100]})
         elif kind == "session.error":
             last_error["status"] = getattr(evt.data, "status_code", None)
 
@@ -208,12 +288,11 @@ async def run(start: dict[str, Any], cancelled: asyncio.Event) -> None:
                 "api_key": start["inference"]["token"],
                 "wire_api": "completions",
             },
-            system_message={"mode": "replace", "content": definition["instructions"] + RESULT_CONTRACT},
             tools=tools,
-            available_tools=[f"custom:{tool.name}" for tool in tools],
             on_permission_request=lambda _req, _inv: PermissionDecisionReject(feedback="Not permitted by the job policy."),
             enable_config_discovery=False,
             skip_custom_instructions=True,
+            **session_options(definition, [tool.name for tool in tools], skills_directory),
         )
         session.on(on_event)
         deadline = datetime.fromisoformat(start["deadline"].replace("Z", "+00:00")).timestamp()
@@ -270,7 +349,7 @@ async def main() -> None:
                 "language": "python",
                 "sdkVersion": version("github-copilot-sdk"),
             },
-            "capabilities": ["cancel", "structured-result"],
+            "capabilities": ["cancel", "structured-result", "prompt-sections", "model-options", "custom-agents", "skills"],
         }
     )
     loop = asyncio.get_running_loop()

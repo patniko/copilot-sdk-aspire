@@ -6,6 +6,9 @@ import {
   ExecutionProfile,
   HarnessDefinition,
   type HarnessSnapshot,
+  parseSkillMarkdown,
+  type SkillDefinition,
+  SLUG,
 } from "@copilot-agent/contracts";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
@@ -47,7 +50,8 @@ export function createAjv(): Ajv2020 {
 
 /**
  * Loads file-published harnesses. On disk, `harness.json` matches the harness contract except
- * that `instructionsFile` (relative to the harness directory) replaces `instructions`.
+ * that `instructionsFile` (relative to the harness directory) replaces `instructions`, and
+ * `skills` lists folder names under `skills/` whose SKILL.md files are inlined into the snapshot.
  */
 export async function loadHarnesses(root = configRoot()): Promise<Map<string, HarnessSnapshot[]>> {
   const directory = join(root, "harnesses");
@@ -59,12 +63,13 @@ export async function loadHarnesses(root = configRoot()): Promise<Map<string, Ha
     }
     const harnessDir = join(directory, entry.name);
     const manifest = JSON.parse(await readFile(join(harnessDir, "harness.json"), "utf8")) as Record<string, unknown>;
-    const { instructionsFile, ...rest } = manifest;
+    const { instructionsFile, skills: skillNames, ...rest } = manifest;
     if (typeof instructionsFile !== "string" || instructionsFile.includes("..")) {
       throw new ConfigError(`Harness '${entry.name}' must declare a relative instructionsFile.`);
     }
     const instructions = await readFile(join(harnessDir, instructionsFile), "utf8");
-    const parsed = HarnessDefinition.safeParse({ ...rest, instructions });
+    const skills = skillNames === undefined ? undefined : await loadSkills(harnessDir, entry.name, skillNames);
+    const parsed = HarnessDefinition.safeParse({ ...rest, instructions, ...(skills?.length ? { skills } : {}) });
     if (!parsed.success) {
       throw new ConfigError(`Harness '${entry.name}' is invalid: ${parsed.error.message}`);
     }
@@ -89,6 +94,31 @@ export async function loadHarnesses(root = configRoot()): Promise<Map<string, Ha
     registry.set(definition.name, versions);
   }
   return registry;
+}
+
+/** Reads `skills/<name>/SKILL.md` for each skill named in harness.json. */
+async function loadSkills(harnessDir: string, harness: string, names: unknown): Promise<SkillDefinition[]> {
+  if (!Array.isArray(names) || names.some((n) => typeof n !== "string" || !SLUG.test(n))) {
+    throw new ConfigError(`Harness '${harness}' skills must be a list of skill folder names.`);
+  }
+  const skills: SkillDefinition[] = [];
+  for (const name of names as string[]) {
+    let text: string;
+    try {
+      text = await readFile(join(harnessDir, "skills", name, "SKILL.md"), "utf8");
+    } catch {
+      throw new ConfigError(`Harness '${harness}' skill '${name}' is missing skills/${name}/SKILL.md.`);
+    }
+    const parsed = parseSkillMarkdown(text);
+    if (parsed.name !== undefined && parsed.name !== name) {
+      throw new ConfigError(`Harness '${harness}' skill '${name}' declares a different name ('${parsed.name}').`);
+    }
+    if (!parsed.description) {
+      throw new ConfigError(`Harness '${harness}' skill '${name}' needs a description in its frontmatter.`);
+    }
+    skills.push({ name, description: parsed.description, content: parsed.content });
+  }
+  return skills;
 }
 
 export async function loadProfiles(root = configRoot()): Promise<Map<string, ExecutionProfile>> {

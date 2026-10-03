@@ -1,11 +1,14 @@
+import { execFile } from "node:child_process";
 import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../server/app.js";
 
 const repoRoot = join(import.meta.dirname, "..", "..");
+const run = promisify(execFile);
 const token = "test-token-0123456789abcdef";
 const port = 4999;
 let root: string;
@@ -18,6 +21,11 @@ beforeAll(async () => {
   for (const dir of ["harnesses", "policy", "execution-profiles"]) {
     await cp(join(repoRoot, dir), join(root, dir), { recursive: true });
   }
+  await run("git", ["init"], { cwd: root });
+  await run("git", ["config", "user.email", "tests@example.com"], { cwd: root });
+  await run("git", ["config", "user.name", "Configurator Tests"], { cwd: root });
+  await run("git", ["add", "harnesses", "policy", "execution-profiles"], { cwd: root });
+  await run("git", ["commit", "-m", "Initial test configuration"], { cwd: root });
   app = await buildApp({ root, token, port });
 });
 
@@ -121,11 +129,131 @@ describe("harness lifecycle", () => {
     expect(await readFile(join(root, "harnesses", "test-harness", "instructions.md"), "utf8")).toBe("Answer briefly.\n");
   });
 
+  it("round-trips skills and removes deleted skill folders", async () => {
+    const detail = (await app.inject({ method: "GET", url: "/api/harnesses/test-harness", headers: headers() })).json();
+    detail.document.manifest.skills = ["stale-skill"];
+    detail.document.skills = [{ name: "writing-checklist", description: "Checklist.", content: "# Checklist\n\n- Be clear." }];
+    const saved = await app.inject({ method: "PUT", url: "/api/harnesses/test-harness", headers: headers(), payload: { document: detail.document } });
+    expect(saved.statusCode).toBe(200);
+    const manifest = JSON.parse(await readFile(join(root, "harnesses", "test-harness", "harness.json"), "utf8"));
+    expect(manifest.skills).toEqual(["writing-checklist"]);
+    expect(await readFile(join(root, "harnesses", "test-harness", "skills", "writing-checklist", "SKILL.md"), "utf8")).toContain(
+      "name: writing-checklist",
+    );
+    const reread = (await app.inject({ method: "GET", url: "/api/harnesses/test-harness", headers: headers() })).json();
+    expect(reread.document.skills).toEqual([
+      { name: "writing-checklist", description: "Checklist.", content: "# Checklist\n\n- Be clear." },
+    ]);
+
+    reread.document.skills = [];
+    const removed = await app.inject({ method: "PUT", url: "/api/harnesses/test-harness", headers: headers(), payload: { document: reread.document } });
+    expect(removed.statusCode).toBe(200);
+    const withoutSkill = JSON.parse(await readFile(join(root, "harnesses", "test-harness", "harness.json"), "utf8"));
+    expect(withoutSkill.skills).toBeUndefined();
+    await expect(readFile(join(root, "harnesses", "test-harness", "skills", "writing-checklist", "SKILL.md"), "utf8")).rejects.toThrow();
+  });
+
+  it("exports resolved harness definitions", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/harnesses/insights-team/export", headers: headers() });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.digest).toMatch(/^sha256:/);
+    expect(body.definition.skills.map((skill: { name: string }) => skill.name)).toEqual(["insight-review"]);
+  });
+
+  it("reports changes against git HEAD", async () => {
+    const detail = (await app.inject({ method: "GET", url: "/api/harnesses/text-summarizer", headers: headers() })).json();
+    detail.document.manifest.description = "Edited summary harness.";
+    const save = await app.inject({ method: "PUT", url: "/api/harnesses/text-summarizer", headers: headers(), payload: { document: detail.document } });
+    expect(save.statusCode).toBe(200);
+    const response = await app.inject({ method: "GET", url: "/api/harnesses/text-summarizer/changes", headers: headers() });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ committed: true, changes: expect.arrayContaining([expect.objectContaining({ path: "description" })]) });
+  });
+
   it("deletes a version", async () => {
     const response = await app.inject({ method: "DELETE", url: "/api/harnesses/test-harness@1.0.1", headers: headers() });
     expect(response.statusCode).toBe(200);
     const workspace = (await app.inject({ method: "GET", url: "/api/workspace", headers: headers() })).json();
     expect(workspace.harnesses.map((h: { folder: string }) => h.folder)).not.toContain("test-harness@1.0.1");
+  });
+});
+
+describe("templates and imports", () => {
+  it("lists templates and creates a harness from a selected template", async () => {
+    const templates = await app.inject({ method: "GET", url: "/api/templates", headers: headers() });
+    expect(templates.statusCode).toBe(200);
+    expect(templates.json().templates.map((t: { id: string }) => t.id)).toEqual([
+      "structured-answer",
+      "data-analysis",
+      "skill-guided",
+      "agent-team",
+    ]);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/harnesses",
+      headers: headers(),
+      payload: { mode: "new", name: "team-template", template: "agent-team" },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json().document).toMatchObject({ manifest: { prompt: { mode: "customize" }, agents: expect.any(Array) } });
+  });
+
+  it("maps Harness Builder planner imports without writing them", async () => {
+    const plan = {
+      schemaVersion: 2,
+      name: "Legacy Insights Plan",
+      preset: "research",
+      clientMode: "cli",
+      inventory: { files: 12 },
+      prompt: {
+        mode: "customize",
+        content: "Answer the imported request.",
+        sections: [
+          { name: "identity", action: "replace", content: "You are an imported specialist." },
+          { name: "tone", action: "preserve" },
+          { name: "guidelines", action: "append", content: "" },
+        ],
+      },
+      tools: { read_file: { action: "keep" } },
+      customTools: [{ id: "sql", name: "SQL Lookup", terminal: "python sql.py" }],
+      mcpServers: [{ id: "docs", name: "Docs MCP", url: "https://example.invalid", tools: [{ name: "search", wireName: "search" }] }],
+      agents: [{ id: "analyst", name: "Analyst", description: "Looks at data.", prompt: "Review the data.", model: "unapproved-model", tools: ["read_file", "sql"] }],
+      rootExcludedTools: ["edit_file"],
+      context: { workspace: "repo", skillDirectories: ["skills"] },
+      policy: { permissionMode: "ask" },
+      model: {
+        id: "unapproved-model",
+        provider: "azure",
+        endpoint: "https://example.invalid",
+        credentialEnv: "KEY",
+        wireApi: "responses",
+        reasoningEffort: "xhigh",
+        contextTier: "long_context",
+      },
+      identity: { name: "legacy" },
+      session: { maxTurns: 4 },
+      events: { onTool: true },
+      evaluation: { rubric: "short" },
+      target: { kind: "local" },
+    };
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/import/planner",
+      headers: headers(),
+      payload: { plan, name: "imported-plan" },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.document.manifest.name).toBe("imported-plan");
+    expect(body.report.needsWork.join("\n")).toContain("Model 'unapproved-model' is not approved");
+    expect(body.report.needsWork.join("\n")).toContain("Custom tool 'SQL Lookup'");
+    expect(body.report.needsWork.join("\n")).toContain("Sub-agent analyst: tools read_file, sql need harness tool bindings.");
+    expect(body.report.notApplicable.join("\n")).toContain("preserve is the default");
+    expect(body.report.notApplicable.join("\n")).toContain("inference gateway");
+    expect(body.issues.filter((issue: { level: string }) => issue.level === "error")).toEqual([]);
+    await expect(readFile(join(root, "harnesses", "imported-plan", "harness.json"), "utf8")).rejects.toThrow();
   });
 });
 

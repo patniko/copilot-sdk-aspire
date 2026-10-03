@@ -1,63 +1,30 @@
 import clsx from "clsx";
-import { Copy, GitCommitHorizontal, Plus, RotateCcw, Save, Trash2, Wrench } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { HarnessDetail, HarnessDocument, HarnessManifest, Issue } from "../../server/types";
+import type { HarnessDetail, HarnessDocument, HarnessExport, Issue } from "../../server/types";
 import { api, errorMessage } from "../api";
-import { Badge, Card, ChipsInput, Empty, Field, IssueList, JsonEditor, Modal, NumberInput, PageHeader, Spinner, Toggle } from "../components/ui";
+import { Boxes, Copilot, Copy, Download, GitCommitHorizontal, Plus, RotateCcw, Save, Trash2 } from "../components/icons";
+import { Badge, Card, Counter, Empty, Flash, IssueList, PageHeader, Spinner } from "../components/ui";
+import { clearDraft, readDraft, useDraftAutosave, useHistory, useRegisterEditorActions, type Draft } from "../history";
 import { useApp, useDebounced } from "../state";
-
-type Tab = "overview" | "instructions" | "model" | "tools" | "input" | "output" | "limits" | "agents";
-const TABS: Array<{ id: Tab; label: string }> = [
-  { id: "overview", label: "Overview" },
-  { id: "instructions", label: "Instructions" },
-  { id: "model", label: "Model" },
-  { id: "tools", label: "Tools" },
-  { id: "input", label: "Input" },
-  { id: "output", label: "Output" },
-  { id: "limits", label: "Limits & retry" },
-  { id: "agents", label: "Agents" },
-];
-
-function tabFor(path: string): Tab {
-  const head = path.split(".")[0];
-  switch (head) {
-    case "instructions":
-    case "instructionsFile":
-      return "instructions";
-    case "model":
-      return "model";
-    case "tools":
-      return "tools";
-    case "input":
-      return "input";
-    case "output":
-      return "output";
-    case "limits":
-    case "retry":
-      return "limits";
-    case "runners":
-      return "agents";
-    default:
-      return "overview";
-  }
-}
-
-function bump(version: string): string {
-  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
-  return m ? `${m[1]}.${m[2]}.${Number(m[3]) + 1}` : "1.0.0";
-}
+import { bump, ChangesPanel, HarnessDialog, ImportDialog } from "./harness/dialogs";
+import { HarnessTab, tabFor, TABS, type Tab, type Update } from "./harness/tabs";
+import { UploadIcon } from "@primer/octicons-react";
 
 export function HarnessesView() {
-  const { workspace, selectedHarness, setSelectedHarness, refreshWorkspace, toast, local, runTask } = useApp();
-  const [detail, setDetail] = useState<HarnessDetail>();
-  const [draft, setDraft] = useState<HarnessDocument>();
-  const [validation, setValidation] = useState<Pick<HarnessDetail, "issues" | "effective" | "digest">>();
+  const { workspace, selectedHarness, setSelectedHarness, refreshWorkspace, toast, local, runTask, setEditorDetail } = useApp();
+  const [saved, setSaved] = useState<HarnessDetail>();
+  const history = useHistory<HarnessDocument | undefined>(undefined);
+  const draft = history.value;
+  const [validation, setValidation] = useState<HarnessDetail>();
   const [tab, setTab] = useState<Tab>("overview");
   const [saving, setSaving] = useState(false);
-  const [dialog, setDialog] = useState<"new" | "version" | "duplicate" | "delete">();
+  const [dialog, setDialog] = useState<"new" | "version" | "duplicate" | "delete" | "import">();
+  const [pendingDraft, setPendingDraft] = useState<Draft<HarnessDocument> & { stale: boolean }>();
+  const [savedAt, setSavedAt] = useState(0);
 
   const harnesses = workspace?.harnesses ?? [];
   const folder = selectedHarness && harnesses.some((h) => h.folder === selectedHarness) ? selectedHarness : harnesses[0]?.folder;
+  const baseline = useMemo(() => (saved ? JSON.stringify(saved.document) : undefined), [saved]);
 
   const latestRequest = useRef<string | undefined>(undefined);
   const load = useCallback(
@@ -67,13 +34,22 @@ export function HarnessesView() {
         const result = await api<HarnessDetail>(`/api/harnesses/${encodeURIComponent(target)}`);
         // Ignore responses for a harness the user has already navigated away from.
         if (latestRequest.current !== target) return;
-        setDetail(result);
-        setDraft(structuredClone(result.document));
+        setSaved(result);
+        history.reset(structuredClone(result.document));
         setValidation(result);
+        const stored = readDraft<HarnessDocument>(target);
+        const current = JSON.stringify(result.document);
+        if (stored && JSON.stringify(stored.value) !== current) {
+          setPendingDraft({ ...stored, stale: stored.baseline !== current });
+        } else {
+          if (stored) clearDraft(target);
+          setPendingDraft(undefined);
+        }
       } catch (error) {
         toast(errorMessage(error), "error");
       }
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [toast],
   );
 
@@ -81,8 +57,10 @@ export function HarnessesView() {
     if (folder) void load(folder);
   }, [folder, load]);
 
-  const dirty = useMemo(() => !!detail && !!draft && JSON.stringify(detail.document) !== JSON.stringify(draft), [detail, draft]);
-  const debounced = useDebounced(draft, 500);
+  const dirty = !!baseline && !!draft && JSON.stringify(draft) !== baseline;
+  useDraftAutosave(folder, draft, baseline, !pendingDraft);
+
+  const debounced = useDebounced(draft, 400);
   useEffect(() => {
     if (!debounced || !dirty) return;
     let cancelled = false;
@@ -93,36 +71,92 @@ export function HarnessesView() {
       cancelled = true;
     };
   }, [debounced, dirty]);
+  useEffect(() => {
+    if (!dirty && saved) setValidation(saved);
+  }, [dirty, saved]);
 
-  const update = (mutate: (m: HarnessManifest) => void) =>
-    setDraft((current) => {
-      if (!current) return current;
-      const next = structuredClone(current);
-      mutate(next.manifest);
-      return next;
-    });
+  useEffect(() => {
+    setEditorDetail(validation && draft ? { ...validation, document: draft } : undefined);
+  }, [validation, draft, setEditorDetail]);
+  useEffect(() => () => setEditorDetail(undefined), [setEditorDetail]);
+
+  const update: Update = useCallback(
+    (mutate, key) =>
+      history.set((current) => {
+        if (!current) return current;
+        const next = structuredClone(current);
+        mutate(next);
+        return next;
+      }, key),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [history.set],
+  );
 
   const issues = validation?.issues ?? [];
   const errors = issues.filter((i) => i.level === "error");
   const issuesFor = (t: Tab) => issues.filter((i) => tabFor(i.path) === t);
 
-  async function save(reload: boolean) {
+  const save = useCallback(
+    async (reload: boolean) => {
+      if (!draft) return;
+      if (errors.length > 0) {
+        toast(`Fix ${errors.length} error(s) before saving.`, "error");
+        setTab(tabFor(errors[0]!.path));
+        return;
+      }
+      setSaving(true);
+      try {
+        const result = await api<HarnessDetail>(`/api/harnesses/${encodeURIComponent(draft.folder)}`, { method: "PUT", body: { document: draft } });
+        setSaved(result);
+        history.reset(structuredClone(result.document));
+        setValidation(result);
+        clearDraft(draft.folder);
+        setSavedAt(Date.now());
+        await refreshWorkspace();
+        toast(`Saved harnesses/${draft.folder}`, "success");
+        if (reload && local?.running) await runTask("local-restart-api");
+      } catch (error) {
+        toast(errorMessage(error), "error");
+      } finally {
+        setSaving(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [draft, errors.length, local?.running, refreshWorkspace, runTask, toast],
+  );
+
+  const exportJson = useCallback(async () => {
     if (!draft) return;
-    setSaving(true);
     try {
-      const result = await api<HarnessDetail>(`/api/harnesses/${encodeURIComponent(draft.folder)}`, { method: "PUT", body: { document: draft } });
-      setDetail(result);
-      setDraft(structuredClone(result.document));
-      setValidation(result);
-      await refreshWorkspace();
-      toast(`Saved harnesses/${draft.folder}`, "success");
-      if (reload && local?.running) await runTask("local-restart-api");
+      const result = await api<HarnessExport>(`/api/harnesses/${encodeURIComponent(draft.folder)}/export`);
+      const blob = new Blob([`${JSON.stringify(result.definition, null, 2)}\n`], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${draft.manifest.name}-${draft.manifest.version}.harness.json`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast(dirty ? "Exported the saved version (unsaved edits are not included)." : `Exported ${result.digest.slice(0, 19)}…`, dirty ? "info" : "success");
     } catch (error) {
       toast(errorMessage(error), "error");
-    } finally {
-      setSaving(false);
     }
-  }
+  }, [draft, dirty, toast]);
+
+  useRegisterEditorActions(
+    draft
+      ? {
+          label: `${draft.manifest.name} ${draft.manifest.version}`,
+          canUndo: history.canUndo,
+          canRedo: history.canRedo,
+          undo: history.undo,
+          redo: history.redo,
+          dirty,
+          saving,
+          save: () => void save(false),
+          exportJson: () => void exportJson(),
+        }
+      : undefined,
+  );
 
   const groups = useMemo(() => {
     const map = new Map<string, typeof harnesses>();
@@ -130,38 +164,43 @@ export function HarnessesView() {
     return [...map.entries()];
   }, [harnesses]);
 
+  const select = (next: string) => {
+    if (next === folder) return;
+    // Unsaved edits stay in the browser draft for this folder and are offered on return.
+    setSelectedHarness(next);
+    setTab("overview");
+  };
+
   return (
     <div>
       <PageHeader
         title="Harnesses"
-        description="A harness is a versioned agent definition: instructions, model, tools, and the input and output contract. Each version lives in its own folder under harnesses/ and is published when you deploy."
+        leading={<Boxes size={24} className="fg-muted" />}
+        description="A harness is a versioned agent definition: prompt, model, tools, sub-agents, skills and the input and output contract. Each version lives in its own folder under harnesses/ and is published when you deploy."
         actions={
-          <button type="button" className="btn-primary" onClick={() => setDialog("new")}>
-            <Plus className="h-4 w-4" /> New harness
-          </button>
+          <>
+            <button type="button" className="btn-secondary" onClick={() => setDialog("import")}>
+              <UploadIcon size={16} /> Import plan
+            </button>
+            <button type="button" className="btn-primary" onClick={() => setDialog("new")}>
+              <Plus /> New harness
+            </button>
+          </>
         }
       />
-      <div className="grid gap-6 xl:grid-cols-[260px_minmax(0,1fr)]">
-        <div className="space-y-3">
+      <div className="grid gap-6 xl:grid-cols-[240px_minmax(0,1fr)]">
+        <nav aria-label="Harness versions" className="space-y-4 xl:sticky xl:top-[120px] xl:self-start">
           {groups.length === 0 && <Empty>No harnesses yet.</Empty>}
           {groups.map(([name, versions]) => (
-            <div key={name} className="card p-3">
-              <div className="mb-2 px-1 font-semibold">{name}</div>
-              <ul className="space-y-1">
+            <div key={name}>
+              <div className="mb-1 flex items-center gap-1.5 px-2 text-xs font-semibold fg-muted">
+                {name}
+                <Counter>{versions.length}</Counter>
+              </div>
+              <ul className="space-y-0.5 pl-2">
                 {versions.map((h) => (
                   <li key={h.folder}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (dirty && !window.confirm("Discard unsaved changes?")) return;
-                        setSelectedHarness(h.folder);
-                        setTab("overview");
-                      }}
-                      className={clsx(
-                        "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left",
-                        h.folder === folder ? "bg-brand-50 text-brand-700 dark:bg-brand-700/20 dark:text-brand-200" : "hover:bg-slate-100 dark:hover:bg-slate-800",
-                      )}
-                    >
+                    <button type="button" onClick={() => select(h.folder)} aria-current={h.folder === folder ? "page" : undefined} className="navlist-item">
                       <span className="font-mono text-xs">{h.version}</span>
                       {h.latest && <Badge tone="brand">latest</Badge>}
                       {h.untracked ? <Badge tone="blue">new</Badge> : h.modified ? <Badge tone="amber">edited</Badge> : null}
@@ -175,7 +214,7 @@ export function HarnessesView() {
               </ul>
             </div>
           ))}
-        </div>
+        </nav>
 
         {!draft || !workspace ? (
           <Card>
@@ -183,31 +222,80 @@ export function HarnessesView() {
           </Card>
         ) : (
           <div className="min-w-0 space-y-4">
-            <div className="card card-pad">
-              <div className="flex flex-wrap items-start gap-3">
+            {pendingDraft && (
+              <Flash
+                tone="warn"
+                actions={
+                  <>
+                    <button
+                      type="button"
+                      className="btn-secondary btn-sm"
+                      onClick={() => {
+                        clearDraft(draft.folder);
+                        setPendingDraft(undefined);
+                      }}
+                    >
+                      Discard
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-primary btn-sm"
+                      onClick={() => {
+                        history.set(structuredClone({ ...pendingDraft.value, folder: draft.folder }));
+                        setPendingDraft(undefined);
+                      }}
+                    >
+                      Restore draft
+                    </button>
+                  </>
+                }
+              >
+                <strong>Unsaved draft from {new Date(pendingDraft.savedAt).toLocaleString()}.</strong>{" "}
+                {pendingDraft.stale
+                  ? "The files on disk changed after this draft was saved; restoring replaces those changes when you save."
+                  : "Restore it to keep editing, or discard it."}
+              </Flash>
+            )}
+
+            <div className="card">
+              <div className="flex flex-wrap items-start gap-3 p-4 pb-0">
                 <div className="min-w-0">
-                  <h2 className="text-xl">
-                    {draft.manifest.name} <span className="font-mono text-base text-slate-500">{draft.manifest.version}</span>
+                  <h2 className="flex flex-wrap items-center gap-2 text-xl font-semibold">
+                    {(draft.manifest.agents?.length ?? 0) > 0 && <Copilot className="fg-done" size={20} />}
+                    {draft.manifest.name}
+                    <span className="font-mono text-base font-normal fg-muted">{draft.manifest.version}</span>
+                    {dirty ? <Badge tone="amber">unsaved</Badge> : <Badge tone="green">saved</Badge>}
                   </h2>
-                  <p className="mt-0.5 font-mono text-xs text-slate-500">
-                    harnesses/{draft.folder} · {validation?.digest ? validation.digest.slice(0, 19) + "…" : "digest unavailable"}
+                  <p className="mt-0.5 font-mono text-xs fg-muted">
+                    harnesses/{draft.folder} · {validation?.digest ? `${validation.digest.slice(0, 19)}…` : "digest unavailable"}
                   </p>
                 </div>
                 <div className="ml-auto flex flex-wrap gap-2">
-                  <button type="button" className="btn-secondary" onClick={() => setDialog("version")} disabled={dirty} title="Copy this version as a new version">
-                    <GitCommitHorizontal className="h-4 w-4" /> New version
+                  <button type="button" className="btn-secondary btn-sm" onClick={() => void exportJson()} title="Download the resolved definition the API loads">
+                    <Download /> Export JSON
                   </button>
-                  <button type="button" className="btn-secondary" onClick={() => setDialog("duplicate")} disabled={dirty}>
-                    <Copy className="h-4 w-4" /> Duplicate
+                  <button type="button" className="btn-secondary btn-sm" onClick={() => setDialog("version")} disabled={dirty} title="Copy this version as a new version">
+                    <GitCommitHorizontal /> New version
                   </button>
-                  <button type="button" className="btn-danger" aria-label="Delete version" onClick={() => setDialog("delete")}>
-                    <Trash2 className="h-4 w-4" />
+                  <button type="button" className="btn-secondary btn-sm" onClick={() => setDialog("duplicate")} disabled={dirty}>
+                    <Copy /> Duplicate
+                  </button>
+                  <button type="button" className="btn-danger btn-sm btn-icon" aria-label="Delete version" onClick={() => setDialog("delete")}>
+                    <Trash2 />
                   </button>
                 </div>
               </div>
-              <div className="mt-4 flex overflow-x-auto border-b border-slate-200 dark:border-slate-800" role="tablist">
+              <div className="tabs mt-2 px-4" role="tablist">
                 {TABS.map((t) => {
                   const tabIssues = issuesFor(t.id);
+                  const count =
+                    t.id === "tools"
+                      ? draft.manifest.tools.length
+                      : t.id === "agents"
+                        ? draft.manifest.agents?.length ?? 0
+                        : t.id === "skills"
+                          ? draft.skills.length
+                          : undefined;
                   return (
                     <button
                       key={t.id}
@@ -218,39 +306,49 @@ export function HarnessesView() {
                       onClick={() => setTab(t.id)}
                     >
                       {t.label}
+                      {count !== undefined && <Counter>{count}</Counter>}
                       {tabIssues.length > 0 && (
-                        <span className={clsx("ml-1.5 inline-block h-2 w-2 rounded-full", tabIssues.some((i) => i.level === "error") ? "bg-red-500" : "bg-amber-500")} />
+                        <span
+                          aria-label={`${tabIssues.length} issue(s)`}
+                          className={clsx(
+                            "inline-block h-2 w-2 rounded-full",
+                            tabIssues.some((i) => i.level === "error") ? "bg-[var(--bgColor-danger-emphasis)]" : "bg-[var(--bgColor-attention-emphasis)]",
+                          )}
+                        />
                       )}
                     </button>
                   );
                 })}
               </div>
-              <div className="pt-5">
-                <HarnessTab tab={tab} draft={draft} setDraft={setDraft} update={update} issues={issuesFor(tab)} effective={validation?.effective} />
+              <div className="p-4">
+                <HarnessTab tab={tab} draft={draft} update={update} issues={issuesFor(tab)} effective={validation?.effective} detail={validation} />
               </div>
             </div>
 
-            <Card
-              title={
-                <span className="flex items-center gap-2">
-                  Validation {errors.length > 0 ? <Badge tone="red">{errors.length} error(s)</Badge> : <Badge tone="green">ready</Badge>}
-                </span>
-              }
-              subtitle="Checked with the same contracts and policy the API uses at load and admission time."
-            >
-              <IssueList
-                issues={issues}
-                empty="This harness is valid against the current policy and execution profiles."
-                onSelect={(i: Issue) => setTab(tabFor(i.path))}
-                onFix={() => update((m) => void (m.version = bump(m.version)))}
-              />
-            </Card>
+            <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,340px)]">
+              <Card
+                title={
+                  <span className="flex items-center gap-2">
+                    Validation {errors.length > 0 ? <Badge tone="red">{errors.length} error(s)</Badge> : <Badge tone="green">ready</Badge>}
+                  </span>
+                }
+                subtitle="Checked with the same contracts and policy the API uses at load and admission time."
+              >
+                <IssueList
+                  issues={issues}
+                  empty="This harness is valid against the current policy and execution profiles."
+                  onSelect={(i: Issue) => setTab(tabFor(i.path))}
+                  onFix={() => update((d) => void (d.manifest.version = bump(d.manifest.version)))}
+                />
+              </Card>
+              <ChangesPanel folder={draft.folder} refreshKey={`${draft.folder}:${savedAt}`} />
+            </div>
 
-            <div className="sticky bottom-14 z-20 flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-white/95 p-3 shadow-lg backdrop-blur dark:border-slate-800 dark:bg-slate-900/95">
-              <span className="text-sm text-slate-500">{dirty ? "Unsaved changes" : "Saved"}</span>
+            <div className="sticky bottom-14 z-20 flex flex-wrap items-center gap-2 rounded-md border border-default bg-[var(--overlay-bgColor)] p-3 shadow-[var(--shadow-floating-small)]">
+              <span className="text-sm fg-muted">{dirty ? "Unsaved changes · draft kept in this browser" : "All changes saved to disk"}</span>
               <div className="ml-auto flex gap-2">
-                <button type="button" className="btn-ghost" disabled={!dirty} onClick={() => detail && setDraft(structuredClone(detail.document))}>
-                  <RotateCcw className="h-4 w-4" /> Revert
+                <button type="button" className="btn-secondary" disabled={!dirty} onClick={() => saved && history.set(structuredClone(saved.document))}>
+                  <RotateCcw /> Revert
                 </button>
                 {local?.running && (
                   <button type="button" className="btn-secondary" disabled={!dirty || errors.length > 0 || saving} onClick={() => void save(true)}>
@@ -258,7 +356,7 @@ export function HarnessesView() {
                   </button>
                 )}
                 <button type="button" className="btn-primary" disabled={!dirty || errors.length > 0 || saving} onClick={() => void save(false)}>
-                  {saving ? <Spinner /> : <Save className="h-4 w-4" />} Save
+                  {saving ? <Spinner /> : <Save />} Save
                 </button>
               </div>
             </div>
@@ -266,390 +364,35 @@ export function HarnessesView() {
         )}
       </div>
 
-      {dialog && (
-        <HarnessDialog
-          mode={dialog}
-          current={draft}
+      {dialog === "import" ? (
+        <ImportDialog
           onClose={() => setDialog(undefined)}
           onDone={async (next) => {
             setDialog(undefined);
             await refreshWorkspace();
-            if (next) {
-              setSelectedHarness(next);
-              await load(next);
-            } else {
-              setSelectedHarness(undefined);
-            }
+            setSelectedHarness(next);
+            await load(next);
           }}
         />
-      )}
-    </div>
-  );
-}
-
-function HarnessTab({ tab, draft, setDraft, update, issues, effective }: {
-  tab: Tab;
-  draft: HarnessDocument;
-  setDraft: (fn: (d: HarnessDocument | undefined) => HarnessDocument | undefined) => void;
-  update: (mutate: (m: HarnessManifest) => void) => void;
-  issues: Issue[];
-  effective?: HarnessDetail["effective"];
-}) {
-  const { workspace } = useApp();
-  const m = draft.manifest;
-  const policy = workspace!.policy;
-  const errorAt = (prefix: string) => issues.find((i) => i.level === "error" && i.path.startsWith(prefix))?.message;
-
-  switch (tab) {
-    case "overview":
-      return (
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Name" hint="Callers submit jobs with this name. Create a new harness to use a different name.">
-            <input className="input" value={m.name} disabled />
-          </Field>
-          <Field label="Version" hint="Bump the version whenever behaviour changes; jobs record the exact version and digest." error={errorAt("version")}>
-            <input className="input font-mono" value={m.version} onChange={(e) => update((x) => void (x.version = e.target.value))} />
-          </Field>
-          <Field label="Description" className="md:col-span-2" error={errorAt("description")}>
-            <textarea className="input" rows={3} value={m.description} onChange={(e) => update((x) => void (x.description = e.target.value))} />
-          </Field>
-          <div className="grid gap-3 rounded-xl bg-slate-50 p-4 text-xs dark:bg-slate-800/50 sm:grid-cols-4 md:col-span-2">
-            <Summary label="Model" value={effective?.model ?? "not approved"} />
-            <Summary label="Tools" value={`${m.tools.length} + submit_result`} />
-            <Summary label="Agents" value={m.runners.allowedProfiles.join(", ") || "none"} />
-            <Summary label="Deadline" value={`${effective?.maxDurationSeconds ?? "?"}s`} />
-          </div>
-        </div>
-      );
-    case "instructions":
-      return (
-        <div className="space-y-2">
-          <Field
-            label={`Instructions (${m.instructionsFile})`}
-            hint="System instructions for the agent. The runner appends the result contract (call submit_result once with a schema-valid value)."
-            error={errorAt("instructions")}
-          >
-            <textarea
-              className="input-mono"
-              rows={20}
-              value={draft.instructions}
-              onChange={(e) => {
-                const value = e.target.value;
-                setDraft((d) => (d ? { ...d, instructions: value } : d));
-              }}
-            />
-          </Field>
-          <p className="text-right text-xs text-slate-500">{draft.instructions.length.toLocaleString()} / 100,000 characters</p>
-        </div>
-      );
-    case "model":
-      return (
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Preferred model" hint="Used when the operator policy approves it." error={errorAt("model")}>
-            <input
-              className="input"
-              list="approved-models"
-              value={m.model.preferred}
-              onChange={(e) =>
-                update((x) => {
-                  x.model.preferred = e.target.value;
-                  if (e.target.value && !x.model.allowed.includes(e.target.value)) x.model.allowed = [e.target.value, ...x.model.allowed];
-                })
-              }
-            />
-            <datalist id="approved-models">
-              {policy.allowedModels.map((model) => (
-                <option key={model} value={model} />
-              ))}
-            </datalist>
-          </Field>
-          <Field label="Allowed models" hint="Fallbacks in order. Only policy-approved models can run.">
-            <ChipsInput values={m.model.allowed} onChange={(values) => update((x) => void (x.model.allowed = values))} suggestions={policy.allowedModels} />
-          </Field>
-          <div className="flex flex-wrap items-center gap-1 text-xs text-slate-500 md:col-span-2">
-            Policy-approved models:
-            {policy.allowedModels.map((model) => (
-              <Badge key={model} tone="green">
-                {model}
-              </Badge>
-            ))}
-            <span>Models are served by the inference gateway from the Foundry deployments configured for each environment.</span>
-          </div>
-        </div>
-      );
-    case "tools":
-      return <ToolsTab draft={draft} update={update} issues={issues} />;
-    case "input": {
-      const schema = m.input.schema as Record<string, unknown>;
-      const examples = Array.isArray(schema.examples) ? schema.examples : [];
-      const { examples: _examples, ...schemaWithoutExamples } = schema;
-      const exampleError = errorAt("input.schema.examples");
-      const schemaError = issues.find((i) => i.level === "error" && i.path === "input.schema")?.message;
-      return (
-        <div className="grid gap-4 xl:grid-cols-2">
-          <Field label="Input schema (JSON Schema 2020-12)" hint="Jobs whose input does not match are rejected before queuing." error={schemaError}>
-            <JsonEditor
-              rows={22}
-              value={schemaWithoutExamples}
-              onChange={(value) => update((x) => void (x.input.schema = { ...(value as object), ...(examples.length ? { examples } : {}) }))}
-            />
-          </Field>
-          <Field label="Example input" hint="Prefills Try it and the job console. Must match the schema." error={exampleError}>
-            <JsonEditor
-              rows={22}
-              value={examples[0] ?? {}}
-              onChange={(value) => update((x) => void (x.input.schema = { ...(x.input.schema as object), examples: [value, ...examples.slice(1)] }))}
-            />
-          </Field>
-        </div>
-      );
-    }
-    case "output":
-      return (
-        <Field label="Output schema (JSON Schema 2020-12)" hint="Becomes the parameters of the agent's submit_result tool, and is validated again by the executor." error={errorAt("output")}>
-          <JsonEditor rows={24} value={m.output.schema} onChange={(value) => update((x) => void (x.output.schema = value as Record<string, unknown>))} />
-        </Field>
-      );
-    case "limits":
-      return (
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field
-            label="Max duration per attempt (seconds)"
-            hint={`Effective: ${effective?.maxDurationSeconds ?? "?"}s (policy max ${policy.maxDurationSeconds}s).`}
-            error={errorAt("limits.maxDurationSeconds")}
-          >
-            <NumberInput value={m.limits.maxDurationSeconds} min={10} max={3600} onChange={(v) => update((x) => void (x.limits.maxDurationSeconds = v))} />
-          </Field>
-          <Field
-            label="Inference token budget per job"
-            hint={`Effective: ${effective?.tokenBudget?.toLocaleString() ?? "?"} (policy max ${policy.maxInferenceTokensPerJob.toLocaleString()}).`}
-            error={errorAt("limits.maxInferenceTokens")}
-          >
-            <NumberInput value={m.limits.maxInferenceTokens} min={1000} step={1000} onChange={(v) => update((x) => void (x.limits.maxInferenceTokens = v))} />
-          </Field>
-          <Field label="Max attempts" hint={`Effective: ${effective?.maxAttempts ?? "?"} (policy max ${policy.retry.maxAttempts}).`} error={errorAt("retry.maxAttempts")}>
-            <NumberInput value={m.retry.maxAttempts} min={1} max={5} onChange={(v) => update((x) => void (x.retry.maxAttempts = v))} />
-          </Field>
-          <div className="pt-6">
-            <Toggle
-              checked={m.retry.safeToRetry}
-              onChange={(checked) => update((x) => void (x.retry.safeToRetry = checked))}
-              label="Safe to retry after an uncertain outcome"
-              description="Only for read-only work. Otherwise a lost executor sends the job to needs_review instead of retrying."
-            />
-          </div>
-        </div>
-      );
-    case "agents":
-      return <AgentsTab draft={draft} update={update} issues={issues} />;
-  }
-}
-
-function Summary({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="label">{label}</div>
-      <div className="truncate font-medium" title={value}>
-        {value}
-      </div>
-    </div>
-  );
-}
-
-function ToolsTab({ draft, update, issues }: { draft: HarnessDocument; update: (mutate: (m: HarnessManifest) => void) => void; issues: Issue[] }) {
-  const { workspace } = useApp();
-  const bindings = workspace!.bindings;
-  const tools = draft.manifest.tools;
-  const add = (bindingId: string) => {
-    const binding = bindings.find((b) => b.id === bindingId);
-    if (!binding) return;
-    const base = bindingId.split(":").at(-1)!.replace(/[^a-z0-9_]/g, "_");
-    let name = `compute_${base}`;
-    for (let i = 2; tools.some((t) => t.name === name); i++) name = `compute_${base}_${i}`;
-    update((m) => void m.tools.push({ name, kind: binding.kind, description: binding.description, binding: bindingId }));
-  };
-  return (
-    <div className="space-y-4">
-      <p className="text-slate-500 dark:text-slate-400">
-        Tools are requested here and implemented by execution profiles. The agent always also gets <code>submit_result</code>. A new
-        implementation needs runner code and a binding listed in each profile (see docs/RUNNER-PROTOCOL.md).
-      </p>
-      {tools.length === 0 && <Empty>No tools. The agent can still reason and submit a result.</Empty>}
-      {tools.map((tool, index) => {
-        const error = (field: string) => issues.find((i) => i.path === `tools.${index}.${field}`)?.message;
-        return (
-          <div key={index} className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
-            <div className="grid gap-3 md:grid-cols-[1fr_1fr_auto]">
-              <Field label="Tool name" hint="What the model calls. Lowercase, digits, underscores." error={error("name")}>
-                <input className="input font-mono" value={tool.name} onChange={(e) => update((m) => void (m.tools[index]!.name = e.target.value))} />
-              </Field>
-              <Field label="Implementation" error={error("binding")}>
-                <select
-                  className="input"
-                  value={tool.binding}
-                  onChange={(e) =>
-                    update((m) => {
-                      const b = bindings.find((x) => x.id === e.target.value);
-                      m.tools[index]!.binding = e.target.value;
-                      if (b) m.tools[index]!.kind = b.kind;
-                    })
-                  }
-                >
-                  {!bindings.some((b) => b.id === tool.binding) && <option value={tool.binding}>{tool.binding} (unavailable)</option>}
-                  {bindings.map((b) => (
-                    <option key={b.id} value={b.id}>
-                      {b.id} — {b.profiles.join(", ")}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <div className="flex items-end">
-                <button type="button" className="btn-danger" aria-label="Remove tool" onClick={() => update((m) => void m.tools.splice(index, 1))}>
-                  <Trash2 className="h-4 w-4" />
-                </button>
-              </div>
-              <Field label="Description for the model" className="md:col-span-3" error={error("description")}>
-                <textarea className="input" rows={2} value={tool.description} onChange={(e) => update((m) => void (m.tools[index]!.description = e.target.value))} />
-              </Field>
-            </div>
-          </div>
-        );
-      })}
-      <div className="flex flex-wrap items-center gap-2">
-        <Wrench className="h-4 w-4 text-slate-500" />
-        <span className="text-slate-500">Add a tool:</span>
-        {bindings.map((b) => (
-          <button key={b.id} type="button" className="btn-secondary btn-sm" onClick={() => add(b.id)} title={b.description}>
-            <Plus className="h-3.5 w-3.5" /> {b.id}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function AgentsTab({ draft, update, issues }: { draft: HarnessDocument; update: (mutate: (m: HarnessManifest) => void) => void; issues: Issue[] }) {
-  const { workspace } = useApp();
-  const runners = draft.manifest.runners;
-  const needed = draft.manifest.tools.map((t) => t.binding);
-  return (
-    <div className="space-y-3">
-      <p className="text-slate-500 dark:text-slate-400">
-        Choose which agent implementations may run this harness. Callers can pick any allowed profile; the default is used otherwise.
-      </p>
-      {workspace!.profiles.map((profile) => {
-        const allowed = runners.allowedProfiles.includes(profile.id);
-        const approved = workspace!.policy.allowedProfiles.includes(profile.id);
-        const missing = needed.filter((b) => !profile.toolBindings.includes(b));
-        return (
-          <div key={profile.id} className={clsx("rounded-xl border p-4", allowed ? "border-brand-300 dark:border-brand-700" : "border-slate-200 dark:border-slate-800")}>
-            <div className="flex flex-wrap items-center gap-3">
-              <Toggle
-                checked={allowed}
-                onChange={(checked) =>
-                  update((m) => {
-                    const list = m.runners.allowedProfiles.filter((p) => p !== profile.id);
-                    m.runners.allowedProfiles = checked ? [...list, profile.id] : list;
-                    if (!m.runners.allowedProfiles.includes(m.runners.defaultProfile)) m.runners.defaultProfile = m.runners.allowedProfiles[0] ?? "";
-                  })
-                }
-                label={profile.displayName}
-                description={`${profile.id} · ${profile.language} · ${profile.sdk} ${profile.sdkVersion}`}
-              />
-              <div className="ml-auto flex flex-wrap items-center gap-2">
-                <Badge tone={profile.firstParty ? "brand" : "blue"}>{profile.firstParty ? "reference runner" : "customer runner"}</Badge>
-                <Badge tone={approved ? "green" : "amber"}>{approved ? "policy approved" : "not approved"}</Badge>
-                {missing.length > 0 && <Badge tone="red">missing {missing.join(", ")}</Badge>}
-                <label className="flex items-center gap-1.5 text-xs">
-                  <input
-                    type="radio"
-                    name="default-profile"
-                    className="accent-brand-600"
-                    disabled={!allowed}
-                    checked={runners.defaultProfile === profile.id}
-                    onChange={() => update((m) => void (m.runners.defaultProfile = profile.id))}
-                  />
-                  default
-                </label>
-              </div>
-            </div>
-          </div>
-        );
-      })}
-      <IssueList issues={issues} empty="Agent selection is valid." />
-    </div>
-  );
-}
-
-function HarnessDialog({ mode, current, onClose, onDone }: {
-  mode: "new" | "version" | "duplicate" | "delete";
-  current?: HarnessDocument;
-  onClose: () => void;
-  onDone: (folder?: string) => Promise<void>;
-}) {
-  const { toast } = useApp();
-  const [name, setName] = useState(mode === "duplicate" && current ? `${current.manifest.name}-copy` : "");
-  const [version, setVersion] = useState(mode === "version" && current ? bump(current.manifest.version) : "1.0.0");
-  const [busy, setBusy] = useState(false);
-  const titles = { new: "New harness", version: "New version", duplicate: "Duplicate harness", delete: "Delete harness version" };
-
-  async function submit() {
-    setBusy(true);
-    try {
-      if (mode === "delete") {
-        await api(`/api/harnesses/${encodeURIComponent(current!.folder)}`, { method: "DELETE" });
-        toast(`Deleted harnesses/${current!.folder}`, "success");
-        await onDone(undefined);
-        return;
-      }
-      const body =
-        mode === "new"
-          ? { mode, name }
-          : mode === "version"
-            ? { mode, name: current!.manifest.name, from: current!.folder, version }
-            : { mode, name, from: current!.folder };
-      const result = await api<HarnessDetail>("/api/harnesses", { method: "POST", body });
-      toast(`Created harnesses/${result.document.folder}`, "success");
-      await onDone(result.document.folder);
-    } catch (error) {
-      toast(errorMessage(error), "error");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Modal
-      title={titles[mode]}
-      onClose={onClose}
-      footer={
-        <>
-          <button type="button" className="btn-ghost" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="button" className={mode === "delete" ? "btn-danger" : "btn-primary"} disabled={busy} onClick={() => void submit()}>
-            {busy && <Spinner />} {mode === "delete" ? "Delete" : "Create"}
-          </button>
-        </>
-      }
-    >
-      {mode === "delete" ? (
-        <p>
-          Delete <code>harnesses/{current?.folder}</code>? Jobs that already ran keep their snapshot, but callers can no longer submit this version once
-          you deploy. Git history keeps the files.
-        </p>
-      ) : mode === "version" ? (
-        <Field label="Version" hint={`Copies ${current?.manifest.name} ${current?.manifest.version} into a new folder. The highest version becomes the default.`}>
-          <input className="input font-mono" value={version} onChange={(e) => setVersion(e.target.value)} autoFocus />
-        </Field>
       ) : (
-        <Field
-          label="Harness name"
-          hint={mode === "new" ? "Lowercase letters, digits, and hyphens. Starts from a minimal, valid template." : "Copies the current version under a new name at 1.0.0."}
-        >
-          <input className="input font-mono" value={name} onChange={(e) => setName(e.target.value.toLowerCase())} autoFocus placeholder="support-triage" />
-        </Field>
+        dialog && (
+          <HarnessDialog
+            mode={dialog}
+            current={draft}
+            onClose={() => setDialog(undefined)}
+            onDone={async (next) => {
+              setDialog(undefined);
+              await refreshWorkspace();
+              if (next) {
+                setSelectedHarness(next);
+                await load(next);
+              } else {
+                setSelectedHarness(undefined);
+              }
+            }}
+          />
+        )
       )}
-    </Modal>
+    </div>
   );
 }

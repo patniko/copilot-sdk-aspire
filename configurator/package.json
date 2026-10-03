@@ -19,13 +19,14 @@
     "zod": "^4.1.0"
   },
   "devDependencies": {
+    "@primer/octicons-react": "^19.38.0",
+    "@primer/primitives": "^11.10.0",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^6.1.0",
     "autoprefixer": "^10.6.0",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.45.0",
     "postcss": "^8.5.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

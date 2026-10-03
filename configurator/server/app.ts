@@ -1,15 +1,28 @@
 import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
+import { HarnessDefinition, parseSkillMarkdown, renderSkillMarkdown } from "@copilot-agent/contracts";
+import { canonicalJson } from "@copilot-agent/service-defaults";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z, ZodError } from "zod";
-import { bumpPatch, compareVersions, Repo, RepoError, templateHarness } from "./repo.js";
+import { mapPlannerPlan } from "./import.js";
+import { bumpPatch, compareVersions, Repo, RepoError } from "./repo.js";
 import { deployEnvironment, Settings, SettingsError } from "./settings.js";
 import { StatusService } from "./status.js";
 import { TaskConflictError, TaskRunner, type TaskStep } from "./tasks.js";
+import { createFromTemplate, listTemplates } from "./templates.js";
 import { TryError, TryService } from "./try.js";
-import type { HarnessDetail, HarnessDocument, HarnessSummary, Issue, TaskKind, TryTarget, WorkspaceInfo } from "./types.js";
-import { effectiveLimits, harnessDigest, validateHarness, validatePolicy, type ValidationContext } from "./validate.js";
+import type { HarnessChange, HarnessChanges, HarnessDetail, HarnessDocument, HarnessSummary, Issue, TaskKind, TryTarget, WorkspaceInfo } from "./types.js";
+import {
+  decisions,
+  definitionOf,
+  effectiveLimits,
+  harnessDigest,
+  requiredCapabilitiesOf,
+  validateHarness,
+  validatePolicy,
+  type ValidationContext,
+} from "./validate.js";
 
 export interface AppOptions {
   root: string;
@@ -119,7 +132,25 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       const manifest = await repo.headContent(manifestPath);
       if (manifest) {
         const instructionsPath = join(repo.harnessesDir, document.folder, document.manifest.instructionsFile ?? "instructions.md");
-        committed = { manifest, instructions: await repo.headContent(instructionsPath) };
+        const committedSkills: Record<string, string> = {};
+        const names = new Set(document.skills.map((skill) => skill.name));
+        try {
+          const parsed = JSON.parse(manifest) as { skills?: unknown };
+          for (const name of skillNames(parsed.skills)) {
+            names.add(name);
+          }
+        } catch {
+          // Keep the current skill names only.
+        }
+        await Promise.all(
+          [...names].map(async (name) => {
+            const content = await repo.headContent(join(repo.harnessesDir, document.folder, "skills", name, "SKILL.md"));
+            if (content !== undefined) {
+              committedSkills[name] = content;
+            }
+          }),
+        );
+        committed = { manifest, instructions: await repo.headContent(instructionsPath), skills: committedSkills };
       }
     }
     return { policy, profiles, all: documents, committed };
@@ -132,6 +163,8 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       issues: validateHarness(document, ctx),
       effective: effectiveLimits(document, ctx.policy),
       digest: harnessDigest(document),
+      decisions: decisions(document, ctx),
+      requiredCapabilities: requiredCapabilitiesOf(document),
     };
   }
 
@@ -203,10 +236,22 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   app.get("/api/session", async () => ({ root, port: options.port }));
   app.get("/api/workspace", async () => workspace());
   app.get("/api/check", async () => check());
+  app.get("/api/templates", async () => {
+    const [policy, profiles] = await Promise.all([repo.readPolicy(), repo.listProfiles()]);
+    return { templates: listTemplates(policy, profiles) };
+  });
 
   app.get("/api/harnesses/:folder", async (request) => detail(await repo.readHarness(folderParam(request))));
 
-  const DocumentBody = z.object({ document: z.object({ folder: z.string(), manifest: z.record(z.string(), z.unknown()), instructions: z.string() }) });
+  const SkillBody = z.object({ name: z.string(), description: z.string(), content: z.string() });
+  const DocumentBody = z.object({
+    document: z.object({
+      folder: z.string(),
+      manifest: z.record(z.string(), z.unknown()),
+      instructions: z.string(),
+      skills: z.array(SkillBody).default([]),
+    }),
+  });
 
   app.post("/api/harnesses/validate", async (request) => {
     const { document } = DocumentBody.parse(request.body);
@@ -229,10 +274,12 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   app.post("/api/harnesses", async (request) => {
     const body = z
       .object({
-        mode: z.enum(["new", "version", "duplicate"]),
+        mode: z.enum(["new", "version", "duplicate", "import"]),
         name: z.string().regex(SLUG, "Use lowercase letters, digits, and hyphens (2-63 characters)."),
         from: z.string().optional(),
         version: z.string().regex(SEMVER).optional(),
+        template: z.enum(["structured-answer", "data-analysis", "skill-guided", "agent-team"]).optional(),
+        document: z.unknown().optional(),
       })
       .parse(request.body);
     const [policy, profiles, documents] = await Promise.all([repo.readPolicy(), repo.listProfiles(), repo.listHarnesses()]);
@@ -241,8 +288,29 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       if (documents.some((d) => d.manifest.name === body.name)) {
         throw new RepoError(409, `A harness named '${body.name}' already exists. Create a new version instead.`);
       }
-      const approved = profiles.filter((p) => policy.allowedProfiles.includes(p.id)).map((p) => p.id);
-      document = templateHarness(body.name, policy.allowedModels[0] ?? "gpt-4.1", approved);
+      const template = listTemplates(policy, profiles).find((entry) => entry.id === (body.template ?? "structured-answer"));
+      if (!template || template.profiles.length === 0) {
+        throw new RepoError(422, `Template '${body.template ?? "structured-answer"}' has no approved execution profile.`);
+      }
+      document = createFromTemplate(body.template ?? "structured-answer", body.name, policy.allowedModels[0] ?? "gpt-4.1", template.profiles, policy);
+    } else if (body.mode === "import") {
+      if (documents.some((d) => d.manifest.name === body.name)) {
+        throw new RepoError(409, `A harness named '${body.name}' already exists.`);
+      }
+      const parsed = DocumentBody.parse({ document: body.document }).document as unknown as HarnessDocument;
+      document = {
+        folder: body.name,
+        instructions: parsed.instructions,
+        skills: parsed.skills ?? [],
+        manifest: {
+          ...structuredClone(parsed.manifest),
+          name: body.name,
+          version: parsed.manifest.version || "1.0.0",
+          instructionsFile: /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.md$/.test(String(parsed.manifest.instructionsFile ?? ""))
+            ? parsed.manifest.instructionsFile
+            : "instructions.md",
+        },
+      };
     } else {
       if (!body.from) {
         throw new RepoError(400, "Choose a harness to copy.");
@@ -258,6 +326,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       document = {
         folder: name,
         instructions: source.instructions,
+        skills: structuredClone(source.skills),
         manifest: { ...structuredClone(source.manifest), name, version },
       };
     }
@@ -270,7 +339,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     }
     document.folder = folder;
     await repo.writeHarness(document);
-    return detail(document);
+    return detail(await repo.readHarness(folder));
   });
 
   app.delete("/api/harnesses/:folder", async (request) => {
@@ -278,6 +347,72 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     await repo.readHarness(folder);
     await repo.deleteHarness(folder);
     return { deleted: folder };
+  });
+
+  app.post("/api/import/planner", async (request) => {
+    const body = z.object({ plan: z.unknown(), name: z.string().max(200).optional() }).parse(request.body);
+    const size = Buffer.byteLength(JSON.stringify(body.plan), "utf8");
+    if (size > 1024 * 1024) {
+      throw new RepoError(400, "Planner import payload must be 1 MB or smaller.");
+    }
+    if (!body.plan || typeof body.plan !== "object" || Array.isArray(body.plan)) {
+      throw new RepoError(400, "Planner import payload must be an object.");
+    }
+    const [policy, profiles, documents] = await Promise.all([repo.readPolicy(), repo.listProfiles(), repo.listHarnesses()]);
+    const { document, report } = mapPlannerPlan(body.plan as Record<string, unknown>, body.name, policy, profiles);
+    const ctx = await context(document, [...documents, document]);
+    return { document, report, issues: validateHarness(document, ctx) };
+  });
+
+  app.get("/api/harnesses/:folder/export", async (request) => {
+    const document = await repo.readHarness(folderParam(request));
+    const parsed = HarnessDefinition.safeParse(definitionOf(document));
+    if (!parsed.success) {
+      const first = parsed.error.issues[0];
+      throw new RepoError(422, `${first?.path.join(".") || "(root)"} — ${first?.message ?? "Invalid harness."}`);
+    }
+    return { definition: parsed.data, digest: harnessDigest(document)! };
+  });
+
+  app.get("/api/harnesses/:folder/changes", async (request): Promise<HarnessChanges> => {
+    const folder = folderParam(request);
+    const document = await repo.readHarness(folder);
+    const committedManifestText = await repo.headContent(repo.harnessManifestPath(folder));
+    if (committedManifestText === undefined) {
+      return { committed: false, changes: [] };
+    }
+    const changes: HarnessChange[] = [];
+    let committedManifest: unknown;
+    try {
+      committedManifest = JSON.parse(committedManifestText);
+    } catch {
+      committedManifest = {};
+    }
+    diffValues(committedManifest, manifestForChanges(document), "", changes);
+
+    const committedInstructionsFile =
+      isRecord(committedManifest) && typeof committedManifest.instructionsFile === "string" ? committedManifest.instructionsFile : undefined;
+    const instructionsFile = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.md$/.test(committedInstructionsFile ?? "")
+      ? committedInstructionsFile!
+      : document.manifest.instructionsFile;
+    const committedInstructions = await repo.headContent(join(repo.harnessesDir, folder, instructionsFile));
+    compareText("instructions", committedInstructions, document.instructions, changes);
+
+    const names = new Set([...skillNames(isRecord(committedManifest) ? committedManifest.skills : undefined), ...document.skills.map((skill) => skill.name)]);
+    await Promise.all(
+      [...names].map(async (name) => {
+        const committed = await repo.headContent(join(repo.harnessesDir, folder, "skills", name, "SKILL.md"));
+        const current = document.skills.find((skill) => skill.name === name);
+        compareText(
+          `skills.${name}`,
+          committed === undefined ? undefined : normalizedSkillText(name, committed),
+          current ? renderSkillMarkdown(current) : undefined,
+          changes,
+        );
+      }),
+    );
+
+    return { committed: true, changes: collapseChanges(changes) };
   });
 
   app.get("/api/policy", async () => {
@@ -482,4 +617,102 @@ function folderParam(request: FastifyRequest): string {
     throw new RepoError(400, "Invalid harness folder.");
   }
   return folder;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function skillNames(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [...new Set(value.filter((item): item is string => typeof item === "string" && SLUG.test(item)))];
+}
+
+function manifestForChanges(document: HarnessDocument): HarnessDocument["manifest"] {
+  const manifest = { ...document.manifest };
+  if (document.skills.length > 0) {
+    manifest.skills = document.skills.map((skill) => skill.name);
+  } else {
+    delete manifest.skills;
+  }
+  return manifest;
+}
+
+function normalizedText(value: string): string {
+  return value.replace(/\r\n/g, "\n").trim();
+}
+
+function normalizedSkillText(name: string, text: string): string {
+  const parsed = parseSkillMarkdown(text);
+  return renderSkillMarkdown({ name, description: parsed.description ?? "", content: parsed.content });
+}
+
+function compareText(path: string, before: string | undefined, after: string | undefined, changes: HarnessChange[]): void {
+  if (before === undefined && after === undefined) {
+    return;
+  }
+  if (before === undefined) {
+    changes.push({ path, change: "added" });
+    return;
+  }
+  if (after === undefined) {
+    changes.push({ path, change: "removed" });
+    return;
+  }
+  if (normalizedText(before) !== normalizedText(after)) {
+    changes.push({ path, change: "changed" });
+  }
+}
+
+function diffValues(before: unknown, after: unknown, path: string, changes: HarnessChange[], depth = 0): void {
+  if (canonicalJson(before) === canonicalJson(after)) {
+    return;
+  }
+  if (before === undefined) {
+    changes.push({ path, change: "added" });
+    return;
+  }
+  if (after === undefined) {
+    changes.push({ path, change: "removed" });
+    return;
+  }
+  if (Array.isArray(before) || Array.isArray(after)) {
+    diffArrays(Array.isArray(before) ? before : [], Array.isArray(after) ? after : [], path, changes, depth);
+    return;
+  }
+  if (isRecord(before) && isRecord(after) && depth < 3) {
+    const keys = new Set([...Object.keys(before), ...Object.keys(after)]);
+    for (const key of [...keys].sort()) {
+      diffValues(before[key], after[key], path ? `${path}.${key}` : key, changes, depth + 1);
+    }
+    return;
+  }
+  changes.push({ path, change: "changed" });
+}
+
+function diffArrays(before: unknown[], after: unknown[], path: string, changes: HarnessChange[], depth: number): void {
+  const all = [...before, ...after];
+  const named = all.length > 0 && all.every((item) => isRecord(item) && typeof item.name === "string");
+  if (!named) {
+    changes.push({ path, change: "changed" });
+    return;
+  }
+  const beforeByName = new Map(before.map((item) => [(item as { name: string }).name, item]));
+  const afterByName = new Map(after.map((item) => [(item as { name: string }).name, item]));
+  const names = new Set([...beforeByName.keys(), ...afterByName.keys()]);
+  for (const name of [...names].sort()) {
+    diffValues(beforeByName.get(name), afterByName.get(name), `${path}.${name}`, changes, depth + 1);
+  }
+}
+
+function collapseChanges(changes: HarnessChange[]): HarnessChange[] {
+  const byPath = new Map<string, HarnessChange>();
+  for (const change of changes) {
+    if (change.path) {
+      byPath.set(change.path, change);
+    }
+  }
+  return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
 }

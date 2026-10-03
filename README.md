@@ -38,6 +38,7 @@ src/job-store                PostgreSQL ledger and migrations
 src/service-defaults         Shared config, logging, HTTP, auth, Postgres, registry, capability helpers
 execution-profiles/          Operator-approved runner profiles (node-ts-agent, python-agent sample runner)
 harnesses/dataset-analyst    Sample read-only harness with JSON Schema input and output, using a Python tool
+harnesses/insights-team      Sample agent team: customized prompt, two sub-agents, a delegated-only tool, a skill
 harnesses/text-summarizer    Minimal harness created from the configurator template (no tools)
 policy/                      Operator execution policy (ceilings and acknowledged security gaps)
 tools/python/                Pinned Python tool packaged into execution images
@@ -66,6 +67,9 @@ caller --API key--> agent-api --(Postgres ledger)--> job-dispatcher <--claim/hea
 - Executors report what they actually enforce. If the operator policy requires a control the executor cannot
   enforce and the gap is not explicitly acknowledged, the executor cannot claim work. Acknowledged gaps are
   recorded on every attempt and shown on the job.
+- Harnesses can use Copilot SDK features beyond a single prompt: customizing sections of the Copilot foundation
+  prompt, reasoning effort, sub-agents with their own tools and skills, and skills packaged with the harness. Admission
+  and the executor check that the chosen runner supports each feature, and the policy caps reasoning effort.
 
 See [docs/RUNNER-PROTOCOL.md](docs/RUNNER-PROTOCOL.md) to plug in another agent implementation and
 [docs/SECURITY.md](docs/SECURITY.md) for the enforced boundaries and known gaps.

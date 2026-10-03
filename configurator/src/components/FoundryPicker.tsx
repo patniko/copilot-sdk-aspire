@@ -1,4 +1,4 @@
-import { Search } from "lucide-react";
+import { Search } from "./icons";
 import { useState } from "react";
 import type { FoundryAccount, FoundryDeployment } from "../../server/types";
 import { api, errorMessage } from "../api";
@@ -44,7 +44,7 @@ export function FoundryPicker({ subscriptionId, onPick }: {
   }
 
   return (
-    <div className="rounded-xl border border-dashed border-slate-300 p-3 dark:border-slate-700">
+    <div className="rounded-md border border-dashed border-default p-3">
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" className="btn-secondary btn-sm" disabled={!subscriptionId || !!busy} onClick={() => void discover()}>
           {busy === "accounts" ? <Spinner className="h-3.5 w-3.5" /> : <Search className="h-3.5 w-3.5" />} Discover Foundry accounts

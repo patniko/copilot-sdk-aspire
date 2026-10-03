@@ -1,16 +1,24 @@
 // Types shared by the configurator server and UI. Type-only imports keep the UI bundle free of server code.
-import type { ExecutionPolicy, HarnessDefinition } from "@copilot-agent/contracts";
+import type { ExecutionPolicy, HarnessDefinition, SkillDefinition } from "@copilot-agent/contracts";
 
-export type { ExecutionPolicy };
+export type { ExecutionPolicy, SkillDefinition };
 
-/** harness.json on disk: the harness contract with `instructionsFile` in place of inline instructions. */
-export type HarnessManifest = Omit<HarnessDefinition, "instructions"> & { instructionsFile: string };
+/**
+ * harness.json on disk: the harness contract with `instructionsFile` in place of inline instructions
+ * and `skills` as folder names under skills/ (each holding a SKILL.md).
+ */
+export type HarnessManifest = Omit<HarnessDefinition, "instructions" | "skills"> & {
+  instructionsFile: string;
+  skills?: string[];
+};
 
 export interface HarnessDocument {
   /** Folder name under harnesses/. */
   folder: string;
   manifest: HarnessManifest;
   instructions: string;
+  /** Skills stored as skills/<name>/SKILL.md. Authoritative: manifest.skills is derived from it on save. */
+  skills: SkillDefinition[];
 }
 
 export interface Issue {
@@ -77,6 +85,65 @@ export interface HarnessDetail {
   issues: Issue[];
   effective: EffectiveLimits;
   digest?: string;
+  /** Things the author should know or decide: who implements what, what to review, accepted gaps. */
+  decisions: Decision[];
+  /** Runner capabilities this harness needs beyond the protocol baseline. */
+  requiredCapabilities: string[];
+}
+
+export interface Decision {
+  /** host: the platform implements or enforces it; review: the author should check it; gap: not enforced; info: context. */
+  kind: "host" | "review" | "gap" | "info";
+  title: string;
+  detail: string;
+  /** Document path the decision relates to, for navigation (same format as Issue.path). */
+  path?: string;
+}
+
+export interface HarnessChange {
+  /** Dotted path, e.g. "model.reasoningEffort", "instructions", "skills.insight-review". */
+  path: string;
+  change: "added" | "removed" | "changed";
+}
+
+export interface HarnessChanges {
+  /** False when the folder has never been committed (everything is new). */
+  committed: boolean;
+  changes: HarnessChange[];
+}
+
+export interface TemplateInfo {
+  id: "structured-answer" | "data-analysis" | "skill-guided" | "agent-team";
+  title: string;
+  summary: string;
+  bestFor: string;
+  promptMode: "replace" | "append" | "customize";
+  tools: number;
+  agents: number;
+  skills: number;
+  reasoningEffort?: string;
+  profiles: string[];
+}
+
+export interface ImportReport {
+  /** Plan settings carried into the harness. */
+  mapped: string[];
+  /** Plan settings that need work before they can run (e.g. custom tools need a binding). */
+  needsWork: string[];
+  /** Plan settings that do not apply to a hosted agent service, with the reason. */
+  notApplicable: string[];
+}
+
+export interface ImportResult {
+  document: HarnessDocument;
+  report: ImportReport;
+  issues: Issue[];
+}
+
+export interface HarnessExport {
+  /** The definition exactly as the agent API loads it (instructions and skills inlined). */
+  definition: unknown;
+  digest: string;
 }
 
 export interface LocalSettings {

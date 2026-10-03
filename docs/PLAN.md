@@ -902,7 +902,7 @@ boundary-by-boundary detail.
 | M1 secure reference execution | Done, with acknowledged gaps | External gateway with job-scoped capabilities; TypeScript reference runner using a pinned Python tool; customer Python runner on the same contract; no provider, database, or service credential in runner environments (inspected on live processes). Gaps: egress not enforced (explicitly acknowledged in policy), MCP integrations not implemented. |
 | M2 durable service | Done | PostgreSQL ledger with idempotent admission, fenced leases, heartbeats, lease recovery, retry/backoff, `needs_review` for uncertain effects, cancellation with capability revocation, ordered events with SSE cursors, output schema validation. Covered by integration tests. |
 | M3 reproducible Azure deployment | Done | `aspire deploy` from a clean checkout created Container Apps, ACR, PostgreSQL (Entra-only), identities, and a least-privilege model role on the existing Foundry account. TypeScript and Python agent jobs succeeded in Azure; cancellation verified; internal services not routable from the internet. |
-| M4 starter and configurator export | Partial | Local configurator (`pnpm configure`, [CONFIGURATOR.md](CONFIGURATOR.md)) edits harnesses and policy in place with contract validation, manages local and Azure parameters, and drives build, local run, try, and `aspire deploy`; a harness created in it was deployed to Azure from the UI. Remaining: exporting a new customer repository and importing Harness Builder planner JSON. |
+| M4 starter and configurator export | Partial | Local configurator (`pnpm configure`, [CONFIGURATOR.md](CONFIGURATOR.md)) edits harnesses and policy in place with contract validation, manages local and Azure parameters, and drives build, local run, try, and `aspire deploy`; a harness created in it was deployed to Azure from the UI. It also has per-setting help, platform decisions, undo/redo with browser drafts, templates with a comparison grid, Harness Builder plan import with a mapping report, and resolved-JSON export. Harnesses can customize foundation prompt sections, set reasoning effort and context tier, define sub-agents with delegated-only tools, and package skills, in both runners (verified locally). Remaining: exporting a new customer repository. |
 | M5 customer automation and distribution | Not started | OIDC deployment workflow and template releases remain. |
 
 ### Decisions taken during implementation
@@ -920,6 +920,11 @@ boundary-by-boundary detail.
   images, matching the "file/Git-based publication first" decision in section 13.
 - **Deployment inputs.** `aspire deploy` runs in the Production environment and reads `Azure__*` and
   `Parameters__*` environment variables; user secrets are a development convenience only.
+- **Harness features.** Prompt sections, model options, sub-agents and skills are optional contract fields, so
+  existing harness digests do not change. Each maps to a runner capability (`prompt-sections`, `model-options`,
+  `custom-agents`, `skills`) that admission checks against the profile and the executor checks against the runner's
+  hello. Skills are inlined into the published snapshot so a job never reads harness files at run time. Runners
+  always exclude the SDK's built-in agents, so delegation only reaches the harness's own sub-agents.
 
 ### Open gates before production claims
 

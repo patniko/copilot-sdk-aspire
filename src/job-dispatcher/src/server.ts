@@ -125,7 +125,9 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
       jobId: claim.job.id,
       attempt: claim.attempt.number,
       principal: claim.job.principal,
-      models: [claim.job.model],
+      models: [...new Set([claim.job.model, ...(claim.job.harness.definition.agents ?? []).flatMap((a) => (a.model ? [a.model] : []))])].filter(
+        (model) => model === claim.job.model || policy.allowedModels.includes(model),
+      ),
       tokenBudget: Math.max(1, claim.capability.tokenBudget),
       expiresAt: claim.capability.expiresAt,
     });

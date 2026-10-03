@@ -3,6 +3,7 @@ import { chown, mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
   JsonLineDecoder,
+  requiredRunnerCapabilities,
   RUNNER_MAX_LINE_BYTES,
   RUNNER_PROTOCOL_VERSION,
   RunnerToExecutor,
@@ -131,7 +132,9 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
             }
             helloReceived = true;
             clearTimeout(helloTimer);
-            const missing = REQUIRED_RUNNER_CAPABILITIES.filter((c) => !message.capabilities.includes(c));
+            const missing = [...REQUIRED_RUNNER_CAPABILITIES, ...requiredRunnerCapabilities(claim.job.harness.definition)].filter(
+              (c) => !message.capabilities.includes(c),
+            );
             if (message.protocol !== RUNNER_PROTOCOL_VERSION || missing.length > 0) {
               outcome ??= protocolFailure(`Runner is incompatible (missing: ${missing.join(", ") || "protocol"}).`);
               kill();

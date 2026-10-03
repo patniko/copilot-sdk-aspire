@@ -1,75 +1,107 @@
 import clsx from "clsx";
-import { AlertCircle, AlertTriangle, Check, CheckCircle2, Copy, Loader2, X, XCircle } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { Issue } from "../../server/types";
+import { help as helpContent, type HelpTopic } from "../help";
+import { AlertCircle, AlertTriangle, Check, CheckCircle2, Copy, Loader2, X, XCircle } from "./icons";
+import { QuestionIcon, InfoIcon } from "@primer/octicons-react";
 
-export function Card({ title, subtitle, actions, children, className }: {
+/** Primer Box: optional muted header row with title, subtitle and actions. */
+export function Card({ title, subtitle, actions, children, className, flush }: {
   title?: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;
   children: ReactNode;
   className?: string;
+  /** Render children edge to edge (lists, tables). */
+  flush?: boolean;
 }) {
   return (
-    <section className={clsx("card card-pad", className)}>
+    <section className={clsx("card", className)}>
       {(title || actions) && (
-        <div className="mb-4 flex items-start justify-between gap-3">
-          <div>
-            {title && <h2 className="text-base">{title}</h2>}
-            {subtitle && <p className="mt-0.5 text-slate-500 dark:text-slate-400">{subtitle}</p>}
+        <div className="box-header">
+          <div className="min-w-0">
+            {title && <h2 className="text-sm font-semibold leading-6">{title}</h2>}
+            {subtitle && <p className="text-xs fg-muted">{subtitle}</p>}
           </div>
-          {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+          {actions && <div className="flex shrink-0 flex-wrap items-center gap-2">{actions}</div>}
         </div>
       )}
-      {children}
+      <div className={flush ? undefined : "card-pad"}>{children}</div>
     </section>
   );
 }
 
-export function PageHeader({ title, description, actions }: { title: string; description: ReactNode; actions?: ReactNode }) {
+/** Primer PageHeader: 24px title, muted description, trailing actions, divider. */
+export function PageHeader({ title, description, actions, leading }: {
+  title: string;
+  description: ReactNode;
+  actions?: ReactNode;
+  leading?: ReactNode;
+}) {
   return (
-    <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-      <div>
-        <h1 className="text-3xl">{title}</h1>
-        <p className="mt-1 max-w-3xl text-slate-500 dark:text-slate-400">{description}</p>
+    <div className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-muted pb-4">
+      <div className="min-w-0">
+        <h1 className="flex items-center gap-2 text-2xl font-normal">
+          {leading}
+          {title}
+        </h1>
+        <p className="mt-1 max-w-3xl fg-muted">{description}</p>
       </div>
       {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
     </div>
   );
 }
 
-export function Field({ label, hint, error, children, className }: {
+/** Primer FormControl: label (with optional help), input, caption or validation message. */
+export function Field({ label, hint, error, children, className, help }: {
   label: string;
   hint?: ReactNode;
   error?: string;
   children: ReactNode;
   className?: string;
+  /** Key into the help registry; renders a ? button next to the label. */
+  help?: string;
 }) {
   return (
-    <label className={clsx("block", className)}>
-      <span className="label">{label}</span>
+    <div className={clsx("block", className)}>
+      <div className="flex items-center gap-1">
+        <label className="label">{label}</label>
+        {help && <HelpButton topic={help} />}
+      </div>
       {children}
-      {error ? <span className="mt-1 block text-xs text-red-600 dark:text-red-400">{error}</span> : hint && <span className="hint block">{hint}</span>}
-    </label>
+      {error ? (
+        <span className="mt-1 flex items-center gap-1 text-xs fg-danger">
+          <AlertCircle className="h-3 w-3" /> {error}
+        </span>
+      ) : (
+        hint && <span className="hint block">{hint}</span>
+      )}
+    </div>
   );
 }
 
-type Tone = "neutral" | "brand" | "green" | "amber" | "red" | "blue";
+export type Tone = "neutral" | "brand" | "green" | "amber" | "red" | "blue" | "done";
 const TONES: Record<Tone, string> = {
-  neutral: "border-slate-300 text-slate-600 dark:border-slate-600 dark:text-slate-300",
-  brand: "border-brand-300 bg-brand-50 text-brand-700 dark:border-brand-700 dark:bg-brand-700/20 dark:text-brand-300",
-  green: "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300",
-  amber: "border-amber-300 bg-amber-50 text-amber-700 dark:border-amber-800 dark:bg-amber-900/30 dark:text-amber-300",
-  red: "border-red-300 bg-red-50 text-red-700 dark:border-red-800 dark:bg-red-900/30 dark:text-red-300",
-  blue: "border-sky-300 bg-sky-50 text-sky-700 dark:border-sky-800 dark:bg-sky-900/30 dark:text-sky-300",
+  neutral: "",
+  brand: "badge-accent",
+  blue: "badge-accent",
+  green: "badge-success",
+  amber: "badge-attention",
+  red: "badge-danger",
+  done: "badge-done",
 };
 
+/** Primer Label. */
 export function Badge({ tone = "neutral", children, title }: { tone?: Tone; children: ReactNode; title?: string }) {
   return (
     <span className={clsx("badge", TONES[tone])} title={title}>
       {children}
     </span>
   );
+}
+
+export function Counter({ children }: { children: ReactNode }) {
+  return <span className="counter">{children}</span>;
 }
 
 export function stateTone(state: string | undefined): Tone {
@@ -97,21 +129,39 @@ export function stateTone(state: string | undefined): Tone {
   }
 }
 
+/** Primer Flash banner. */
+export function Flash({ tone = "info", children, actions, icon }: {
+  tone?: "info" | "warn" | "error" | "success";
+  children: ReactNode;
+  actions?: ReactNode;
+  icon?: ReactNode;
+}) {
+  const defaultIcon =
+    tone === "error" ? <AlertCircle /> : tone === "warn" ? <AlertTriangle /> : tone === "success" ? <CheckCircle2 /> : <InfoIcon size={16} />;
+  return (
+    <div className={clsx("flash flex items-start gap-2", tone !== "info" && `flash-${tone}`)} role={tone === "error" ? "alert" : "status"}>
+      <span className="mt-0.5 shrink-0">{icon ?? defaultIcon}</span>
+      <div className="min-w-0 flex-1">{children}</div>
+      {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
+    </div>
+  );
+}
+
 export function StatusLine({ ok, label, detail, pending }: { ok: boolean | undefined; label: ReactNode; detail?: ReactNode; pending?: boolean }) {
   return (
     <div className="flex items-start gap-2.5 py-1.5">
       <span className="mt-0.5">
         {pending || ok === undefined ? (
-          <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+          <Loader2 className="fg-muted" />
         ) : ok ? (
-          <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+          <CheckCircle2 className="fg-success" />
         ) : (
-          <XCircle className="h-4 w-4 text-red-600 dark:text-red-400" />
+          <XCircle className="fg-danger" />
         )}
       </span>
       <div className="min-w-0">
         <div className="font-medium">{label}</div>
-        {detail && <div className="text-xs text-slate-500 dark:text-slate-400">{detail}</div>}
+        {detail && <div className="text-xs fg-muted">{detail}</div>}
       </div>
     </div>
   );
@@ -125,8 +175,8 @@ export function IssueList({ issues, onSelect, onFix, empty = "No issues." }: {
 }) {
   if (issues.length === 0) {
     return (
-      <p className="flex items-center gap-2 text-emerald-700 dark:text-emerald-400">
-        <Check className="h-4 w-4" /> {empty}
+      <p className="flex items-center gap-2 fg-success">
+        <Check /> {empty}
       </p>
     );
   }
@@ -136,9 +186,9 @@ export function IssueList({ issues, onSelect, onFix, empty = "No issues." }: {
       {sorted.map((issue, index) => (
         <li key={index} className="flex items-start gap-2">
           {issue.level === "error" ? (
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
+            <AlertCircle className="mt-0.5 shrink-0 fg-danger" />
           ) : (
-            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+            <AlertTriangle className="mt-0.5 shrink-0 fg-attention" />
           )}
           <div className="min-w-0 flex-1">
             <button
@@ -147,8 +197,7 @@ export function IssueList({ issues, onSelect, onFix, empty = "No issues." }: {
               onClick={() => onSelect?.(issue)}
               disabled={!onSelect}
             >
-              <span className="font-mono text-[11px] text-slate-500 dark:text-slate-400">{issue.path}</span>{" "}
-              <span>{issue.message}</span>
+              <code className="text-[11px]">{issue.path}</code> <span>{issue.message}</span>
             </button>
             {issue.fix && onFix && (
               <button type="button" className="btn-secondary btn-sm ml-2" onClick={() => onFix(issue)}>
@@ -179,9 +228,9 @@ export function ChipsInput({ values, onChange, placeholder, pattern, suggestions
   const remaining = suggestions.filter((s) => !values.includes(s));
   return (
     <div>
-      <div className="flex min-h-[38px] flex-wrap items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-950">
+      <div className="input flex flex-wrap items-center gap-1.5 !py-1">
         {values.map((value) => (
-          <span key={value} className="badge border-brand-200 bg-brand-50 text-brand-700 dark:border-brand-700 dark:bg-brand-700/20 dark:text-brand-200">
+          <span key={value} className="badge badge-accent">
             {value}
             <button type="button" aria-label={`Remove ${value}`} onClick={() => onChange(values.filter((v) => v !== value))}>
               <X className="h-3 w-3" />
@@ -241,7 +290,7 @@ export function JsonEditor({ value, onChange, rows = 14, error }: {
   return (
     <div>
       <textarea
-        className={clsx("input-mono", (parseError || error) && "border-red-400 dark:border-red-700")}
+        className={clsx("input-mono", (parseError || error) && "!border-[var(--borderColor-danger-emphasis)]")}
         rows={rows}
         spellCheck={false}
         value={text}
@@ -257,7 +306,7 @@ export function JsonEditor({ value, onChange, rows = 14, error }: {
         }}
       />
       <div className="mt-1 flex items-center justify-between gap-2">
-        <span className="text-xs text-red-600 dark:text-red-400">{parseError ? `Invalid JSON: ${parseError}` : error}</span>
+        <span className="text-xs fg-danger">{parseError ? `Invalid JSON: ${parseError}` : error}</span>
         <button
           type="button"
           className="btn-ghost btn-sm"
@@ -276,20 +325,60 @@ export function JsonEditor({ value, onChange, rows = 14, error }: {
   );
 }
 
-export function Toggle({ checked, onChange, label, description }: {
+/** Primer checkbox with label and caption. */
+export function Toggle({ checked, onChange, label, description, help }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: ReactNode;
   description?: ReactNode;
+  help?: string;
 }) {
   return (
-    <label className="flex cursor-pointer items-start gap-3">
-      <input type="checkbox" className="mt-0.5 h-4 w-4 accent-brand-600" checked={checked} onChange={(e) => onChange(e.target.checked)} />
-      <span>
-        <span className="font-medium">{label}</span>
-        {description && <span className="block text-xs text-slate-500 dark:text-slate-400">{description}</span>}
-      </span>
-    </label>
+    <div className="flex items-start gap-2">
+      <label className="flex cursor-pointer items-start gap-2">
+        <input
+          type="checkbox"
+          className="mt-[3px] h-4 w-4 accent-[var(--bgColor-accent-emphasis)]"
+          checked={checked}
+          onChange={(e) => onChange(e.target.checked)}
+        />
+        <span>
+          <span className="font-semibold">{label}</span>
+          {description && <span className="block text-xs fg-muted">{description}</span>}
+        </span>
+      </label>
+      {help && <HelpButton topic={help} />}
+    </div>
+  );
+}
+
+/** Primer SegmentedControl. */
+export function SegmentedControl<T extends string>({ value, options, onChange, label }: {
+  value: T;
+  options: Array<{ value: T; label: string }>;
+  onChange: (value: T) => void;
+  label: string;
+}) {
+  return (
+    <div role="radiogroup" aria-label={label} className="inline-flex rounded-md bg-[var(--controlTrack-bgColor-rest)] p-0.5">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="radio"
+          aria-checked={value === option.value}
+          onClick={() => onChange(option.value)}
+          className={clsx(
+            "h-7 rounded-md px-3 text-sm",
+            value === option.value
+              ? "border border-[var(--controlKnob-borderColor-rest)] bg-[var(--controlKnob-bgColor-rest)] font-semibold"
+              : "border border-transparent fg-muted hover:text-[var(--fgColor-default)]",
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
   );
 }
 
@@ -326,38 +415,124 @@ export function CopyButton({ text, label = "Copy" }: { text: string | (() => Pro
         setTimeout(() => setCopied(false), 1500);
       }}
     >
-      {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      {copied ? <Check className="fg-success" /> : <Copy />}
       {copied ? "Copied" : label}
     </button>
   );
 }
 
-export function Modal({ title, children, onClose, footer }: { title: string; children: ReactNode; onClose: () => void; footer?: ReactNode }) {
+/** Primer Dialog. */
+export function Modal({ title, subtitle, children, onClose, footer, wide }: {
+  title: string;
+  subtitle?: ReactNode;
+  children: ReactNode;
+  onClose: () => void;
+  footer?: ReactNode;
+  wide?: boolean;
+}) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" role="dialog" aria-modal="true" aria-label={title}>
-      <div className="card w-full max-w-lg">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-3 dark:border-slate-800">
-          <h2 className="text-base">{title}</h2>
-          <button type="button" className="btn-ghost btn-sm" aria-label="Close" onClick={onClose}>
-            <X className="h-4 w-4" />
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-[var(--overlay-backdrop-bgColor)] p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <div className={clsx("overlay flex max-h-[90vh] w-full flex-col", wide ? "max-w-5xl" : "max-w-lg")}>
+        <div className="flex items-start justify-between gap-2 border-b border-muted px-4 py-3">
+          <div>
+            <h2 className="text-sm font-semibold leading-8">{title}</h2>
+            {subtitle && <p className="-mt-1 text-xs fg-muted">{subtitle}</p>}
+          </div>
+          <button type="button" className="btn-ghost btn-icon" aria-label="Close" onClick={onClose}>
+            <X />
           </button>
         </div>
-        <div className="space-y-4 p-5">{children}</div>
-        {footer && <div className="flex justify-end gap-2 border-t border-slate-200 px-5 py-3 dark:border-slate-800">{footer}</div>}
+        <div className="space-y-4 overflow-y-auto p-4">{children}</div>
+        {footer && <div className="flex justify-end gap-2 border-t border-muted px-4 py-3">{footer}</div>}
       </div>
     </div>
   );
 }
 
 export function Spinner({ className }: { className?: string }) {
-  return <Loader2 className={clsx("h-4 w-4 animate-spin", className)} />;
+  return <Loader2 className={className} />;
 }
 
+/** Primer Blankslate. */
 export function Empty({ children }: { children: ReactNode }) {
-  return <p className="rounded-xl border border-dashed border-slate-300 p-6 text-center text-slate-500 dark:border-slate-700 dark:text-slate-400">{children}</p>;
+  return <p className="rounded-md border border-dashed border-default p-6 text-center fg-muted">{children}</p>;
+}
+
+/**
+ * A "?" button that opens a popover explaining a setting: what it does, its scope, what each choice
+ * changes, an example, and where the platform draws the line.
+ */
+export function HelpButton({ topic }: { topic: string }) {
+  const entry: HelpTopic | undefined = helpContent[topic];
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  const id = useId();
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => !ref.current?.contains(e.target as Node) && setOpen(false);
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  if (!entry) return null;
+  return (
+    <span ref={ref} className="relative inline-flex">
+      <button
+        type="button"
+        className="inline-flex h-5 w-5 items-center justify-center rounded-full fg-muted hover:bg-[var(--bgColor-neutral-muted)] hover:text-[var(--fgColor-accent)]"
+        aria-label={`About ${entry.title}`}
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <QuestionIcon size={14} />
+      </button>
+      {open && (
+        <div id={id} role="dialog" aria-label={entry.title} className="popover absolute left-0 top-6 z-40 w-[360px] p-4 text-left text-sm font-normal">
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <span className="font-semibold">{entry.title}</span>
+            {entry.scope && <Badge tone="done">{entry.scope}</Badge>}
+          </div>
+          {entry.option && <code className="text-[11px]">{entry.option}</code>}
+          <p className="mt-2">{entry.summary}</p>
+          {entry.effects && entry.effects.length > 0 && (
+            <dl className="mt-3 space-y-1.5">
+              {entry.effects.map((effect) => (
+                <div key={effect.when}>
+                  <dt className="text-xs font-semibold">{effect.when}</dt>
+                  <dd className="text-xs fg-muted">{effect.then}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {entry.example && (
+            <div className="mt-3">
+              <div className="section-label">Example</div>
+              <pre className="whitespace-pre-wrap rounded-md bg-muted p-2 font-mono text-[11px]">{entry.example}</pre>
+            </div>
+          )}
+          {entry.boundary && (
+            <p className="mt-3 border-t border-muted pt-2 text-xs fg-muted">
+              <span className="font-semibold text-[var(--fgColor-default)]">Platform boundary: </span>
+              {entry.boundary}
+            </p>
+          )}
+        </div>
+      )}
+    </span>
+  );
 }

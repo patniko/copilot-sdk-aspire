@@ -414,6 +414,12 @@ function describeEvent(body) {
           return `Tool ${e.tool} started`;
         case "tool.completed":
           return `Tool ${e.tool} ${e.ok ? "completed" : "failed"}`;
+        case "subagent.started":
+          return `Delegated to sub-agent ${e.agent}`;
+        case "subagent.completed":
+          return `Sub-agent ${e.agent} ${e.ok ? "finished" : "failed"}`;
+        case "skill.used":
+          return `Loaded skill ${e.skill}`;
         case "agent.turn_started":
           return "Agent turn started";
         case "agent.turn_completed":

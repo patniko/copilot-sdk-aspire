@@ -35,6 +35,16 @@ executor                         runner
 
    `cancel` and `structured-result` are required. Incompatible runners are terminated before any job data is sent.
 
+   Harnesses that use optional features also need the matching capability, checked at admission (against the
+   profile's `capabilities`) and again against `hello` before `start` is sent:
+
+   | Capability | Needed when the harness has |
+   | --- | --- |
+   | `prompt-sections` | `prompt.mode` of `append` or `customize` |
+   | `model-options` | `model.reasoningEffort` or `model.contextTier` |
+   | `custom-agents` | `agents[]` (sub-agents) |
+   | `skills` | `skills[]` |
+
 2. **start** carries one attempt:
 
    ```json
@@ -56,7 +66,8 @@ executor                         runner
    - `workspace` is private to the attempt and deleted afterwards.
 
 3. **event** messages report sanitized progress. Only these kinds are accepted; raw SDK events are never forwarded:
-   `agent.turn_started`, `agent.turn_completed`, `tool.started {tool}`, `tool.completed {tool, ok}`, `progress {message}`.
+   `agent.turn_started`, `agent.turn_completed`, `tool.started {tool}`, `tool.completed {tool, ok}`,
+   `subagent.started {agent}`, `subagent.completed {agent, ok}`, `skill.used {skill}`, `progress {message}`.
 
 4. **cancel** (`{"type":"cancel","reason":"…"}`) asks the runner to stop. The runner should abort its session and
    report `failure` with code `cancelled`. Runners that do not stop within 15 seconds are killed.
@@ -85,3 +96,19 @@ Configure the SDK session with a BYOK provider pointing at `inference.baseUrl` u
 key, use `mode: "empty"` (or the language equivalent), an explicit tool allowlist, no configuration discovery, and a
 deny-by-default permission handler. Register a terminal `submit_result` tool whose parameters are the harness output
 schema. See the TypeScript reference runner and the Python sample for complete implementations.
+
+Map the optional harness features to session options as follows (TypeScript names; the Python SDK uses snake_case).
+`src/harness-hosting/src/session-config.ts` is the reference mapping and has unit tests.
+
+| Harness | Session option |
+| --- | --- |
+| `instructions` + `prompt.mode` | `systemMessage: {mode, content: instructions + result contract}`; the default mode is `replace` |
+| `prompt.sections[]` | `systemMessage.sections: {[name]: {action, content}}` (`remove` has no content) |
+| `model.reasoningEffort`, `model.contextTier` | `reasoningEffort`, `contextTier` |
+| `agents[]` | `customAgents: [{name, displayName, description, prompt: instructions, tools, skills, model, reasoningEffort, infer: true}]` and `builtin:task` in `availableTools` |
+| `tools[].delegatedOnly` | `defaultAgent: {excludedTools: [...]}` |
+| `skills[]` | Write each to `<workspace>/skills/<name>/SKILL.md`; `enableSkills: true`, `skillDirectories`, and `builtin:skill` in `availableTools` |
+| (always) | `excludedBuiltinAgents` listing every built-in SDK agent, so the task tool can only reach harness sub-agents |
+
+Map SDK events `subagent.started`, `subagent.completed`/`subagent.failed` and `skill.invoked` to the protocol events
+above, sending only the agent or skill name.

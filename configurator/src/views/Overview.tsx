@@ -1,6 +1,6 @@
-import { ArrowRight, Boxes, Cloud, FlaskConical, Laptop, RefreshCw, ShieldCheck } from "lucide-react";
+import { ArrowRight, Boxes, Cloud, Copilot, FlaskConical, Laptop, RefreshCw, ShieldCheck } from "../components/icons";
 import type { ReactNode } from "react";
-import { Badge, Card, PageHeader, StatusLine } from "../components/ui";
+import { Badge, Card, StatusLine } from "../components/ui";
 import { useApp, type View } from "../state";
 
 function StepCard({ step, icon, title, children, action, view }: {
@@ -13,15 +13,15 @@ function StepCard({ step, icon, title, children, action, view }: {
 }) {
   const { setView } = useApp();
   return (
-    <div className="card flex flex-col p-5">
-      <div className="mb-3 flex items-center gap-3">
-        <span className="flex h-9 w-9 items-center justify-center rounded-xl bg-brand-50 text-brand-700 dark:bg-brand-700/20 dark:text-brand-200">{icon}</span>
-        <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Step {step}</span>
+    <div className="card flex flex-col p-4">
+      <div className="mb-2 flex items-center gap-2">
+        <span className="flex h-8 w-8 items-center justify-center rounded-md border border-default bg-muted fg-muted">{icon}</span>
+        <span className="text-xs font-semibold fg-muted">Step {step}</span>
       </div>
-      <h3 className="text-lg">{title}</h3>
-      <div className="mt-1 flex-1 text-slate-500 dark:text-slate-400">{children}</div>
-      <button type="button" className="btn-secondary mt-4 self-start" onClick={() => setView(view)}>
-        {action} <ArrowRight className="h-4 w-4" />
+      <h3 className="text-base font-semibold">{title}</h3>
+      <div className="mt-1 flex-1 fg-muted">{children}</div>
+      <button type="button" className="btn-secondary btn-sm mt-3 self-start" onClick={() => setView(view)}>
+        {action} <ArrowRight />
       </button>
     </div>
   );
@@ -35,13 +35,31 @@ export function OverviewView() {
 
   return (
     <div className="space-y-6">
-      <PageHeader
-        title="Configure, run, deploy."
-        description="Edit the harnesses and policy in this repository, check them with the same contracts the service uses, run the full stack locally, and deploy the same application to your Azure subscription."
-      />
+      <section className="card overflow-hidden">
+        <div className="flex flex-wrap items-center gap-6 bg-[linear-gradient(135deg,var(--bgColor-done-muted),var(--bgColor-accent-muted))] p-6">
+          <span className="flex h-16 w-16 items-center justify-center rounded-full border border-default bg-[var(--bgColor-default)]">
+            <Copilot size={36} className="fg-done" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h1 className="text-2xl font-semibold">Your own Copilot agent service</h1>
+            <p className="mt-1 max-w-3xl fg-muted">
+              Agents built with the <strong className="text-[var(--fgColor-default)]">GitHub Copilot SDK</strong>, run as structured jobs by an{" "}
+              <strong className="text-[var(--fgColor-default)]">Aspire</strong> application you own: configure harnesses and policy here,
+              run the whole stack locally, and deploy the same app to Azure Container Apps.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {["Sub-agents", "Skills", "Prompt sections", "Reasoning effort", "Structured results", "Gateway-held model credentials"].map((f) => (
+                <Badge key={f} tone="done">
+                  {f}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        </div>
+      </section>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <StepCard step={1} icon={<Boxes className="h-5 w-5" />} title="Compose" action="Edit harnesses" view="harnesses">
+        <StepCard step={1} icon={<Boxes />} title="Compose" action="Edit harnesses" view="harnesses">
           {workspace ? (
             <>
               {names} harness(es), {workspace.harnesses.length} version(s).{" "}
@@ -51,13 +69,13 @@ export function OverviewView() {
             "Loading…"
           )}
         </StepCard>
-        <StepCard step={2} icon={<Laptop className="h-5 w-5" />} title="Run locally" action="Open Local run" view="local">
+        <StepCard step={2} icon={<Laptop />} title="Run locally" action="Open Local run" view="local">
           Build, run tests, and start the stack with Aspire. {local?.running ? <Badge tone="green">running</Badge> : <Badge>stopped</Badge>}
         </StepCard>
-        <StepCard step={3} icon={<FlaskConical className="h-5 w-5" />} title="Try it" action="Run a job" view="try">
+        <StepCard step={3} icon={<FlaskConical />} title="Try it" action="Run a job" view="try">
           Submit a job to the local stack or Azure and watch tools, model turns, and the structured result.
         </StepCard>
-        <StepCard step={4} icon={<Cloud className="h-5 w-5" />} title="Deploy" action="Open Deploy" view="deploy">
+        <StepCard step={4} icon={<Cloud />} title="Deploy" action="Open Deploy" view="deploy">
           {target ? (
             <>
               Target <strong>{target.name}</strong> · {target.resourceGroup}.{" "}
@@ -90,10 +108,10 @@ export function OverviewView() {
           />
         </Card>
 
-        <Card title="Policy" subtitle="Operator ceilings every harness runs under." actions={<ShieldCheck className="h-5 w-5 text-slate-400" />}>
+        <Card title="Policy" subtitle="Operator ceilings every harness runs under." actions={<ShieldCheck className="fg-muted" />}>
           {workspace && (
             <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-2">
-              <dt className="text-slate-500">Agents</dt>
+              <dt className="fg-muted">Agents</dt>
               <dd className="flex flex-wrap gap-1">
                 {workspace.policy.allowedProfiles.map((p) => (
                   <Badge key={p} tone="brand">
@@ -101,7 +119,7 @@ export function OverviewView() {
                   </Badge>
                 ))}
               </dd>
-              <dt className="text-slate-500">Models</dt>
+              <dt className="fg-muted">Models</dt>
               <dd className="flex flex-wrap gap-1">
                 {workspace.policy.allowedModels.map((m) => (
                   <Badge key={m} tone="green">
@@ -109,15 +127,15 @@ export function OverviewView() {
                   </Badge>
                 ))}
               </dd>
-              <dt className="text-slate-500">Limits</dt>
+              <dt className="fg-muted">Limits</dt>
               <dd>
                 {workspace.policy.maxDurationSeconds}s · {workspace.policy.maxInferenceTokensPerJob.toLocaleString()} tokens · {workspace.policy.retry.maxAttempts} attempts
               </dd>
-              <dt className="text-slate-500">Controls</dt>
+              <dt className="fg-muted">Controls</dt>
               <dd>
                 isolation: {workspace.policy.requirements.processIsolation} · egress: {workspace.policy.requirements.egress}
               </dd>
-              <dt className="text-slate-500">Accepted gaps</dt>
+              <dt className="fg-muted">Accepted gaps</dt>
               <dd className="flex flex-wrap gap-1">
                 {workspace.policy.acknowledgedGaps.length ? workspace.policy.acknowledgedGaps.map((g) => <Badge key={g} tone="amber">{g}</Badge>) : "none"}
               </dd>

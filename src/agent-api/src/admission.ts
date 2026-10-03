@@ -1,8 +1,10 @@
-import type {
-  ExecutionPolicy,
-  ExecutionProfile,
-  HarnessSnapshot,
-  JobSubmission,
+import {
+  type ExecutionPolicy,
+  type ExecutionProfile,
+  type HarnessSnapshot,
+  type JobSubmission,
+  modelOptionViolations,
+  requiredRunnerCapabilities,
 } from "@copilot-agent/contracts";
 import { canonicalJson, createAjv, HttpError, sha256Hex } from "@copilot-agent/service-defaults";
 import type { ValidateFunction } from "ajv";
@@ -62,10 +64,14 @@ export class Admission {
         missingBindings,
       });
     }
-    for (const required of ["cancel", "structured-result"] as const) {
+    for (const required of ["cancel", "structured-result", ...requiredRunnerCapabilities(definition)] as const) {
       if (!profile.capabilities.includes(required)) {
         throw new HttpError(422, "policy_rejected", `Profile '${profileId}' does not support '${required}'.`);
       }
+    }
+    const optionProblems = modelOptionViolations(definition, policy);
+    if (optionProblems.length > 0) {
+      throw new HttpError(422, "policy_rejected", optionProblems[0]!.message, { problems: optionProblems });
     }
 
     const model = [definition.model.preferred, ...definition.model.allowed].find((m) =>
@@ -73,6 +79,14 @@ export class Admission {
     );
     if (!model) {
       throw new HttpError(422, "policy_rejected", "None of the harness models are approved by the operator policy.");
+    }
+    const unapprovedAgentModels = (definition.agents ?? [])
+      .filter((a) => a.model && !policy.allowedModels.includes(a.model))
+      .map((a) => a.name);
+    if (unapprovedAgentModels.length > 0) {
+      throw new HttpError(422, "policy_rejected", "A sub-agent model is not approved by the operator policy.", {
+        agents: unapprovedAgentModels,
+      });
     }
 
     const validate = this.#inputValidator(harness);

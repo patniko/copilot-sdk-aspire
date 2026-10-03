@@ -1,11 +1,12 @@
 import clsx from "clsx";
-import { ExternalLink, Laptop, Cloud, Play, RefreshCw, Square } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { ExternalLink, Laptop, Cloud, Play, RefreshCw, Square, Copilot, Wrench, CheckCircle2, XCircle, FlaskConical } from "../components/icons";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { TryTarget } from "../../server/types";
 import { api, errorMessage } from "../api";
 import { ResultView } from "../components/ResultView";
-import { Badge, Card, Empty, Field, JsonEditor, PageHeader, Spinner, stateTone } from "../components/ui";
+import { Badge, Card, Empty, Field, Flash, JsonEditor, PageHeader, Spinner, stateTone } from "../components/ui";
 import { useApp } from "../state";
+import { BookIcon, CommentIcon, DotFillIcon, SyncIcon } from "@primer/octicons-react";
 
 interface LiveVersion {
   version: string;
@@ -58,21 +59,34 @@ function skeleton(schema: any, depth = 0): unknown {
   return null;
 }
 
+function describeRunnerEvent(e: Record<string, any>): string {
+  switch (e.kind) {
+    case "tool.started":
+      return `Tool ${e.tool} started`;
+    case "tool.completed":
+      return `Tool ${e.tool} ${e.ok ? "completed" : "failed"}`;
+    case "subagent.started":
+      return `Delegated to sub-agent ${e.agent}`;
+    case "subagent.completed":
+      return `Sub-agent ${e.agent} ${e.ok ? "finished" : "failed"}`;
+    case "skill.used":
+      return `Loaded skill ${e.skill}`;
+    case "agent.turn_started":
+      return "Agent turn started";
+    case "agent.turn_completed":
+      return "Agent turn completed";
+    default:
+      return e.message ?? e.kind;
+  }
+}
+
 function describe(event: JobEvent): string {
   const b = event.body as Record<string, any>;
   switch (b.type) {
     case "job.attempt_started":
       return `Attempt ${b.attempt} started on ${b.profile}`;
     case "job.runner_event":
-      return b.event.kind === "tool.started"
-        ? `Tool ${b.event.tool} started`
-        : b.event.kind === "tool.completed"
-          ? `Tool ${b.event.tool} ${b.event.ok ? "completed" : "failed"}`
-          : b.event.kind === "agent.turn_started"
-            ? "Agent turn started"
-            : b.event.kind === "agent.turn_completed"
-              ? "Agent turn completed"
-              : (b.event.message ?? b.event.kind);
+      return describeRunnerEvent(b.event);
     case "job.retry_scheduled":
       return `Retry scheduled after attempt ${b.attempt} (${b.reason})`;
     case "job.failed":
@@ -80,6 +94,51 @@ function describe(event: JobEvent): string {
     default:
       return String(b.type).replace("job.", "").replaceAll("_", " ");
   }
+}
+
+function eventIcon(event: JobEvent): { icon: ReactNode; className?: string } {
+  const b = event.body as Record<string, any>;
+  if (b.type === "job.runner_event") {
+    switch (b.event.kind) {
+      case "subagent.started":
+        return { icon: <Copilot />, className: "!bg-[var(--bgColor-done-muted)] fg-done" };
+      case "subagent.completed":
+        return { icon: <Copilot />, className: b.event.ok ? "!bg-[var(--bgColor-done-muted)] fg-done" : "!bg-[var(--bgColor-danger-muted)] fg-danger" };
+      case "skill.used":
+        return { icon: <BookIcon size={14} />, className: "!bg-[var(--bgColor-accent-muted)] fg-accent" };
+      case "tool.started":
+      case "tool.completed":
+        return { icon: <Wrench />, className: b.event.ok === false ? "fg-danger" : undefined };
+      default:
+        return { icon: <CommentIcon size={14} /> };
+    }
+  }
+  switch (b.type) {
+    case "job.succeeded":
+      return { icon: <CheckCircle2 />, className: "!bg-[var(--bgColor-success-emphasis)] text-[var(--fgColor-onEmphasis)]" };
+    case "job.failed":
+    case "job.needs_review":
+      return { icon: <XCircle />, className: "!bg-[var(--bgColor-danger-emphasis)] text-[var(--fgColor-onEmphasis)]" };
+    case "job.attempt_started":
+      return { icon: <Play /> };
+    case "job.retry_scheduled":
+      return { icon: <SyncIcon size={14} />, className: "fg-attention" };
+    default:
+      return { icon: <DotFillIcon size={14} /> };
+  }
+}
+
+function EventItem({ event }: { event: JobEvent }) {
+  const { icon, className } = eventIcon(event);
+  return (
+    <li className="timeline-item !py-1">
+      <span className={clsx("timeline-badge", className)}>{icon}</span>
+      <div className="flex min-w-0 flex-1 items-baseline gap-2 pt-0.5 text-xs">
+        <span>{describe(event)}</span>
+        <span className="ml-auto shrink-0 font-mono text-[11px] fg-muted">{new Date(event.at).toLocaleTimeString([], { hour12: false })}</span>
+      </div>
+    </li>
+  );
 }
 
 export function TryView() {
@@ -184,20 +243,28 @@ export function TryView() {
     <div className="space-y-6">
       <PageHeader
         title="Try it"
+        leading={<FlaskConical size={24} className="fg-muted" />}
         description="Run a real job through the running service: admission, executor, agent, gateway, and model. The configurator attaches the API key; it never leaves this machine."
         actions={
-          <div className="flex rounded-xl border border-slate-200 p-1 dark:border-slate-700">
+          <div role="radiogroup" aria-label="Target" className="inline-flex rounded-md bg-[var(--controlTrack-bgColor-rest)] p-0.5">
             {(["local", "azure"] as const).map((t) => (
               <button
                 key={t}
                 type="button"
+                role="radio"
+                aria-checked={target === t}
                 onClick={() => {
                   setTarget(t);
                   setJob(undefined);
                 }}
-                className={clsx("btn border-transparent", target === t && "bg-brand-50 text-brand-700 dark:bg-brand-700/20 dark:text-brand-200")}
+                className={clsx(
+                  "inline-flex h-7 items-center gap-1.5 rounded-md border px-3 text-sm",
+                  target === t
+                    ? "border-[var(--controlKnob-borderColor-rest)] bg-[var(--controlKnob-bgColor-rest)] font-semibold"
+                    : "border-transparent fg-muted",
+                )}
               >
-                {t === "local" ? <Laptop className="h-4 w-4" /> : <Cloud className="h-4 w-4" />}
+                {t === "local" ? <Laptop /> : <Cloud />}
                 {t === "local" ? "Local stack" : `Azure${azureTarget ? `: ${azureTarget.name}` : ""}`}
               </button>
             ))}
@@ -207,7 +274,7 @@ export function TryView() {
 
       {connectError ? (
         <Card>
-          <p className="text-red-600 dark:text-red-400">{connectError}</p>
+          <Flash tone="error">{connectError}</Flash>
           <div className="mt-3 flex gap-2">
             <button type="button" className="btn-secondary" onClick={() => void connect()}>
               <RefreshCw className="h-4 w-4" /> Retry
@@ -229,7 +296,7 @@ export function TryView() {
               <span className="flex flex-wrap items-center gap-2">
                 <code className="text-xs">{apiUrl}</code>
                 {apiUrl && (
-                  <a className="inline-flex items-center gap-1 text-xs text-brand-700 hover:underline dark:text-brand-300" href={apiUrl} target="_blank" rel="noreferrer">
+                  <a className="inline-flex items-center gap-1 text-xs hover:underline" href={apiUrl} target="_blank" rel="noreferrer">
                     job console <ExternalLink className="h-3 w-3" />
                   </a>
                 )}
@@ -270,11 +337,11 @@ export function TryView() {
                   </Field>
                 </div>
                 {stale && (
-                  <div className="rounded-xl border border-amber-300 bg-amber-50 p-3 text-amber-800 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+                  <Flash tone="warn">
                     Your files differ from what this service is running
                     {newerOnDisk.length > 0 ? ` (not yet loaded: ${newerOnDisk.map((h) => h.version).join(", ")})` : ""}.{" "}
                     {target === "local" ? "Use Reload harnesses on Local run." : "Deploy to publish them."}
-                  </div>
+                  </Flash>
                 )}
                 <Field label="Input">
                   <JsonEditor rows={16} value={input} onChange={setInput} />
@@ -319,45 +386,42 @@ export function TryView() {
               <Empty>Run a job to see live events and the structured result.</Empty>
             ) : (
               <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
-                  <div>
-                    <div className="label">Job</div>
-                    <code className="break-all">{job.id}</code>
+                <div className="card grid grid-cols-2 gap-px overflow-hidden bg-[var(--borderColor-muted)] text-xs md:grid-cols-4">
+                  <div className="bg-[var(--bgColor-default)] p-2">
+                    <div className="section-label">Job</div>
+                    <code className="break-all !bg-transparent !p-0">{job.id}</code>
                   </div>
-                  <div>
-                    <div className="label">Agent</div>
+                  <div className="bg-[var(--bgColor-default)] p-2">
+                    <div className="section-label">Runner</div>
                     {job.profile}
                   </div>
-                  <div>
-                    <div className="label">Attempts</div>
+                  <div className="bg-[var(--bgColor-default)] p-2">
+                    <div className="section-label">Attempts</div>
                     {job.attempts} of {job.maxAttempts}
                   </div>
-                  <div>
-                    <div className="label">Tokens</div>
+                  <div className="bg-[var(--bgColor-default)] p-2">
+                    <div className="section-label">Tokens</div>
                     {job.usage.inputTokens} in · {job.usage.outputTokens} out
                   </div>
                 </div>
                 {job.acknowledgedGaps.length > 0 && <Badge tone="amber">gaps: {job.acknowledgedGaps.join(", ")}</Badge>}
                 {job.error && (
-                  <p className="rounded-xl border border-red-300 p-3 text-red-700 dark:border-red-800 dark:text-red-300">
-                    {job.error.code}: {job.error.message}
-                  </p>
+                  <Flash tone="error">
+                    <code>{job.error.code}</code> {job.error.message}
+                  </Flash>
                 )}
                 {job.state === "succeeded" && (
-                  <div className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
+                  <div className="card card-pad">
                     <ResultView value={job.result} schema={live?.outputSchema} />
                   </div>
                 )}
                 <div>
-                  <div className="label flex items-center gap-2">
-                    Events {!TERMINAL.has(job.state) && <Spinner className="h-3 w-3" />}
+                  <div className="section-label flex items-center gap-2">
+                    Activity {!TERMINAL.has(job.state) && <Spinner className="h-3 w-3" />}
                   </div>
-                  <ol className="max-h-72 space-y-0.5 overflow-auto font-mono text-[11.5px]">
+                  <ol className="max-h-80 overflow-auto">
                     {events.map((e) => (
-                      <li key={e.seq} className="flex gap-3">
-                        <span className="text-slate-400">{new Date(e.at).toLocaleTimeString([], { hour12: false })}</span>
-                        <span>{describe(e)}</span>
-                      </li>
+                      <EventItem key={e.seq} event={e} />
                     ))}
                   </ol>
                 </div>
