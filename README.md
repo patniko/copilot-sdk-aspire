@@ -11,6 +11,8 @@ running through the same job contract and security boundaries.
 
 See the [architecture and delivery plan](docs/PLAN.md) for the full design and the
 [implementation status](docs/PLAN.md#24-implementation-status) for what is built and which gates remain open.
+For a source-based explanation of the product, local/cloud topology, sessions, authoring, supervision, and harness
+comparison support, see the [product overview](docs/PRODUCT-OVERVIEW.md).
 
 ## Quick start: the configurator
 
