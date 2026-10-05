@@ -125,6 +125,22 @@ function TemplateGrid({ templates, value, onChange }: { templates: TemplateInfo[
     { label: "Tools", cell: (t) => <Counter>{t.tools}</Counter> },
     { label: "Sub-agents", cell: (t) => <Counter>{t.agents}</Counter> },
     { label: "Skills", cell: (t) => <Counter>{t.skills}</Counter> },
+    {
+      label: "Built-in tools",
+      cell: (t) =>
+        t.builtinTools.length ? (
+          <span className="flex flex-wrap gap-1">
+            {t.builtinTools.map((g) => (
+              <Badge key={g} tone="done">
+                {g}
+              </Badge>
+            ))}
+          </span>
+        ) : (
+          <span className="text-xs fg-muted">none</span>
+        ),
+    },
+    { label: "Permissions", cell: (t) => <span className="text-xs">{t.permissions}</span> },
     { label: "Reasoning", cell: (t) => <span className="text-xs">{t.reasoningEffort ?? "model default"}</span> },
     { label: "Runs on", cell: (t) => <span className="text-xs">{t.profiles.join(", ") || "no approved profile"}</span> },
   ];
@@ -148,7 +164,7 @@ function TemplateGrid({ templates, value, onChange }: { templates: TemplateInfo[
                   )}
                 >
                   <div className="flex items-center gap-2 font-semibold">
-                    {t.agents > 0 ? <Copilot className="fg-done" /> : <FileCode2 className="fg-muted" />}
+                    {t.agents > 0 || t.builtinTools.length > 0 ? <Copilot className="fg-done" /> : <FileCode2 className="fg-muted" />}
                     {t.title}
                   </div>
                   <div className="mt-1 text-xs fg-muted">{t.summary}</div>

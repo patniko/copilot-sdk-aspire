@@ -18,7 +18,7 @@ from importlib.metadata import version
 from typing import Any
 
 from copilot import CopilotClient
-from copilot.generated.rpc import PermissionDecisionReject
+from copilot.generated.rpc import PermissionDecisionApproveOnce, PermissionDecisionReject
 from copilot.tools import Tool, ToolInvocation, ToolResult
 from jsonschema import Draft202012Validator
 
@@ -28,8 +28,28 @@ RESULT_CONTRACT = (
     "\n\n## Result contract\nWhen you have finished, call the `submit_result` tool exactly once with the "
     "complete final result. The arguments must satisfy the tool's JSON schema."
 )
+DEFAULT_INPUT_TIMEOUT_SECONDS = 600
 # Built-in SDK agents stay unreachable; only the harness's own sub-agents can be delegated to.
 BUILTIN_AGENTS = ["explore", "task", "general-purpose", "code-review", "research", "rubber-duck", "security-review", "rem-agent"]
+BUILTIN_TOOL_GROUPS = {
+    "files": ["view", "glob", "grep", "create", "edit", "apply_patch"],
+    "shell": [
+        "bash",
+        "read_bash",
+        "write_bash",
+        "stop_bash",
+        "list_bash",
+        "powershell",
+        "read_powershell",
+        "write_powershell",
+        "stop_powershell",
+        "list_powershell",
+    ],
+    "web": ["web_fetch"],
+    "agents": ["task", "read_agent", "list_agents", "write_agent"],
+}
+PERMISSION_LIMITS = {"intention": 1000, "command": 8000, "path": 1000, "url": 2000, "diff": 20_000, "tool": 200, "warning": 1000}
+QUESTION_FALLBACK = "No answer was given in time. Continue with your best judgement and state your assumptions."
 
 _terminal = False
 
@@ -75,6 +95,152 @@ def failure(code: str, message: str, retryable: bool, uncertain_effects: bool = 
                 "uncertainEffects": uncertain_effects,
             }
         )
+
+
+class InputBridge:
+    def __init__(self) -> None:
+        self._pending: dict[str, tuple[asyncio.Future[dict[str, Any]], asyncio.TimerHandle | None]] = {}
+        self._counter = 0
+
+    async def ask(self, request: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
+        if _terminal or (timeout is not None and timeout <= 0):
+            return {"kind": "expired"}
+        request_id = f"r{int(time.time() * 1000):x}_{self._counter:x}"
+        self._counter += 1
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+
+        def expire() -> None:
+            if not future.done():
+                future.set_result({"kind": "expired"})
+
+        timer = loop.call_later(timeout, expire) if timeout is not None else None
+        self._pending[request_id] = (future, timer)
+        write({"type": "input_request", "id": request_id, "request": request})
+        try:
+            return await future
+        finally:
+            pending = self._pending.pop(request_id, None)
+            if pending and pending[1]:
+                pending[1].cancel()
+
+    def resolve(self, request_id: str, response: dict[str, Any]) -> None:
+        pending = self._pending.get(request_id)
+        if not pending:
+            return
+        future, _timer = pending
+        if not future.done():
+            future.set_result(response)
+
+    def expire_all(self) -> None:
+        for future, timer in list(self._pending.values()):
+            if timer:
+                timer.cancel()
+            if not future.done():
+                future.set_result({"kind": "expired"})
+        self._pending.clear()
+
+
+def truncate(value: str | None, limit: int) -> str | None:
+    if value is None:
+        return None
+    return value[:limit]
+
+
+def add_if_present(target: dict[str, Any], key: str, value: Any) -> None:
+    if value is not None:
+        target[key] = value
+
+
+def permission_mode_for(permissions: dict[str, Any] | None, kind: str) -> str:
+    if not permissions:
+        return "deny"
+    return (permissions.get("kinds") or {}).get(kind) or permissions["default"]
+
+
+def sandbox_warning(request: Any) -> str | None:
+    if not getattr(request, "request_sandbox_bypass", False):
+        return None
+    reason = getattr(request, "request_sandbox_bypass_reason", None)
+    return f"Sandbox bypass requested: {reason}" if reason else "Sandbox bypass requested."
+
+
+def combined_warning(request: Any) -> str | None:
+    parts = [part for part in (getattr(request, "warning", None), sandbox_warning(request)) if isinstance(part, str) and part.strip()]
+    return truncate("\n".join(parts), PERMISSION_LIMITS["warning"]) if parts else None
+
+
+def permission_prompt_for(request: Any) -> dict[str, Any]:
+    kind = request.kind
+    warning = combined_warning(request)
+    if kind == "shell":
+        prompt: dict[str, Any] = {"type": "shell"}
+        add_if_present(prompt, "intention", truncate(getattr(request, "intention", None), PERMISSION_LIMITS["intention"]))
+        add_if_present(prompt, "command", truncate(getattr(request, "full_command_text", None), PERMISSION_LIMITS["command"]))
+        add_if_present(prompt, "warning", warning)
+        return prompt
+    if kind == "write":
+        prompt = {"type": "write"}
+        add_if_present(prompt, "intention", truncate(getattr(request, "intention", None), PERMISSION_LIMITS["intention"]))
+        add_if_present(prompt, "path", truncate(getattr(request, "file_name", None), PERMISSION_LIMITS["path"]))
+        add_if_present(prompt, "diff", truncate(getattr(request, "diff", None) or getattr(request, "new_file_contents", None), PERMISSION_LIMITS["diff"]))
+        add_if_present(prompt, "warning", warning)
+        return prompt
+    if kind == "read":
+        prompt = {"type": "read"}
+        add_if_present(prompt, "intention", truncate(getattr(request, "intention", None), PERMISSION_LIMITS["intention"]))
+        add_if_present(prompt, "path", truncate(getattr(request, "path", None), PERMISSION_LIMITS["path"]))
+        add_if_present(prompt, "warning", warning)
+        return prompt
+    if kind == "url":
+        prompt = {"type": "url"}
+        add_if_present(prompt, "intention", truncate(getattr(request, "intention", None), PERMISSION_LIMITS["intention"]))
+        add_if_present(prompt, "url", truncate(getattr(request, "url", None), PERMISSION_LIMITS["url"]))
+        add_if_present(prompt, "warning", warning)
+        return prompt
+    if kind == "mcp":
+        prompt = {"type": "mcp"}
+        add_if_present(prompt, "tool", truncate(f"{request.server_name}:{request.tool_name}", PERMISSION_LIMITS["tool"]))
+        add_if_present(prompt, "intention", truncate(getattr(request, "tool_title", None), PERMISSION_LIMITS["intention"]))
+        return prompt
+    prompt = {"type": "other"}
+    tool = getattr(request, "tool_name", None) or getattr(request, "tool_title", None) or kind
+    add_if_present(prompt, "tool", truncate(tool, PERMISSION_LIMITS["tool"]))
+    add_if_present(
+        prompt,
+        "intention",
+        truncate(getattr(request, "intention", None) or getattr(request, "tool_description", None), PERMISSION_LIMITS["intention"]),
+    )
+    add_if_present(prompt, "warning", warning)
+    return prompt
+
+
+def policy_kind(prompt: dict[str, Any]) -> str:
+    return prompt["type"] if prompt["type"] in ("read", "write", "shell", "url") else "__default__"
+
+
+def build_permission_handler(permissions: dict[str, Any] | None, ask: Any) -> Any:
+    approved_kinds: set[str] = set()
+
+    async def on_permission_request(request: Any, _invocation: dict[str, str]) -> Any:
+        prompt = permission_prompt_for(request)
+        if prompt["type"] in approved_kinds:
+            return PermissionDecisionApproveOnce()
+        mode = permission_mode_for(permissions, policy_kind(prompt))
+        if mode == "allow":
+            return PermissionDecisionApproveOnce()
+        if mode == "deny":
+            return PermissionDecisionReject(feedback="Not permitted by the job policy.")
+        response = await ask({"kind": "permission", "permission": prompt})
+        if response.get("kind") == "expired":
+            return PermissionDecisionReject(feedback="No approval was given in time.")
+        if response.get("kind") != "permission" or not response.get("approved"):
+            return PermissionDecisionReject(feedback=response.get("feedback") or "Denied by the reviewer.")
+        if response.get("scope") == "kind":
+            approved_kinds.add(prompt["type"])
+        return PermissionDecisionApproveOnce(approved_interactively=True)
+
+    return on_permission_request
 
 
 async def run_python_tool(script: str, args: Any, workspace: str, timeout: float = 30.0) -> Any:
@@ -163,15 +329,20 @@ def session_options(definition: dict[str, Any], tool_names: list[str], skills_di
 
     agents = definition.get("agents") or []
     skills = definition.get("skills") or []
+    builtin_tools = definition.get("builtinTools") or []
     available = [f"custom:{name}" for name in tool_names]
+    for group in builtin_tools:
+        available.extend(f"builtin:{name}" for name in BUILTIN_TOOL_GROUPS[group])
     if agents:
         available.append("builtin:task")
     if skills:
         available.append("builtin:skill")
+    if (definition.get("permissions") or {}).get("questions") is True:
+        available.append("builtin:ask_user")
     options: dict[str, Any] = {
         "system_message": system_message,
-        "available_tools": available,
-        "excluded_builtin_agents": list(BUILTIN_AGENTS),
+        "available_tools": list(dict.fromkeys(available)),
+        "excluded_builtin_agents": [] if "agents" in builtin_tools else list(BUILTIN_AGENTS),
     }
     model = definition["model"]
     if model.get("reasoningEffort"):
@@ -206,7 +377,7 @@ def session_options(definition: dict[str, Any], tool_names: list[str], skills_di
     return options
 
 
-async def run(start: dict[str, Any], cancelled: asyncio.Event) -> None:
+async def run(start: dict[str, Any], cancelled: asyncio.Event, input_bridge: InputBridge) -> None:
     definition = start["harness"]["definition"]
     if errors := list(Draft202012Validator(definition["input"]["schema"]).iter_errors(start["input"])):
         failure("invalid_input", f"Input does not match the harness schema: {errors[0].message}", False)
@@ -278,6 +449,30 @@ async def run(start: dict[str, Any], cancelled: asyncio.Event) -> None:
         log_level="error",
         env=runtime_env,
     )
+    deadline = datetime.fromisoformat(start["deadline"].replace("Z", "+00:00")).timestamp()
+
+    async def ask_input(request: dict[str, Any]) -> dict[str, Any]:
+        timeout = min((definition.get("permissions") or {}).get("timeoutSeconds") or DEFAULT_INPUT_TIMEOUT_SECONDS, deadline - time.time() - 1)
+        if cancelled.is_set() or timeout <= 0:
+            return {"kind": "expired"}
+        return await input_bridge.ask(request, timeout)
+
+    async def on_user_input_request(request: dict[str, Any], _invocation: dict[str, str]) -> dict[str, Any]:
+        choices = request.get("choices")
+        if choices:
+            choices = [choice[:500] for choice in choices if choice][:20] or None
+        question = {
+            "kind": "question",
+            "question": (request.get("question") or "The agent asks for input.")[:4000],
+            "allowFreeform": request.get("allowFreeform", True),
+        }
+        if choices:
+            question["choices"] = choices
+        response = await ask_input(question)
+        if response.get("kind") == "question":
+            return {"answer": response.get("answer", ""), "wasFreeform": bool(response.get("wasFreeform"))}
+        return {"answer": QUESTION_FALLBACK, "wasFreeform": True}
+
     await client.start()
     try:
         session = await client.create_session(
@@ -289,16 +484,17 @@ async def run(start: dict[str, Any], cancelled: asyncio.Event) -> None:
                 "wire_api": "completions",
             },
             tools=tools,
-            on_permission_request=lambda _req, _inv: PermissionDecisionReject(feedback="Not permitted by the job policy."),
+            on_permission_request=build_permission_handler(definition.get("permissions"), ask_input),
+            on_user_input_request=on_user_input_request if (definition.get("permissions") or {}).get("questions") is True else None,
             enable_config_discovery=False,
             skip_custom_instructions=True,
             **session_options(definition, [tool.name for tool in tools], skills_directory),
         )
         session.on(on_event)
-        deadline = datetime.fromisoformat(start["deadline"].replace("Z", "+00:00")).timestamp()
 
         async def abort_on_cancel() -> None:
             await cancelled.wait()
+            input_bridge.expire_all()
             await session.abort()
 
         watcher = asyncio.create_task(abort_on_cancel())
@@ -349,7 +545,16 @@ async def main() -> None:
                 "language": "python",
                 "sdkVersion": version("github-copilot-sdk"),
             },
-            "capabilities": ["cancel", "structured-result", "prompt-sections", "model-options", "custom-agents", "skills"],
+            "capabilities": [
+                "cancel",
+                "structured-result",
+                "prompt-sections",
+                "model-options",
+                "custom-agents",
+                "skills",
+                "builtin-tools",
+                "interactive",
+            ],
         }
     )
     loop = asyncio.get_running_loop()
@@ -357,6 +562,7 @@ async def main() -> None:
     await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), sys.stdin)
 
     cancelled = asyncio.Event()
+    input_bridge = InputBridge()
     start: dict[str, Any] | None = None
     while start is None:
         line = await reader.readline()
@@ -376,20 +582,27 @@ async def main() -> None:
             line = await reader.readline()
             if not line:
                 cancelled.set()
+                input_bridge.expire_all()
                 return
             message = parse_line(line)
-            if message is not None and message.get("type") == "cancel":
+            if message is None:
+                continue
+            if message.get("type") == "input_response":
+                input_bridge.resolve(str(message.get("id")), message.get("response") or {"kind": "expired"})
+            elif message.get("type") == "cancel":
                 cancelled.set()
+                input_bridge.expire_all()
                 return
 
     watcher = asyncio.create_task(watch_stdin())
     try:
-        await run(start, cancelled)
+        await run(start, cancelled, input_bridge)
     except Exception as error:  # noqa: BLE001
         print(f"runner: unexpected error: {error}", file=sys.stderr)
         failure("internal", "The runner failed unexpectedly.", True)
     finally:
         watcher.cancel()
+        input_bridge.expire_all()
         if not _terminal:
             failure("internal", "The runner ended without an outcome.", True)
 

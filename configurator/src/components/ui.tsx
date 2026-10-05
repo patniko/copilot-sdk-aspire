@@ -326,20 +326,22 @@ export function JsonEditor({ value, onChange, rows = 14, error }: {
 }
 
 /** Primer checkbox with label and caption. */
-export function Toggle({ checked, onChange, label, description, help }: {
+export function Toggle({ checked, onChange, label, description, help, disabled }: {
   checked: boolean;
   onChange: (checked: boolean) => void;
   label: ReactNode;
   description?: ReactNode;
   help?: string;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex items-start gap-2">
-      <label className="flex cursor-pointer items-start gap-2">
+      <label className={clsx("flex items-start gap-2", disabled ? "cursor-not-allowed opacity-70" : "cursor-pointer")}>
         <input
           type="checkbox"
           className="mt-[3px] h-4 w-4 accent-[var(--bgColor-accent-emphasis)]"
           checked={checked}
+          disabled={disabled}
           onChange={(e) => onChange(e.target.checked)}
         />
         <span>

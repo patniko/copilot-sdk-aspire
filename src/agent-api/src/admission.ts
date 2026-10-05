@@ -5,6 +5,7 @@ import {
   type JobSubmission,
   modelOptionViolations,
   requiredRunnerCapabilities,
+  toolPolicyViolations,
 } from "@copilot-agent/contracts";
 import { canonicalJson, createAjv, HttpError, sha256Hex } from "@copilot-agent/service-defaults";
 import type { ValidateFunction } from "ajv";
@@ -69,7 +70,7 @@ export class Admission {
         throw new HttpError(422, "policy_rejected", `Profile '${profileId}' does not support '${required}'.`);
       }
     }
-    const optionProblems = modelOptionViolations(definition, policy);
+    const optionProblems = [...modelOptionViolations(definition, policy), ...toolPolicyViolations(definition, policy)];
     if (optionProblems.length > 0) {
       throw new HttpError(422, "policy_rejected", optionProblems[0]!.message, { problems: optionProblems });
     }

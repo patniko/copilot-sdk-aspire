@@ -27,8 +27,9 @@ your browser with a one-time session URL. Keep the terminal open; press Ctrl+C t
    Every edit is validated as you type against the contracts, the execution profiles, and the policy; saving is
    blocked while there are errors. If committed content changes without a version bump, the editor offers a one-click
    bump.
-3. **Policy**: approved agent profiles and models, limits, model-option ceilings (maximum reasoning effort, long
-   context), required controls, and acknowledged security gaps.
+3. **Policy**: approved agent profiles and models, limits, the built-in tool groups and permission modes harnesses
+   may use, model-option ceilings (maximum reasoning effort, long context), required controls, and acknowledged
+   security gaps.
 4. **Local run**: set the Foundry endpoint and deployments (or discover them from your subscription), optional package
    proxies, then **Build & start** the stack. After saving harness edits, **Reload harnesses** (or **Save & reload
    local API** in the editor) restarts only the API. Unit and full test suites run from here too.
@@ -52,7 +53,8 @@ The editor has one tab per part of the harness contract:
 | Overview | Version, description, a summary, and what the platform does with the harness |
 | Prompt | Prompt mode (replace, append, or customize the Copilot foundation prompt section by section) and the instructions |
 | Model | Preferred and allowed models, reasoning effort, context tier (within the policy ceilings) |
-| Tools | Tool bindings from the execution profiles; **Delegated only** hides a tool from the coordinator |
+| Tools | Harness tool bindings from the execution profiles (**Delegated only** hides one from the coordinator), and **Built-in Copilot tools** in groups: files, shell, web, built-in agents |
+| Permissions | What happens when the agent asks to read or write a file, run a command or fetch a URL: deny, ask you, or allow (yolo), per kind with a default; whether the agent can ask you questions; how long a request waits |
 | Sub-agents | Specialists the coordinator delegates to: instructions, a subset of the tools, preloaded skills, model |
 | Skills | Markdown procedures stored as `skills/<name>/SKILL.md` in the harness folder |
 | Input, Output | JSON Schemas (2020-12) and an example input |
@@ -68,9 +70,11 @@ Other aids:
 - **Undo and redo**: header buttons, or Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z outside text fields. Ctrl/Cmd+S saves.
 - **Drafts**: unsaved edits are kept in this browser per harness folder. Returning to a harness offers to restore the
   draft and warns if the files changed on disk since. Files change only when you save.
-- **Templates**: **New harness** compares four starting points: structured answer, data analysis (Python tool),
-  skill guided, and agent team (customized prompt, two sub-agents, a delegated-only tool, a skill). Each template
-  validates against the current policy.
+- **Templates**: **New harness** compares five starting points, from simple to coding: structured answer, data
+  analysis (Python tool), skill guided, agent team (customized prompt, two sub-agents, a delegated-only tool, a
+  skill), and **Copilot coding agent** (Copilot's full prompt and built-in tools; reads are allowed, and it asks you
+  before shell commands, file writes and web access, and can ask you questions). Each template validates against
+  the current policy.
 - **Import plan**: paste or open a plan JSON from the earlier Harness Builder. The report lists what was mapped
   (prompt mode and sections, instructions, model, reasoning, sub-agents), what needs work (custom tools and MCP
   servers need bindings, unapproved models), and what does not apply to hosted jobs (provider credentials, client
@@ -80,6 +84,26 @@ Other aids:
 
 `harnesses/insights-team` is a sample that uses every feature: a customized prompt, reasoning effort, a statistician
 sub-agent that alone can call the Python statistics tool, and a reviewer sub-agent with a preloaded review skill.
+`harnesses/copilot-coding-agent` is the Copilot coding agent template as a ready-to-run harness.
+
+## Approvals and questions
+
+![Permissions tab](images/configurator-permissions.png)
+
+Harnesses whose permissions **ask** (or allow questions) pause the agent until a person answers. Answer them in
+either place:
+
+- **Job console** (served by the agent API at `/`, locally and in Azure): the **Sessions** view lists every job with
+  a **Needs you** count, and the inbox lists all pending approvals and questions across sessions. Each request shows
+  the command, file diff or URL; approve it once, approve that kind of action for the rest of the run, or deny it
+  with a note for the agent. Questions offer their choices and a free-text answer.
+- **Try it** in the configurator shows the requests of the job you started, and links to the job console when other
+  sessions are waiting.
+
+A request waits up to `permissions.timeoutSeconds` (default 600) and is then denied. Waiting counts toward the
+attempt deadline. Only the job's caller (its API key) can answer. The REST endpoints are
+`GET /v1/input-requests?state=pending`, `GET /v1/jobs/{id}/input-requests`, and
+`POST /v1/jobs/{id}/input-requests/{requestId}/respond` (see `http/agent-api.http`).
 
 ![Sub-agents tab](images/configurator-subagents.png)
 

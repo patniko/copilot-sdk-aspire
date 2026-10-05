@@ -21,11 +21,13 @@ const enabledProfiles = optionalEnv("EXECUTOR_PROFILES", [...profiles.keys()].jo
   .split(",")
   .map((p) => p.trim())
   .filter((p) => profiles.has(p));
-const isolation = await probeIsolation(intEnv("RUNNER_UID", 10001), intEnv("RUNNER_GID", 10001));
+const runnerUid = intEnv("RUNNER_UID", 10001);
+const runnerGid = intEnv("RUNNER_GID", 10001);
+const isolation = await probeIsolation(runnerUid, runnerGid);
 const dispatcher = new DispatcherClient(serviceUrl("job-dispatcher"), requireEnv("EXECUTOR_KEY"));
 const gatewayBaseUrl = `${serviceUrl("inference-gateway")}/openai/v1/`;
 const workspaceRoot = optionalEnv("WORKSPACE_ROOT", join(tmpdir(), "agent-work"));
-const parallelism = intEnv("EXECUTOR_PARALLELISM", 2);
+const parallelism = Math.min(Math.max(intEnv("EXECUTOR_PARALLELISM", 2), 1), 8);
 const imageDigest = process.env.IMAGE_DIGEST;
 
 const capabilities: ExecutorCapabilities = {
@@ -73,7 +75,10 @@ async function slot(index: number): Promise<void> {
         claim,
         profile,
         dispatcher,
-        isolation,
+        isolation:
+          isolation.processIsolation === "uid"
+            ? { ...isolation, uid: runnerUid + index, gid: runnerGid + index }
+            : isolation,
         configRoot: root,
         workspaceRoot,
         gatewayBaseUrl,

@@ -1,11 +1,18 @@
 import {
+  type BuiltinToolGroup,
+  DEFAULT_INPUT_TIMEOUT_SECONDS,
   ExecutionPolicy,
   HarnessDefinition,
+  isInteractive,
   modelOptionViolations,
+  permissionModeFor,
+  permissionModesUsed,
+  type PermissionsConfig,
   renderSkillMarkdown,
   requiredRunnerCapabilities,
   securityGaps,
   SLUG,
+  toolPolicyViolations,
 } from "@copilot-agent/contracts";
 import { canonicalJson, createAjv, sha256Hex } from "@copilot-agent/service-defaults";
 import type { Decision, EffectiveLimits, HarnessDocument, Issue, ProfileSummary } from "./types.js";
@@ -90,11 +97,40 @@ export function validateHarness(document: HarnessDocument, context: ValidationCo
   const modelShape = (candidate && typeof candidate === "object" ? candidate : {}) as {
     model?: { reasoningEffort?: string; contextTier?: string };
     agents?: Array<{ name: string; reasoningEffort?: string }>;
+    builtinTools?: BuiltinToolGroup[];
+    permissions?: PermissionsConfig;
   };
   if (modelShape.model) {
     for (const violation of modelOptionViolations({ model: modelShape.model, agents: modelShape.agents }, context.policy)) {
       issues.push(issue("error", violation.path, violation.message));
     }
+  }
+  for (const violation of toolPolicyViolations(
+    { builtinTools: modelShape.builtinTools, permissions: modelShape.permissions },
+    context.policy,
+  )) {
+    issues.push(issue("error", violation.path, violation.message));
+  }
+  if (modelShape.builtinTools?.length) {
+    const modes = permissionModesUsed(modelShape.permissions);
+    if (modes.size === 1 && modes.has("deny")) {
+      issues.push(
+        issue(
+          "warning",
+          "permissions",
+          "Built-in tools are enabled but every permission request is denied, so shell commands, file writes and web fetches will fail. Set permissions to ask or allow.",
+        ),
+      );
+    }
+  }
+  if (isInteractive(modelShape.permissions) && manifest.retry?.safeToRetry) {
+    issues.push(
+      issue(
+        "warning",
+        "retry.safeToRetry",
+        "This harness waits for people and can change files or run commands; automatic retries would repeat those actions.",
+      ),
+    );
   }
 
   const ajv = createAjv();
@@ -366,6 +402,49 @@ export function decisions(document: HarnessDocument, context: ValidationContext)
       detail: "Review cost and latency before using the long-context model tier.",
       path: "model.contextTier",
     });
+  }
+
+  const builtin = Array.isArray(manifest.builtinTools) ? manifest.builtinTools : [];
+  const permissions = manifest.permissions;
+  if (builtin.length > 0) {
+    const labels: Record<string, string> = { files: "file view and edit", shell: "shell commands", web: "web fetch", agents: "built-in sub-agents" };
+    result.push({
+      kind: "host",
+      title: `Built-in Copilot tools: ${builtin.map((group) => labels[group] ?? group).join(", ")}`,
+      detail:
+        "They run inside the runner container in the attempt's private workspace, as an unprivileged user dedicated to that executor slot, with no service or provider credentials. The workspace is deleted when the attempt ends.",
+      path: "builtinTools",
+    });
+    if ((builtin.includes("shell") || builtin.includes("web")) && context.policy.acknowledgedGaps.includes("egress-not-enforced")) {
+      result.push({
+        kind: "gap",
+        title: "Shell and web tools can reach any network address",
+        detail: "Egress is not enforced, so an approved command or fetch can contact the internet or internal endpoints. Review approvals with that in mind.",
+        path: "builtinTools",
+      });
+    }
+  }
+  if (permissions) {
+    const modeOf = (kind: string) => permissionModeFor(permissions, kind);
+    const allowed = ["read", "write", "shell", "url"].filter((kind) => modeOf(kind) === "allow");
+    const asked = ["read", "write", "shell", "url"].filter((kind) => modeOf(kind) === "ask");
+    if (allowed.length > 0) {
+      result.push({
+        kind: "review",
+        title: allowed.length === 4 && permissions.default === "allow" ? "Yolo: every action is approved automatically" : `Approved automatically: ${allowed.join(", ")}`,
+        detail: "Nobody reviews these actions before they run. Use this only for disposable workspaces and trusted inputs.",
+        path: "permissions",
+      });
+    }
+    if (asked.length > 0 || permissions.questions) {
+      const wait = Math.min(permissions.timeoutSeconds ?? DEFAULT_INPUT_TIMEOUT_SECONDS, effective.maxDurationSeconds);
+      result.push({
+        kind: "info",
+        title: [asked.length ? `Asks you before: ${asked.join(", ")}` : "", permissions.questions ? "Can ask you questions" : ""].filter(Boolean).join(" · "),
+        detail: `Answer in the job console's Sessions view or in Try it. Each request waits up to ${wait}s, then it is denied; waiting counts toward the ${effective.maxDurationSeconds}s attempt deadline.`,
+        path: "permissions",
+      });
+    }
   }
 
   for (const gap of context.policy.acknowledgedGaps) {

@@ -113,7 +113,7 @@ export interface HarnessChanges {
 }
 
 export interface TemplateInfo {
-  id: "structured-answer" | "data-analysis" | "skill-guided" | "agent-team";
+  id: "structured-answer" | "data-analysis" | "skill-guided" | "agent-team" | "copilot-coding";
   title: string;
   summary: string;
   bestFor: string;
@@ -122,6 +122,10 @@ export interface TemplateInfo {
   agents: number;
   skills: number;
   reasoningEffort?: string;
+  /** Built-in Copilot tool groups (files, shell, web, agents). */
+  builtinTools: string[];
+  /** Short description of how permission requests are handled. */
+  permissions: string;
   profiles: string[];
 }
 

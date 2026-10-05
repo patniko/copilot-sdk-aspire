@@ -1,5 +1,12 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
+  DEFAULT_INPUT_TIMEOUT_SECONDS,
+  summarizeInputRequest,
+  type InputRequestBody,
+  type InputRequestState,
+  type InputRequestView,
+  type InputResponseBody,
+  type InputResponseSubmission,
   type ExecutorCapabilities,
   type HarnessSnapshot,
   type JobErrorCode,
@@ -13,7 +20,12 @@ import {
 } from "@copilot-agent/contracts";
 import type pg from "pg";
 
-export type StoreErrorCode = "idempotency_conflict" | "quota_exceeded" | "not_found" | "invalid_state";
+export type StoreErrorCode =
+  | "idempotency_conflict"
+  | "quota_exceeded"
+  | "not_found"
+  | "invalid_state"
+  | "invalid_request";
 
 export class StoreError extends Error {
   constructor(
@@ -73,6 +85,23 @@ export interface CompletionResult {
   state?: JobState;
 }
 
+export interface CreatedInputRequest {
+  id: string;
+  expiresAt: string;
+}
+
+export interface PolledInputRequest {
+  state: InputRequestState;
+  response?: InputResponseBody;
+}
+
+export interface ListInputRequestsOptions {
+  jobId?: string;
+  state?: "pending" | "all";
+  limit: number;
+  order?: "oldest" | "newest";
+}
+
 interface JobRow {
   id: string;
   principal: string;
@@ -102,12 +131,34 @@ interface JobRow {
   created_at: Date;
   updated_at: Date;
   acknowledged_gaps?: string[] | null;
+  pending_inputs?: string | number | null;
+}
+
+interface InputRequestRow {
+  id: string;
+  job_id: string;
+  attempt_id: string;
+  attempt_number: number;
+  runner_request_id: string;
+  kind: "permission" | "question";
+  request: InputRequestBody;
+  state: InputRequestState;
+  response: InputResponseBody | null;
+  created_at: Date;
+  expires_at: Date;
+  resolved_at: Date | null;
+  answered_by: string | null;
+  harness_name: string;
+  harness_version: string;
 }
 
 const JOB_VIEW_SELECT = `
   SELECT j.*, (
     SELECT a.acknowledged_gaps FROM attempts a WHERE a.job_id = j.id ORDER BY a.number DESC LIMIT 1
-  ) AS acknowledged_gaps
+  ) AS acknowledged_gaps, (
+    SELECT count(*)::int FROM input_requests ir
+    WHERE ir.job_id = j.id AND ir.state = 'pending' AND ir.expires_at > now()
+  ) AS pending_inputs
   FROM jobs j`;
 
 export class JobStore {
@@ -222,6 +273,102 @@ export class JobStore {
     return result.rows.map((r) => ({ seq: Number(r.seq), at: r.at.toISOString(), body: r.body }));
   }
 
+  async listInputRequests(principal: string, options: ListInputRequestsOptions): Promise<InputRequestView[]> {
+    return this.#tx(async (client) => {
+      await this.#expirePendingInputsForPrincipal(client, principal, options.jobId);
+      const state = options.state ?? "pending";
+      const order =
+        options.order ?? (state === "pending" ? "oldest" : "newest");
+      const params: unknown[] = [principal, options.jobId ?? null, options.limit];
+      const result = await client.query<InputRequestRow>(
+        `SELECT r.*, j.harness_name, j.harness_version
+         FROM input_requests r
+         JOIN jobs j ON j.id = r.job_id
+         WHERE j.principal = $1
+           AND ($2::uuid IS NULL OR r.job_id = $2)
+           AND ($4::text = 'all' OR (r.state = 'pending' AND r.expires_at > now()))
+         ORDER BY r.created_at ${order === "oldest" ? "ASC" : "DESC"}, r.id ${order === "oldest" ? "ASC" : "DESC"}
+         LIMIT $3`,
+        [...params, state],
+      );
+      return result.rows.map(toInputRequestView);
+    });
+  }
+
+  async respondInputRequest(
+    principal: string,
+    jobId: string,
+    requestId: string,
+    submission: InputResponseSubmission,
+    answeredBy: string,
+  ): Promise<InputRequestView> {
+    const result = await this.#tx(async (client) => {
+      const locked = await client.query<InputRequestRow>(
+        `SELECT r.*, j.harness_name, j.harness_version
+         FROM input_requests r
+         JOIN jobs j ON j.id = r.job_id
+         WHERE j.principal = $1 AND r.job_id = $2 AND r.id = $3
+         FOR UPDATE OF r`,
+        [principal, jobId, requestId],
+      );
+      const row = locked.rows[0];
+      if (!row) {
+        throw new StoreError("not_found", "Input request not found.");
+      }
+      if (row.state === "pending" && row.expires_at <= new Date()) {
+        await this.#expireInputRequest(client, row);
+        return { expired: true as const };
+      }
+      if (row.state !== "pending") {
+        throw new StoreError("invalid_state", `Input request is ${row.state} and cannot be answered.`);
+      }
+      if (row.kind !== submission.kind || row.request.kind !== submission.kind) {
+        throw new StoreError("invalid_request", `Cannot answer a ${row.kind} request with a ${submission.kind} response.`);
+      }
+
+      let response: InputResponseBody;
+      if (submission.kind === "permission") {
+        response = {
+          kind: "permission",
+          approved: submission.approved,
+          ...(submission.scope !== undefined ? { scope: submission.scope } : {}),
+          ...(submission.feedback !== undefined ? { feedback: submission.feedback } : {}),
+        };
+      } else {
+        const request = row.request;
+        if (request.kind !== "question") {
+          throw new StoreError("invalid_request", "The input request is not a question.");
+        }
+        const choices = request.choices ?? [];
+        if (request.allowFreeform === false && choices.length > 0 && !choices.includes(submission.answer)) {
+          throw new StoreError("invalid_request", "The answer must be one of the request choices.");
+        }
+        response = { kind: "question", answer: submission.answer, wasFreeform: !choices.includes(submission.answer) };
+      }
+
+      const updated = await client.query<InputRequestRow>(
+        `UPDATE input_requests r
+         SET state = 'answered', response = $4, resolved_at = now(), answered_by = $5
+         FROM jobs j
+         WHERE r.id = $1 AND r.job_id = $2 AND j.id = r.job_id AND j.principal = $3
+         RETURNING r.*, j.harness_name, j.harness_version`,
+        [requestId, jobId, principal, JSON.stringify(response), answeredBy],
+      );
+      const view = toInputRequestView(updated.rows[0]!);
+      await this.#event(client, jobId, {
+        type: "job.input_resolved",
+        requestId,
+        state: "answered",
+        ...(response.kind === "permission" ? { approved: response.approved } : {}),
+      });
+      return { view };
+    });
+    if ("expired" in result) {
+      throw new StoreError("invalid_state", "Input request has expired and cannot be answered.");
+    }
+    return result.view;
+  }
+
   async requestCancel(principal: string, id: string): Promise<JobView> {
     return this.#tx(async (client) => {
       const row = await this.#lockJob(client, id, principal);
@@ -237,6 +384,7 @@ export class JobStore {
             [id],
           );
           await this.#revokeForJob(client, id);
+          await this.#cancelPendingInputsForJob(client, id);
           await this.#event(client, id, { type: "job.cancel_requested" });
           break;
         default:
@@ -388,6 +536,117 @@ export class JobStore {
     });
   }
 
+  async createInputRequest(
+    attemptId: string,
+    leaseToken: string,
+    runnerRequestId: string,
+    request: InputRequestBody,
+    _executorTimeoutSeconds?: number,
+  ): Promise<CreatedInputRequest | undefined> {
+    return this.#tx(async (client) => {
+      const owner = await client.query<{
+        job_id: string;
+        number: number;
+        deadline: Date;
+        harness_snapshot: HarnessSnapshot;
+      }>(
+        `SELECT a.job_id, a.number, a.deadline, j.harness_snapshot
+         FROM attempts a
+         JOIN jobs j ON j.id = a.job_id
+         WHERE a.id = $1 AND a.lease_token = $2 AND a.status = 'running'
+         FOR UPDATE OF a`,
+        [attemptId, leaseToken],
+      );
+      const attempt = owner.rows[0];
+      if (!attempt) {
+        return undefined;
+      }
+
+      const existing = await client.query<{ id: string; expires_at: Date }>(
+        "SELECT id, expires_at FROM input_requests WHERE attempt_id = $1 AND runner_request_id = $2",
+        [attemptId, runnerRequestId],
+      );
+      const duplicate = existing.rows[0];
+      if (duplicate) {
+        return { id: duplicate.id, expiresAt: duplicate.expires_at.toISOString() };
+      }
+
+      await this.#expirePendingInputsForAttempt(client, attemptId);
+      const pending = await client.query<{ count: number }>(
+        `SELECT count(*)::int AS count FROM input_requests
+         WHERE attempt_id = $1 AND state = 'pending' AND expires_at > now()`,
+        [attemptId],
+      );
+      if ((pending.rows[0]?.count ?? 0) >= 5) {
+        throw new StoreError("quota_exceeded", "Too many pending input requests for this attempt.");
+      }
+
+      const timeoutSeconds =
+        attempt.harness_snapshot.definition.permissions?.timeoutSeconds ?? DEFAULT_INPUT_TIMEOUT_SECONDS;
+      const id = randomUUID();
+      const inserted = await client.query<{ id: string; expires_at: Date }>(
+        `INSERT INTO input_requests
+           (id, job_id, attempt_id, attempt_number, runner_request_id, kind, request, state, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', LEAST(now() + ($8::int * interval '1 second'), $9))
+         RETURNING id, expires_at`,
+        [
+          id,
+          attempt.job_id,
+          attemptId,
+          attempt.number,
+          runnerRequestId,
+          request.kind,
+          JSON.stringify(request),
+          timeoutSeconds,
+          attempt.deadline,
+        ],
+      );
+      await this.#event(client, attempt.job_id, {
+        type: "job.input_requested",
+        attempt: attempt.number,
+        requestId: id,
+        kind: request.kind,
+        summary: summarizeInputRequest(request),
+      });
+      return { id, expiresAt: inserted.rows[0]!.expires_at.toISOString() };
+    });
+  }
+
+  async pollInputRequest(
+    attemptId: string,
+    leaseToken: string,
+    id: string,
+  ): Promise<PolledInputRequest | null | undefined> {
+    return this.#tx(async (client) => {
+      const owner = await client.query<{ job_id: string }>(
+        `SELECT job_id FROM attempts
+         WHERE id = $1 AND lease_token = $2 AND status = 'running'
+         FOR UPDATE`,
+        [attemptId, leaseToken],
+      );
+      if (!owner.rows[0]) {
+        return undefined;
+      }
+      const request = await client.query<InputRequestRow>(
+        `SELECT r.*, j.harness_name, j.harness_version
+         FROM input_requests r
+         JOIN jobs j ON j.id = r.job_id
+         WHERE r.id = $1 AND r.attempt_id = $2
+         FOR UPDATE OF r`,
+        [id, attemptId],
+      );
+      const row = request.rows[0];
+      if (!row) {
+        return null;
+      }
+      if (row.state === "pending" && row.expires_at <= new Date()) {
+        await this.#expireInputRequest(client, row);
+        return { state: "expired" };
+      }
+      return row.response ? { state: row.state, response: row.response } : { state: row.state };
+    });
+  }
+
   async completeAttempt(
     attemptId: string,
     leaseToken: string,
@@ -519,6 +778,7 @@ export class JobStore {
       [attemptId, attemptStatus, outcome.kind === "failed" ? outcome.code : null],
     );
     await client.query("UPDATE capabilities SET revoked = true WHERE attempt_id = $1", [attemptId]);
+    await this.#cancelPendingInputsForAttempt(client, attemptId);
 
     if (outcome.kind === "succeeded") {
       await client.query(
@@ -577,6 +837,82 @@ export class JobStore {
       message: failure.message,
     });
     return "failed";
+  }
+
+  async #expirePendingInputsForAttempt(client: pg.PoolClient, attemptId: string): Promise<void> {
+    const expired = await client.query<{ id: string; job_id: string }>(
+      `UPDATE input_requests
+       SET state = 'expired', resolved_at = now()
+       WHERE attempt_id = $1 AND state = 'pending' AND expires_at <= now()
+       RETURNING id, job_id`,
+      [attemptId],
+    );
+    for (const row of expired.rows) {
+      await this.#event(client, row.job_id, { type: "job.input_resolved", requestId: row.id, state: "expired" });
+    }
+  }
+
+  async #expirePendingInputsForPrincipal(
+    client: pg.PoolClient,
+    principal: string,
+    jobId?: string,
+  ): Promise<void> {
+    const expired = await client.query<{ id: string; job_id: string }>(
+      `UPDATE input_requests r
+       SET state = 'expired', resolved_at = now()
+       FROM jobs j
+       WHERE r.job_id = j.id AND j.principal = $1
+         AND ($2::uuid IS NULL OR r.job_id = $2)
+         AND r.state = 'pending' AND r.expires_at <= now()
+       RETURNING r.id, r.job_id`,
+      [principal, jobId ?? null],
+    );
+    for (const row of expired.rows) {
+      await this.#event(client, row.job_id, { type: "job.input_resolved", requestId: row.id, state: "expired" });
+    }
+  }
+
+  async #expireInputRequest(client: pg.PoolClient, row: Pick<InputRequestRow, "id" | "job_id">): Promise<void> {
+    const updated = await client.query<{ id: string; job_id: string }>(
+      `UPDATE input_requests
+       SET state = 'expired', resolved_at = now()
+       WHERE id = $1 AND state = 'pending'
+       RETURNING id, job_id`,
+      [row.id],
+    );
+    for (const expired of updated.rows) {
+      await this.#event(client, expired.job_id, {
+        type: "job.input_resolved",
+        requestId: expired.id,
+        state: "expired",
+      });
+    }
+  }
+
+  async #cancelPendingInputsForAttempt(client: pg.PoolClient, attemptId: string): Promise<void> {
+    const cancelled = await client.query<{ id: string; job_id: string }>(
+      `UPDATE input_requests
+       SET state = 'cancelled', resolved_at = now()
+       WHERE attempt_id = $1 AND state = 'pending'
+       RETURNING id, job_id`,
+      [attemptId],
+    );
+    for (const row of cancelled.rows) {
+      await this.#event(client, row.job_id, { type: "job.input_resolved", requestId: row.id, state: "cancelled" });
+    }
+  }
+
+  async #cancelPendingInputsForJob(client: pg.PoolClient, jobId: string): Promise<void> {
+    const cancelled = await client.query<{ id: string; job_id: string }>(
+      `UPDATE input_requests
+       SET state = 'cancelled', resolved_at = now()
+       WHERE job_id = $1 AND state = 'pending'
+       RETURNING id, job_id`,
+      [jobId],
+    );
+    for (const row of cancelled.rows) {
+      await this.#event(client, row.job_id, { type: "job.input_resolved", requestId: row.id, state: "cancelled" });
+    }
   }
 
   async #lockJob(client: pg.PoolClient, id: string, principal?: string): Promise<JobRow> {
@@ -644,6 +980,7 @@ function toView(row: JobRow): JobView {
       outputTokens: Number(row.output_tokens),
       requests: row.inference_requests,
     },
+    pendingInputs: Number(row.pending_inputs ?? 0),
   };
   if (row.state === "succeeded") {
     view.result = row.result;
@@ -652,6 +989,21 @@ function toView(row: JobRow): JobView {
     view.error = { code: row.error_code, message: row.error_message ?? "" };
   }
   return view;
+}
+
+function toInputRequestView(row: InputRequestRow): InputRequestView {
+  return {
+    id: row.id,
+    jobId: row.job_id,
+    attempt: row.attempt_number,
+    harness: { name: row.harness_name, version: row.harness_version },
+    state: row.state,
+    request: row.request,
+    ...(row.response ? { response: row.response } : {}),
+    createdAt: row.created_at.toISOString(),
+    expiresAt: row.expires_at.toISOString(),
+    ...(row.resolved_at ? { resolvedAt: row.resolved_at.toISOString() } : {}),
+  };
 }
 
 function isUniqueViolation(error: unknown): boolean {

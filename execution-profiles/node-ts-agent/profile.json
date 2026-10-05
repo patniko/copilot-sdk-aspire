@@ -23,5 +23,5 @@
     { "name": "python", "version": "3.11" }
   ],
   "toolBindings": ["python:stats"],
-  "capabilities": ["cancel", "structured-result", "prompt-sections", "model-options", "custom-agents", "skills"]
+  "capabilities": ["cancel", "structured-result", "prompt-sections", "model-options", "custom-agents", "skills", "builtin-tools", "interactive"]
 }

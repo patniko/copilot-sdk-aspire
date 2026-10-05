@@ -3,91 +3,181 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Agent job console · GitHub Copilot SDK</title>
+    <title>Agent sessions · GitHub Copilot SDK</title>
     <link rel="icon" href="data:," />
     <link rel="stylesheet" href="/console/app.css" />
     <script type="module" src="/console/app.js"></script>
   </head>
   <body>
-    <header class="bar">
-      <h1><span class="muted">GitHub Copilot SDK /</span> Agent job console</h1>
-      <form id="auth" class="auth" autocomplete="off">
-        <label for="api-key">API key</label>
-        <input id="api-key" type="password" placeholder="Paste an API key" spellcheck="false" />
-        <label class="check"><input id="remember" type="checkbox" /> Keep for this tab</label>
-        <button type="submit">Connect</button>
-        <span id="auth-status" class="muted" role="status"></span>
-      </form>
+    <header class="app-header">
+      <div class="brand">
+        <svg class="github-mark" viewBox="0 0 16 16" width="32" height="32" aria-hidden="true">
+          <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.63 7.63 0 0 1 8 3.87c.68.003 1.36.092 2 .26 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+        </svg>
+        <div>
+          <div class="breadcrumb" aria-label="Breadcrumb">
+            <span>GitHub Copilot SDK</span>
+            <span aria-hidden="true">/</span>
+            <strong>Agent sessions</strong>
+          </div>
+          <p class="header-subtitle">Watch jobs, answer approvals, and keep agents moving.</p>
+        </div>
+      </div>
+      <nav class="top-nav" aria-label="Portal views">
+        <button type="button" id="nav-sessions" class="nav-tab active">Sessions</button>
+        <button type="button" id="nav-inbox" class="nav-tab">
+          Needs you <span id="nav-pending-count" class="counter" hidden>0</span>
+        </button>
+      </nav>
+      <div class="header-actions">
+        <span id="auth-status" class="muted small" role="status"></span>
+        <button type="button" id="api-key-toggle">API key</button>
+      </div>
     </header>
 
-    <main id="main" class="layout" hidden>
-      <section class="panel" aria-labelledby="submit-title">
-        <h2 id="submit-title">New job</h2>
-        <form id="submit-form">
-          <label for="harness">Harness</label>
-          <select id="harness"></select>
-          <p id="harness-description" class="muted small"></p>
+    <section id="auth-panel" class="auth-panel" aria-labelledby="auth-title">
+      <form id="auth" class="auth-card" autocomplete="off">
+        <div>
+          <h2 id="auth-title">Connect to the agent API</h2>
+          <p class="muted">The key is kept in memory, or in sessionStorage when you choose to keep it for this tab.</p>
+        </div>
+        <label for="api-key">API key</label>
+        <div class="auth-row">
+          <input id="api-key" type="password" placeholder="Paste an API key" spellcheck="false" />
+          <button type="submit" class="primary">Connect</button>
+        </div>
+        <label class="check"><input id="remember" type="checkbox" /> Keep for this tab</label>
+      </form>
+    </section>
 
-          <div class="row">
-            <div>
-              <label for="version">Version</label>
-              <select id="version"></select>
-            </div>
-            <div>
-              <label for="profile">Agent profile</label>
-              <select id="profile"></select>
-            </div>
-          </div>
+    <div id="live-region" class="sr-only" aria-live="polite" aria-atomic="true"></div>
 
-          <label for="input">Input (JSON)</label>
-          <textarea id="input" rows="16" spellcheck="false"></textarea>
-          <div class="row">
+    <main id="main" class="portal" hidden>
+      <section id="sessions-view" class="sessions-view" aria-label="Sessions">
+        <aside class="panel sessions-panel" aria-labelledby="sessions-title">
+          <div class="panel-header">
             <div>
-              <label for="deadline">Deadline seconds (optional)</label>
-              <input id="deadline" type="number" min="10" max="3600" placeholder="harness default" />
+              <h2 id="sessions-title">Sessions</h2>
+              <p class="muted small">Newest first</p>
             </div>
-            <div>
-              <label for="idempotency">Idempotency key (optional)</label>
-              <input id="idempotency" type="text" maxlength="200" spellcheck="false" />
+            <div class="actions compact">
+              <button type="button" id="new-session">New session</button>
+              <button type="button" id="refresh-jobs">Refresh</button>
             </div>
           </div>
-          <div class="actions">
-            <button type="submit" class="primary">Submit job</button>
-            <button type="button" id="reset-input">Reset input</button>
-            <button type="button" id="show-schema">Output schema</button>
+          <div class="underline-tabs" role="tablist" aria-label="Session filters">
+            <button type="button" id="filter-all" class="filter-tab active" data-filter="all">All</button>
+            <button type="button" id="filter-active" class="filter-tab" data-filter="active">Active</button>
+            <button type="button" id="filter-needs" class="filter-tab" data-filter="needs">Needs you</button>
+            <button type="button" id="filter-finished" class="filter-tab" data-filter="finished">Finished</button>
           </div>
-          <pre id="submit-error" class="error" hidden></pre>
-          <pre id="schema-view" class="code" hidden></pre>
-        </form>
+          <ul id="jobs" class="sessions-list" aria-label="Agent sessions"></ul>
+          <button type="button" id="more-jobs" class="load-more" hidden>Load more</button>
+        </aside>
+
+        <div class="content-column">
+          <section id="submit-panel" class="panel new-session-panel" aria-labelledby="submit-title" hidden>
+            <div class="panel-header">
+              <div>
+                <h2 id="submit-title">New session</h2>
+                <p class="muted small">Choose a harness and start a job.</p>
+              </div>
+              <button type="button" id="close-new-session" aria-label="Close new session panel">Close</button>
+            </div>
+            <form id="submit-form">
+              <label for="harness">Harness</label>
+              <select id="harness"></select>
+              <p id="harness-description" class="muted small"></p>
+
+              <div class="row">
+                <div>
+                  <label for="version">Version</label>
+                  <select id="version"></select>
+                </div>
+                <div>
+                  <label for="profile">Agent profile</label>
+                  <select id="profile"></select>
+                </div>
+              </div>
+
+              <label for="input">Input (JSON)</label>
+              <textarea id="input" rows="14" spellcheck="false"></textarea>
+              <div class="row">
+                <div>
+                  <label for="deadline">Deadline seconds (optional)</label>
+                  <input id="deadline" type="number" min="10" max="3600" placeholder="harness default" />
+                </div>
+                <div>
+                  <label for="idempotency">Idempotency key (optional)</label>
+                  <input id="idempotency" type="text" maxlength="200" spellcheck="false" />
+                </div>
+              </div>
+              <div class="actions">
+                <button type="submit" class="primary">Start session</button>
+                <button type="button" id="reset-input">Reset input</button>
+                <button type="button" id="show-schema">Output schema</button>
+              </div>
+              <pre id="submit-error" class="flash error" hidden></pre>
+              <pre id="schema-view" class="code" hidden></pre>
+            </form>
+          </section>
+
+          <section class="panel detail-panel" aria-labelledby="detail-title">
+            <div class="panel-header detail-heading">
+              <div>
+                <h2 id="detail-title">Session</h2>
+                <p id="detail-subtitle" class="muted small">Select or start a session.</p>
+              </div>
+              <div class="actions compact">
+                <button type="button" id="cancel-job" disabled>Cancel</button>
+                <button type="button" id="retry-job" disabled>Retry</button>
+              </div>
+            </div>
+            <p id="detail-empty" class="empty muted">Select or submit a session.</p>
+            <div id="detail" hidden>
+              <dl id="summary" class="summary-grid"></dl>
+              <div id="gaps" class="flash warning" hidden></div>
+              <div id="error-box" class="flash error" hidden></div>
+
+              <section id="detail-requests-section" class="request-section" aria-labelledby="detail-requests-title" hidden>
+                <div class="section-heading">
+                  <h3 id="detail-requests-title">Needs you</h3>
+                  <span id="detail-requests-count" class="counter">0</span>
+                </div>
+                <div id="detail-requests" class="request-list"></div>
+              </section>
+
+              <section aria-labelledby="events-title" class="timeline-section">
+                <div class="section-heading">
+                  <h3 id="events-title">Activity</h3>
+                  <span id="stream-status" class="muted small"></span>
+                </div>
+                <ol id="events" class="timeline"></ol>
+              </section>
+
+              <section aria-labelledby="result-title" class="result-section">
+                <h3 id="result-title">Result</h3>
+                <div id="result" class="result"><p class="muted">No result yet.</p></div>
+              </section>
+            </div>
+          </section>
+        </div>
       </section>
 
-      <section class="panel" aria-labelledby="jobs-title">
-        <div class="panel-head">
-          <h2 id="jobs-title">Jobs</h2>
-          <button type="button" id="refresh-jobs">Refresh</button>
-        </div>
-        <ul id="jobs" class="jobs"></ul>
-        <button type="button" id="more-jobs" hidden>Load more</button>
-      </section>
-
-      <section class="panel detail" aria-labelledby="detail-title">
-        <div class="panel-head">
-          <h2 id="detail-title">Job</h2>
-          <div class="actions">
-            <button type="button" id="cancel-job" disabled>Cancel</button>
-            <button type="button" id="retry-job" disabled>Retry</button>
+      <section id="inbox-view" class="inbox-view" aria-labelledby="inbox-title" hidden>
+        <section class="panel inbox-panel">
+          <div class="panel-header">
+            <div>
+              <h2 id="inbox-title">Needs you</h2>
+              <p class="muted">Pending approvals and questions across your sessions.</p>
+            </div>
+            <div class="actions compact">
+              <span id="inbox-count" class="counter">0</span>
+              <button type="button" id="refresh-inbox">Refresh</button>
+            </div>
           </div>
-        </div>
-        <p id="detail-empty" class="muted">Select or submit a job.</p>
-        <div id="detail" hidden>
-          <dl id="summary" class="summary"></dl>
-          <div id="gaps" class="warning" hidden></div>
-          <div id="error-box" class="error" hidden></div>
-          <h3>Result</h3>
-          <div id="result" class="result"><p class="muted">No result yet.</p></div>
-          <h3>Events <span id="stream-status" class="muted small"></span></h3>
-          <ol id="events" class="events"></ol>
-        </div>
+          <div id="inbox-list" class="request-list inbox-list"></div>
+        </section>
       </section>
     </main>
   </body>

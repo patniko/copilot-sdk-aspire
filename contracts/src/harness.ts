@@ -80,6 +80,72 @@ export type PromptConfig = z.infer<typeof PromptConfig>;
 export const REASONING_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
+/**
+ * Groups of built-in Copilot tools a harness can enable. Runners map each group to the SDK's
+ * built-in tool names; every call still goes through the harness permission rules.
+ * - files: view, glob, grep, create, edit
+ * - shell: the platform shell (bash on Linux) with its read/write/stop/list companions
+ * - web: web_fetch
+ * - agents: the SDK's built-in sub-agents (explore, general-purpose, ...) and the task tools
+ */
+export const BUILTIN_TOOL_GROUPS = ["files", "shell", "web", "agents"] as const;
+export type BuiltinToolGroup = (typeof BUILTIN_TOOL_GROUPS)[number];
+
+/** Permission request kinds a harness can set individually; other kinds use `default`. */
+export const PERMISSION_KINDS = ["read", "write", "shell", "url"] as const;
+export type PermissionKind = (typeof PERMISSION_KINDS)[number];
+
+/** deny: refuse; ask: route to a person through the job's input requests; allow: approve automatically. */
+export const PermissionMode = z.enum(["deny", "ask", "allow"]);
+export type PermissionMode = z.infer<typeof PermissionMode>;
+
+/**
+ * How the runner answers the agent's permission requests and questions. Omitted means every
+ * permission request is denied and the agent cannot ask questions. Harness tools never ask.
+ */
+export const PermissionsConfig = z
+  .object({
+    default: PermissionMode,
+    kinds: z
+      .object({
+        read: PermissionMode.optional(),
+        write: PermissionMode.optional(),
+        shell: PermissionMode.optional(),
+        url: PermissionMode.optional(),
+      })
+      .strict()
+      .optional(),
+    /** Lets the agent ask people questions (the SDK's ask_user tool), answered through the API. */
+    questions: z.boolean().optional(),
+    /** How long one approval or question waits for an answer before it is denied. Default 600, capped by the attempt deadline. */
+    timeoutSeconds: z.number().int().min(30).max(3600).optional(),
+  })
+  .strict();
+export type PermissionsConfig = z.infer<typeof PermissionsConfig>;
+
+export const DEFAULT_INPUT_TIMEOUT_SECONDS = 600;
+
+/** The mode that applies to a permission request kind (unknown kinds use the default). */
+export function permissionModeFor(permissions: PermissionsConfig | undefined, kind: string): PermissionMode {
+  if (!permissions) return "deny";
+  const specific = (permissions.kinds as Record<string, PermissionMode | undefined> | undefined)?.[kind];
+  return specific ?? permissions.default;
+}
+
+/** Every permission mode a harness can produce, for policy checks. */
+export function permissionModesUsed(permissions: PermissionsConfig | undefined): Set<PermissionMode> {
+  const modes = new Set<PermissionMode>(["deny"]);
+  if (!permissions) return modes;
+  modes.add(permissions.default);
+  for (const mode of Object.values(permissions.kinds ?? {})) if (mode) modes.add(mode);
+  return modes;
+}
+
+/** True when the harness may wait for people (approvals or questions). */
+export function isInteractive(permissions: PermissionsConfig | undefined): boolean {
+  return !!permissions && (permissions.questions === true || permissionModesUsed(permissions).has("ask"));
+}
+
 /** A skill: on-demand instructions the agent loads by name. Stored as skills/<name>/SKILL.md. */
 export const SkillDefinition = z
   .object({
@@ -129,6 +195,8 @@ export const HarnessDefinition = z
       })
       .strict(),
     tools: z.array(ToolRequest).max(64),
+    builtinTools: z.array(z.enum(BUILTIN_TOOL_GROUPS)).max(BUILTIN_TOOL_GROUPS.length).optional(),
+    permissions: PermissionsConfig.optional(),
     skills: z.array(SkillDefinition).max(10).optional(),
     agents: z.array(AgentDefinition).max(8).optional(),
     input: z.object({ schema: JsonSchemaDocument }).strict(),
@@ -187,6 +255,9 @@ export const HarnessDefinition = z
       }
     });
     const delegated = h.tools.filter((t) => t.delegatedOnly);
+    if (new Set(h.builtinTools ?? []).size !== (h.builtinTools ?? []).length) {
+      issue(["builtinTools"], "Each built-in tool group can be listed once.");
+    }
     if (delegated.length > 0 && !h.agents?.length) {
       issue(["tools"], "Delegated-only tools need at least one sub-agent that uses them.");
     }
@@ -211,8 +282,10 @@ export function requiredRunnerCapabilities(definition: HarnessDefinition): Runne
   if (definition.model.reasoningEffort || definition.model.contextTier) features.push("model-options");
   if (definition.agents?.length) features.push("custom-agents");
   if (definition.skills?.length) features.push("skills");
+  if (definition.builtinTools?.length) features.push("builtin-tools");
+  if (isInteractive(definition.permissions)) features.push("interactive");
   return features;
 }
 
-export const RUNNER_FEATURES = ["prompt-sections", "model-options", "custom-agents", "skills"] as const;
+export const RUNNER_FEATURES = ["prompt-sections", "model-options", "custom-agents", "skills", "builtin-tools", "interactive"] as const;
 export type RunnerFeature = (typeof RUNNER_FEATURES)[number];

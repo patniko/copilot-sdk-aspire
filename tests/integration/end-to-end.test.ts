@@ -15,6 +15,7 @@ import { DispatcherClient, NotEligibleError } from "../../src/agent-executor/src
 import { DispatcherClient as GatewayDispatcherClient } from "../../src/inference-gateway/src/dispatcher-client.js";
 import { buildGateway } from "../../src/inference-gateway/src/server.js";
 import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
+import { inputHarness } from "./fixtures/input-harness.js";
 
 const root = join(import.meta.dirname, "..", "..");
 const apiKey = "alice-key-0123456789abcdefghijklmnop";
@@ -64,6 +65,42 @@ async function job(id: string): Promise<JobView> {
   return (await (await fetch(`${apiUrl}/v1/jobs/${id}`, { headers: { authorization: `Bearer ${apiKey}` } })).json()) as JobView;
 }
 
+async function submitInput(ask: unknown): Promise<JobView> {
+  const response = await fetch(`${apiUrl}/v1/jobs`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify({ harness: { name: "input-fixture" }, input: { ask } }),
+  });
+  expect(response.status).toBe(202);
+  return (await response.json()) as JobView;
+}
+
+async function waitForPendingInput(jobId: string, seen = new Set<string>()) {
+  for (let i = 0; i < 80; i++) {
+    const response = await fetch(`${apiUrl}/v1/input-requests?state=pending`, {
+      headers: { authorization: `Bearer ${apiKey}` },
+    });
+    expect(response.status).toBe(200);
+    const page = (await response.json()) as { requests: Array<{ id: string; jobId: string; request: unknown }> };
+    const request = page.requests.find((r) => r.jobId === jobId && !seen.has(r.id));
+    if (request) {
+      return request;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error("input request was not created");
+}
+
+async function respondInput(jobId: string, requestId: string, responseBody: unknown) {
+  const response = await fetch(`${apiUrl}/v1/jobs/${jobId}/input-requests/${requestId}/respond`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
+    body: JSON.stringify(responseBody),
+  });
+  expect(response.status).toBe(200);
+  return response.json();
+}
+
 async function execute(client: DispatcherClient, shutdown = new AbortController(), draining?: AbortSignal) {
   const claim = await client.claim(capabilities());
   expect(claim).toBeDefined();
@@ -92,6 +129,7 @@ beforeAll(async () => {
   await listener.start();
 
   const [harnesses, profiles, basePolicy] = await Promise.all([loadHarnesses(root), loadProfiles(root), loadPolicy(root)]);
+  harnesses.set("input-fixture", [inputHarness(5)]);
   // Host test runs cannot switch users, so this policy acknowledges both gaps explicitly.
   policy = { ...basePolicy, leaseSeconds: 10, acknowledgedGaps: ["egress-not-enforced", "process-isolation-not-enforced"] };
   profile = {
@@ -190,6 +228,68 @@ describe("end-to-end job execution", () => {
     });
     const page = (await resumed.json()) as { events: Array<{ seq: number }> };
     expect(page.events.every((e) => e.seq > 2)).toBe(true);
+  });
+
+  it("answers question and permission input requests through the public API", async () => {
+    const submitted = await submitInput([
+      { kind: "question", question: "Choose a color", choices: ["blue", "green"], allowFreeform: false },
+      { kind: "permission", permission: { type: "shell", command: "git status", intention: "Inspect repository status" } },
+    ]);
+    const running = execute(new DispatcherClient(dispatcherUrl, executorKey));
+
+    const seen = new Set<string>();
+    const question = await waitForPendingInput(submitted.id, seen);
+    seen.add(question.id);
+    expect(question.request).toMatchObject({ kind: "question" });
+    await respondInput(submitted.id, question.id, { kind: "question", answer: "blue" });
+
+    const permission = await waitForPendingInput(submitted.id, seen);
+    expect(permission.request).toMatchObject({ kind: "permission" });
+    await respondInput(submitted.id, permission.id, {
+      kind: "permission",
+      approved: true,
+      scope: "once",
+      feedback: "ok",
+    });
+
+    const { state, outcome } = await running;
+    expect(outcome?.kind).toBe("succeeded");
+    expect(state).toBe("succeeded");
+    const finished = await job(submitted.id);
+    expect(finished.pendingInputs).toBe(0);
+    expect(finished.result).toMatchObject({
+      responses: [
+        { kind: "question", answer: "blue", wasFreeform: false },
+        { kind: "permission", approved: true, scope: "once", feedback: "ok" },
+      ],
+    });
+
+    const all = (await (
+      await fetch(`${apiUrl}/v1/jobs/${submitted.id}/input-requests`, { headers: { authorization: `Bearer ${apiKey}` } })
+    ).json()) as { requests: Array<{ id: string; state: string }> };
+    expect(all.requests.map((r) => r.state)).toEqual(["answered", "answered"]);
+    expect(all.requests[0]!.id).toBe(question.id);
+  });
+
+  it("expires unanswered input requests and returns expired to the runner", async () => {
+    const submitted = await submitInput({
+      kind: "question",
+      question: "Nobody will answer",
+      choices: ["ok"],
+      allowFreeform: false,
+    });
+    const running = execute(new DispatcherClient(dispatcherUrl, executorKey));
+    const request = await waitForPendingInput(submitted.id);
+    expect(request.request).toMatchObject({ kind: "question" });
+
+    const { state, outcome } = await running;
+    expect(outcome?.kind).toBe("succeeded");
+    expect(state).toBe("succeeded");
+    expect((await job(submitted.id)).result).toMatchObject({ response: { kind: "expired" } });
+    const all = (await (
+      await fetch(`${apiUrl}/v1/jobs/${submitted.id}/input-requests`, { headers: { authorization: `Bearer ${apiKey}` } })
+    ).json()) as { requests: Array<{ state: string }> };
+    expect(all.requests[0]?.state).toBe("expired");
   });
 
   it("rejects results that do not match the harness output schema", async () => {

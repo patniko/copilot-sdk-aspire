@@ -1,17 +1,19 @@
 import clsx from "clsx";
 import type { ReactNode } from "react";
+import type { BuiltinToolGroup } from "@copilot-agent/contracts";
 import type { HarnessDetail, HarnessDocument, HarnessManifest, Issue, SkillDefinition } from "../../../server/types";
 import { DecisionList } from "../../components/LivePlan";
 import { ArrowRight, Copilot, Plus, Trash2, Wrench } from "../../components/icons";
 import { Badge, ChipsInput, Empty, Field, Flash, HelpButton, IssueList, JsonEditor, NumberInput, SegmentedControl, Toggle } from "../../components/ui";
 import { useApp } from "../../state";
 
-export type Tab = "overview" | "prompt" | "model" | "tools" | "agents" | "skills" | "input" | "output" | "limits" | "runtime";
+export type Tab = "overview" | "prompt" | "model" | "tools" | "permissions" | "agents" | "skills" | "input" | "output" | "limits" | "runtime";
 export const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "prompt", label: "Prompt" },
   { id: "model", label: "Model" },
   { id: "tools", label: "Tools" },
+  { id: "permissions", label: "Permissions" },
   { id: "agents", label: "Sub-agents" },
   { id: "skills", label: "Skills" },
   { id: "input", label: "Input" },
@@ -29,7 +31,10 @@ export function tabFor(path: string): Tab {
     case "model":
       return "model";
     case "tools":
+    case "builtinTools":
       return "tools";
+    case "permissions":
+      return "permissions";
     case "agents":
       return "agents";
     case "skills":
@@ -99,11 +104,15 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
             <Summary label="Model" value={effective?.model ?? "not approved"} detail={m.model.reasoningEffort ? `reasoning ${m.model.reasoningEffort}` : undefined} />
             <Summary label="Prompt" value={m.prompt?.mode ?? "replace"} detail={m.prompt?.sections?.length ? `${m.prompt.sections.length} section(s) changed` : undefined} />
             <Summary label="Tools" value={`${m.tools.length} + submit_result`} detail={m.tools.some((t) => t.delegatedOnly) ? "some delegated only" : undefined} />
+            <Summary label="Built-in tools" value={m.builtinTools?.length ? m.builtinTools.join(", ") : "none"} detail={permissionSummary(m.permissions)} />
             <Summary label="Sub-agents" value={String(m.agents?.length ?? 0)} detail={m.agents?.map((a) => a.displayName ?? a.name).join(", ")} />
             <Summary label="Skills" value={String(draft.skills.length)} detail={draft.skills.map((s) => s.name).join(", ")} />
             <Summary label="Runtime" value={m.runners.allowedProfiles.join(", ") || "none"} detail={`default ${m.runners.defaultProfile}`} />
-            <Summary label="Deadline" value={`${effective?.maxDurationSeconds ?? "?"}s`} detail={`${effective?.tokenBudget?.toLocaleString() ?? "?"} tokens`} />
-            <Summary label="Attempts" value={String(effective?.maxAttempts ?? "?")} detail={m.retry.safeToRetry ? "safe to retry" : "review on uncertainty"} />
+            <Summary
+              label="Limits"
+              value={`${effective?.maxDurationSeconds ?? "?"}s · ${effective?.maxAttempts ?? "?"} attempt(s)`}
+              detail={`${effective?.tokenBudget?.toLocaleString() ?? "?"} tokens · ${m.retry.safeToRetry ? "safe to retry" : "review on uncertainty"}`}
+            />
           </div>
           {detail && detail.decisions.length > 0 && (
             <div className="2xl:hidden">
@@ -201,6 +210,8 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
 
     case "tools":
       return <ToolsTab draft={draft} update={update} issues={issues} />;
+    case "permissions":
+      return <PermissionsTab draft={draft} update={update} issues={issues} effective={effective} />;
     case "agents":
       return <AgentsTab draft={draft} update={update} issues={issues} />;
     case "skills":
@@ -465,6 +476,8 @@ function ToolsTab({ draft, update, issues }: { draft: HarnessDocument; update: U
     }, `tools.${index}.name`);
   return (
     <div className="space-y-4">
+      <BuiltinToolsSection draft={draft} update={update} issues={issues} />
+      <h3 className="pt-2 text-sm font-semibold">Harness tools</h3>
       <p className="fg-muted">
         Tools are requested here and implemented by execution profiles. The agent always also gets <code>submit_result</code>. A new
         implementation needs runner code and a binding listed in each profile (see docs/RUNNER-PROTOCOL.md). <HelpButton topic="tools" />
@@ -552,6 +565,290 @@ function ToolsTab({ draft, update, issues }: { draft: HarnessDocument; update: U
         ))}
       </div>
       {issues.some((i) => i.path === "tools") && <IssueList issues={issues.filter((i) => i.path === "tools")} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Built-in tools and permissions
+// ---------------------------------------------------------------------------
+
+const GROUPS: Array<{ id: BuiltinToolGroup; label: string; tools: string; risk: string }> = [
+  { id: "files", label: "Files", tools: "view, glob, grep, create, edit", risk: "Reads and changes files in the workspace." },
+  { id: "shell", label: "Shell", tools: "bash (and its read, write, stop and list tools)", risk: "Runs any command the runner user can run." },
+  { id: "web", label: "Web", tools: "web_fetch", risk: "Fetches URLs; egress is not restricted." },
+  { id: "agents", label: "Built-in agents", tools: "task, read_agent, list_agents, write_agent", risk: "Copilot's explore and general-purpose agents use the same tools and rules." },
+];
+const KINDS: Array<{ id: "read" | "write" | "shell" | "url"; label: string; detail: string }> = [
+  { id: "read", label: "Read files", detail: "Reading files or folders the agent asks permission for." },
+  { id: "write", label: "Write files", detail: "Creating or editing files (the request includes a diff)." },
+  { id: "shell", label: "Shell commands", detail: "Running a command (the request includes the full command)." },
+  { id: "url", label: "Web access", detail: "Fetching a URL." },
+];
+type Mode = "deny" | "ask" | "allow";
+
+export function permissionSummary(permissions: HarnessManifest["permissions"]): string {
+  if (!permissions) return "every action denied";
+  const modes = KINDS.map((kind) => permissions.kinds?.[kind.id] ?? permissions.default);
+  if (modes.every((mode) => mode === "allow")) return "yolo: everything allowed";
+  const ask = KINDS.filter((_, i) => modes[i] === "ask").map((k) => k.id);
+  const allow = KINDS.filter((_, i) => modes[i] === "allow").map((k) => k.id);
+  return [ask.length ? `asks for ${ask.join(", ")}` : "", allow.length ? `allows ${allow.join(", ")}` : "", permissions.questions ? "questions on" : ""]
+    .filter(Boolean)
+    .join(" · ") || "every action denied";
+}
+
+function BuiltinToolsSection({ draft, update, issues }: { draft: HarnessDocument; update: Update; issues: Issue[] }) {
+  const { workspace } = useApp();
+  const allowed = new Set(workspace!.policy.builtinTools ?? []);
+  const groups = draft.manifest.builtinTools ?? [];
+  const toggle = (group: BuiltinToolGroup, on: boolean) =>
+    update((d) => {
+      const next = BUILTIN_GROUP_ORDER.filter((g) => (g === group ? on : (d.manifest.builtinTools ?? []).includes(g)));
+      if (next.length) d.manifest.builtinTools = next;
+      else delete d.manifest.builtinTools;
+    });
+  return (
+    <div className="card">
+      <div className="box-header">
+        <div>
+          <h3 className="flex items-center gap-1 text-sm font-semibold leading-6">
+            <Copilot className="fg-done" /> Built-in Copilot tools <HelpButton topic="builtinTools" />
+          </h3>
+          <p className="text-xs fg-muted">GitHub Copilot's own tools. Each action follows the rules on the Permissions tab.</p>
+        </div>
+        <Badge tone={groups.length ? "done" : "neutral"}>{groups.length ? `${groups.length} group(s)` : "off"}</Badge>
+      </div>
+      {GROUPS.map((group) => {
+        const on = groups.includes(group.id);
+        const blocked = !allowed.has(group.id);
+        const error = issues.find((i) => i.path.startsWith("builtinTools") && i.message.includes(`'${group.id}'`))?.message;
+        return (
+          <div key={group.id} className="box-row">
+            <Toggle
+              checked={on}
+              onChange={(checked) => toggle(group.id, checked)}
+              label={
+                <span className="flex items-center gap-2">
+                  {group.label}
+                  {blocked && <Badge tone="amber">not allowed by policy</Badge>}
+                </span>
+              }
+              description={
+                <>
+                  <code className="text-[11px]">{group.tools}</code> · {group.risk}
+                </>
+              }
+            />
+            {error && <p className="mt-1 text-xs fg-danger">{error}</p>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const BUILTIN_GROUP_ORDER: BuiltinToolGroup[] = ["files", "shell", "web", "agents"];
+
+function ModeControl({ value, onChange, allowedModes, label, inherited }: {
+  value: Mode | undefined;
+  onChange: (mode: Mode | undefined) => void;
+  allowedModes: Set<string>;
+  label: string;
+  inherited?: Mode;
+}) {
+  const options: Array<{ value: Mode | "default"; label: string }> = [
+    ...(inherited ? [{ value: "default" as const, label: `Default (${inherited})` }] : []),
+    { value: "deny", label: "Deny" },
+    { value: "ask", label: "Ask me" },
+    { value: "allow", label: "Allow" },
+  ];
+  return (
+    <div role="radiogroup" aria-label={label} className="inline-flex flex-wrap rounded-md bg-[var(--controlTrack-bgColor-rest)] p-0.5">
+      {options.map((option) => {
+        const selected = (value ?? "default") === option.value;
+        const disabled = option.value !== "default" && option.value !== "deny" && !allowedModes.has(option.value);
+        return (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={selected}
+            disabled={disabled}
+            title={disabled ? "Not allowed by the operator policy" : undefined}
+            onClick={() => onChange(option.value === "default" ? undefined : (option.value as Mode))}
+            className={clsx(
+              "h-7 rounded-md px-3 text-sm disabled:cursor-not-allowed disabled:opacity-40",
+              selected
+                ? clsx(
+                    "border font-semibold",
+                    option.value === "allow"
+                      ? "border-[var(--borderColor-attention-emphasis)] bg-[var(--bgColor-attention-muted)]"
+                      : option.value === "ask"
+                        ? "border-[var(--borderColor-accent-emphasis)] bg-[var(--bgColor-accent-muted)]"
+                        : "border-[var(--controlKnob-borderColor-rest)] bg-[var(--controlKnob-bgColor-rest)]",
+                  )
+                : "border border-transparent fg-muted",
+            )}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function PermissionsTab({ draft, update, issues, effective }: {
+  draft: HarnessDocument;
+  update: Update;
+  issues: Issue[];
+  effective?: HarnessDetail["effective"];
+}) {
+  const { workspace } = useApp();
+  const policy = workspace!.policy;
+  const allowedModes = new Set<string>(["deny", ...(policy.permissionModes ?? [])]);
+  const permissions = draft.manifest.permissions;
+  const errorAt = (prefix: string) => issues.find((i) => i.level === "error" && (i.path === prefix || i.path.startsWith(`${prefix}.`)))?.message;
+  const set = (mutate: (p: NonNullable<HarnessManifest["permissions"]>) => void) =>
+    update((d) => {
+      const next = structuredClone(d.manifest.permissions ?? { default: "deny" as Mode });
+      mutate(next);
+      if (next.kinds && Object.values(next.kinds).every((v) => v === undefined)) delete next.kinds;
+      d.manifest.permissions = next;
+    });
+  const preset = (name: "deny" | "ask-risky" | "ask-all" | "yolo") =>
+    update((d) => {
+      if (name === "deny") {
+        delete d.manifest.permissions;
+        return;
+      }
+      const questions = d.manifest.permissions?.questions;
+      const timeoutSeconds = d.manifest.permissions?.timeoutSeconds;
+      d.manifest.permissions =
+        name === "yolo"
+          ? { default: "allow" }
+          : name === "ask-all"
+            ? { default: "ask" }
+            : { default: "ask", kinds: { read: "allow", write: "ask", shell: "ask", url: "ask" } };
+      if (questions) d.manifest.permissions.questions = true;
+      if (timeoutSeconds) d.manifest.permissions.timeoutSeconds = timeoutSeconds;
+    });
+  const timeout = permissions?.timeoutSeconds ?? 600;
+
+  return (
+    <div className="space-y-5">
+      {!draft.manifest.builtinTools?.length && (
+        <Flash>
+          Permissions apply to built-in Copilot tools. Enable them on the Tools tab; harness tools (bindings) never ask for permission.
+        </Flash>
+      )}
+      {issues.filter((i) => i.path === "permissions" && i.level === "warning").map((i) => (
+        <Flash key={i.message} tone="warn">
+          {i.message}
+        </Flash>
+      ))}
+      <div>
+        <div className="mb-2 flex items-center gap-1">
+          <span className="label !mb-0">Presets</span>
+          <HelpButton topic="permissions.default" />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="btn-secondary btn-sm" onClick={() => preset("deny")}>
+            Deny everything
+          </button>
+          <button type="button" className="btn-secondary btn-sm" disabled={!allowedModes.has("ask")} onClick={() => preset("ask-risky")}>
+            Ask before risky actions
+          </button>
+          <button type="button" className="btn-secondary btn-sm" disabled={!allowedModes.has("ask")} onClick={() => preset("ask-all")}>
+            Ask for everything
+          </button>
+          <button type="button" className="btn-secondary btn-sm" disabled={!allowedModes.has("allow")} onClick={() => preset("yolo")}>
+            Yolo: allow everything
+          </button>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="box-header">
+          <div>
+            <h3 className="text-sm font-semibold leading-6">Rules</h3>
+            <p className="text-xs fg-muted">
+              Policy allows: deny{policy.permissionModes?.length ? `, ${policy.permissionModes.join(", ")}` : " only"}.
+            </p>
+          </div>
+          <Badge tone={permissions ? "done" : "neutral"}>{permissionSummary(permissions)}</Badge>
+        </div>
+        <div className="box-row flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="font-semibold">Default</div>
+            <div className="text-xs fg-muted">Any request without its own rule, including MCP and other kinds.</div>
+            {errorAt("permissions.default") && <p className="text-xs fg-danger">{errorAt("permissions.default")}</p>}
+          </div>
+          <ModeControl
+            label="Default permission"
+            value={permissions?.default ?? "deny"}
+            allowedModes={allowedModes}
+            onChange={(mode) => set((p) => void (p.default = mode ?? "deny"))}
+          />
+        </div>
+        {KINDS.map((kind) => (
+          <div key={kind.id} className="box-row flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="font-semibold">{kind.label}</div>
+              <div className="text-xs fg-muted">{kind.detail}</div>
+              {errorAt(`permissions.kinds.${kind.id}`) && <p className="text-xs fg-danger">{errorAt(`permissions.kinds.${kind.id}`)}</p>}
+            </div>
+            <ModeControl
+              label={kind.label}
+              value={permissions?.kinds?.[kind.id]}
+              inherited={permissions?.default ?? "deny"}
+              allowedModes={allowedModes}
+              onChange={(mode) =>
+                set((p) => {
+                  p.kinds = { ...p.kinds, [kind.id]: mode };
+                })
+              }
+            />
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-4 md:grid-cols-2">
+        <div>
+          <Toggle
+            checked={!!permissions?.questions}
+            help="permissions.questions"
+            onChange={(checked) =>
+              set((p) => {
+                if (checked) p.questions = true;
+                else delete p.questions;
+              })
+            }
+            label="Let the agent ask questions"
+            description={allowedModes.has("ask") ? "Questions appear in the job console and Try it." : "Needs the ask mode in the operator policy."}
+          />
+          {errorAt("permissions.questions") && <p className="mt-1 text-xs fg-danger">{errorAt("permissions.questions")}</p>}
+        </div>
+        <Field
+          label="Answer timeout (seconds)"
+          help="permissions.timeoutSeconds"
+          hint={`Waiting counts toward the attempt deadline (${effective?.maxDurationSeconds ?? "?"}s).`}
+          error={errorAt("permissions.timeoutSeconds")}
+        >
+          <NumberInput
+            value={timeout}
+            min={30}
+            max={3600}
+            onChange={(v) =>
+              set((p) => {
+                if (Number.isFinite(v) && v !== 600) p.timeoutSeconds = v;
+                else delete p.timeoutSeconds;
+              })
+            }
+          />
+        </Field>
+      </div>
     </div>
   );
 }

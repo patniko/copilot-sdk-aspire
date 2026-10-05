@@ -1,9 +1,18 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { renderSkillMarkdown, type RunnerEventBody, type RunnerFailureCode, type RunnerStart } from "@copilot-agent/contracts";
+import {
+  DEFAULT_INPUT_TIMEOUT_SECONDS,
+  renderSkillMarkdown,
+  type InputRequestBody,
+  type InputResponseBody,
+  type RunnerEventBody,
+  type RunnerFailureCode,
+  type RunnerStart,
+} from "@copilot-agent/contracts";
 import { CopilotClient, defineTool, type SessionEvent } from "@github/copilot-sdk";
 import { Ajv2020 } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
+import { buildPermissionHandler } from "./permissions.js";
 import { buildSessionOptions } from "./session-config.js";
 import { bindTools, UnsupportedBindingError, type ToolEnvironment } from "./tools.js";
 
@@ -17,6 +26,7 @@ export interface RunOptions {
   start: RunnerStart;
   sink: RunnerSink;
   cancel: AbortSignal;
+  ask: (request: InputRequestBody, timeoutMs?: number) => Promise<InputResponseBody>;
   toolsRoot: string;
   pythonBin: string;
 }
@@ -143,6 +153,39 @@ export async function runHarness(options: RunOptions): Promise<void> {
     }
   };
 
+  const attemptDeadlineMs = new Date(start.deadline).getTime();
+  const inputTimeoutMs = () =>
+    Math.max(
+      0,
+      Math.min((definition.permissions?.timeoutSeconds ?? DEFAULT_INPUT_TIMEOUT_SECONDS) * 1000, attemptDeadlineMs - Date.now() - 1_000),
+    );
+  const askInput = (request: InputRequestBody): Promise<InputResponseBody> => {
+    const timeoutMs = inputTimeoutMs();
+    if (cancel.aborted || timeoutMs <= 0) return Promise.resolve({ kind: "expired" });
+    return options.ask(request, timeoutMs);
+  };
+  const truncate = (value: string, max: number) => (value.length > max ? value.slice(0, max) : value);
+  const questionChoices = (choices: string[] | undefined) => {
+    const kept = choices?.map((choice) => truncate(choice, 500)).filter((choice) => choice.length > 0).slice(0, 20);
+    return kept?.length ? kept : undefined;
+  };
+  const onUserInputRequest =
+    definition.permissions?.questions === true
+      ? async (request: { question: string; choices?: string[]; allowFreeform?: boolean }) => {
+          const response = await askInput({
+            kind: "question",
+            question: truncate(request.question || "The agent asks for input.", 4000),
+            choices: questionChoices(request.choices),
+            allowFreeform: request.allowFreeform ?? true,
+          });
+          if (response.kind === "question") return { answer: response.answer, wasFreeform: response.wasFreeform };
+          return {
+            answer: "No answer was given in time. Continue with your best judgement and state your assumptions.",
+            wasFreeform: true,
+          };
+        }
+      : undefined;
+
   await client.start();
   try {
     const session = await client.createSession({
@@ -155,7 +198,8 @@ export async function runHarness(options: RunOptions): Promise<void> {
       },
       tools: allTools,
       ...sessionOptions,
-      onPermissionRequest: () => ({ kind: "reject", feedback: "Not permitted by the job policy." }),
+      onPermissionRequest: buildPermissionHandler(definition.permissions, askInput),
+      ...(onUserInputRequest ? { onUserInputRequest } : {}),
       enableConfigDiscovery: false,
       skipCustomInstructions: true,
     });
@@ -163,7 +207,7 @@ export async function runHarness(options: RunOptions): Promise<void> {
     const abortSession = () => void session.abort().catch(() => undefined);
     cancel.addEventListener("abort", abortSession, { once: true });
 
-    const remainingMs = () => new Date(start.deadline).getTime() - Date.now() - 3_000;
+    const remainingMs = () => attemptDeadlineMs - Date.now() - 3_000;
     const prompt =
       `Job input (JSON):\n\`\`\`json\n${JSON.stringify(start.input, null, 2)}\n\`\`\`\n\n` +
       "Complete the task using the available tools, then call submit_result.";

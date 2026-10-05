@@ -198,6 +198,62 @@ export const help: Record<string, HelpTopic> = {
     summary: "The agent decides whether to load the skill from this sentence. Say when it applies.",
   },
 
+  // Built-in tools and permissions
+  builtinTools: {
+    title: "Built-in Copilot tools",
+    option: "builtinTools[]",
+    scope: "Harness",
+    summary:
+      "GitHub Copilot's own tools, enabled in groups. They run in the runner container, in the attempt's private workspace, as an unprivileged user that only this executor slot uses.",
+    effects: [
+      { when: "Files", then: "view, glob, grep, create and edit files in the workspace." },
+      { when: "Shell", then: "Run commands (bash in the container), read their output, stop them." },
+      { when: "Web", then: "Fetch URLs (web_fetch)." },
+      { when: "Agents", then: "Copilot's built-in sub-agents (explore, general-purpose and others) and the task tools." },
+    ],
+    boundary:
+      "Every action that the SDK asks permission for follows the harness permission rules. The operator policy decides which groups are allowed. The workspace is deleted after the attempt.",
+  },
+  "permissions.default": {
+    title: "Permission rules",
+    option: "permissions.default / permissions.kinds",
+    scope: "Harness",
+    summary: "What happens when the agent asks to read or write a file, run a shell command, or fetch a URL. Kinds you do not set use the default.",
+    effects: [
+      { when: "Deny", then: "The action is refused and the agent is told why. This is what harnesses without permissions do." },
+      { when: "Ask", then: "The action waits until the person who submitted the job approves or denies it in the job console or Try it." },
+      { when: "Allow", then: "The action runs without review (yolo). Use only with disposable workspaces and trusted inputs." },
+    ],
+    example: '{ "default": "ask", "kinds": { "read": "allow" }, "questions": true }',
+    boundary: "Harness tools (bindings) never ask. The operator policy decides whether ask and allow can be used.",
+  },
+  "permissions.questions": {
+    title: "Questions",
+    option: "permissions.questions",
+    scope: "Harness",
+    summary: "Gives the agent the ask_user tool. Its questions (free text or multiple choice) appear in the job console and Try it for the requester to answer.",
+    boundary: "Unanswered questions expire; the agent is told to continue with its best judgement.",
+  },
+  "permissions.timeoutSeconds": {
+    title: "Answer timeout",
+    option: "permissions.timeoutSeconds",
+    scope: "Harness",
+    summary: "How long one approval or question waits for a person. When it expires the action is denied.",
+    boundary: "Waiting counts toward the attempt deadline, so set the maximum duration high enough for people to respond.",
+  },
+  "policy.builtinTools": {
+    title: "Allowed built-in tools",
+    option: "builtinTools",
+    scope: "Operator policy",
+    summary: "Built-in Copilot tool groups harnesses may enable. Jobs from harnesses that use other groups are rejected at admission.",
+  },
+  "policy.permissionModes": {
+    title: "Allowed permission modes",
+    option: "permissionModes",
+    scope: "Operator policy",
+    summary: "Besides deny, whether harnesses may route actions to people (ask) or approve them automatically (allow).",
+  },
+
   // Schemas
   "input.schema": {
     title: "Input schema",

@@ -61,10 +61,13 @@ COPY --from=build /out/inference-gateway /app
 FROM ${NODE_IMAGE} AS agent-executor
 ARG PIP_INDEX_URL=https://pypi.org/simple
 RUN apt-get update \
- && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+ && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates git ripgrep \
  && rm -rf /var/lib/apt/lists/* \
- && groupadd --gid 10001 runner \
- && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin runner \
+ && for i in 0 1 2 3 4 5 6 7; do \
+      id=$((10001 + i)); \
+      groupadd --gid "${id}" "runner${i}"; \
+      useradd --uid "${id}" --gid "${id}" --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "runner${i}"; \
+    done \
  && mkdir -m 0711 /work
 # Customer Python agent toolchain, pinned and built into the image (never installed at job start).
 COPY execution-profiles/python-agent/requirements.txt /opt/python-agent/requirements.txt

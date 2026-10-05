@@ -44,6 +44,8 @@ executor                         runner
    | `model-options` | `model.reasoningEffort` or `model.contextTier` |
    | `custom-agents` | `agents[]` (sub-agents) |
    | `skills` | `skills[]` |
+   | `builtin-tools` | `builtinTools[]` (Copilot's own file, shell, web or agent tools) |
+   | `interactive` | `permissions` with any `ask` rule, or `permissions.questions` |
 
 2. **start** carries one attempt:
 
@@ -72,7 +74,32 @@ executor                         runner
 4. **cancel** (`{"type":"cancel","reason":"…"}`) asks the runner to stop. The runner should abort its session and
    report `failure` with code `cancelled`. Runners that do not stop within 15 seconds are killed.
 
-5. Exactly one terminal message:
+5. **input_request** / **input_response** let the agent ask a person for a permission decision or an answer.
+   Only harnesses with `permissions` that `ask` or allow `questions` may send requests; the executor answers
+   `expired` for anything else.
+
+   ```json
+   {"type":"input_request","id":"r1","request":{"kind":"permission","permission":{"type":"shell","command":"pytest -q","intention":"Run the tests"}}}
+   {"type":"input_request","id":"r2","request":{"kind":"question","question":"Which Python version?","choices":["3.11","3.12"],"allowFreeform":true}}
+   ```
+
+   The executor stores the request with the dispatcher, the caller answers it through the API, and the executor
+   replies:
+
+   ```json
+   {"type":"input_response","id":"r1","response":{"kind":"permission","approved":true,"scope":"once"}}
+   {"type":"input_response","id":"r2","response":{"kind":"question","answer":"3.12","wasFreeform":false}}
+   {"type":"input_response","id":"r1","response":{"kind":"expired"}}
+   ```
+
+   - `id` is chosen by the runner (`[A-Za-z0-9_-]{1,64}`, unique per attempt). At most 5 requests may wait at once.
+   - Permission prompts carry only display fields (`type`, `intention`, `command`, `path`, `url`, `diff`, `tool`,
+     `warning`) with fixed size limits; truncate before sending, because oversized messages fail the attempt.
+   - `scope: "kind"` approves later requests of the same type for the rest of the attempt.
+   - `expired` means nobody answered within `permissions.timeoutSeconds` (default 600, capped by the attempt
+     deadline) or the attempt was cancelled. Deny the action, or answer the question with a note to continue.
+
+6. Exactly one terminal message:
    - `{"type":"result","output":{…}}` — the executor validates `output` against the harness output schema;
      a mismatch fails the attempt with `invalid_output`.
    - `{"type":"failure","code":"…","message":"…","retryable":true,"uncertainEffects":false}` — codes:
@@ -108,7 +135,10 @@ Map the optional harness features to session options as follows (TypeScript name
 | `agents[]` | `customAgents: [{name, displayName, description, prompt: instructions, tools, skills, model, reasoningEffort, infer: true}]` and `builtin:task` in `availableTools` |
 | `tools[].delegatedOnly` | `defaultAgent: {excludedTools: [...]}` |
 | `skills[]` | Write each to `<workspace>/skills/<name>/SKILL.md`; `enableSkills: true`, `skillDirectories`, and `builtin:skill` in `availableTools` |
-| (always) | `excludedBuiltinAgents` listing every built-in SDK agent, so the task tool can only reach harness sub-agents |
+| `builtinTools[]` | `builtin:<name>` in `availableTools` for each tool in the group (files: view, glob, grep, create, edit; shell: the bash or PowerShell tool family; web: web_fetch; agents: task, read_agent, list_agents, write_agent, and built-in agents are no longer excluded) |
+| `permissions` | `onPermissionRequest` applies the rule for the request kind (read, write, shell, url, otherwise the default): `allow` approves once, `deny` rejects, `ask` sends `input_request` |
+| `permissions.questions` | `onUserInputRequest` sends `input_request` with a question, and `builtin:ask_user` in `availableTools` |
+| (always) | `excludedBuiltinAgents` listing every built-in SDK agent, unless the harness enables the `agents` group |
 
 Map SDK events `subagent.started`, `subagent.completed`/`subagent.failed` and `skill.invoked` to the protocol events
 above, sending only the agent or skill name.

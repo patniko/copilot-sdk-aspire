@@ -39,6 +39,7 @@ src/service-defaults         Shared config, logging, HTTP, auth, Postgres, regis
 execution-profiles/          Operator-approved runner profiles (node-ts-agent, python-agent sample runner)
 harnesses/dataset-analyst    Sample read-only harness with JSON Schema input and output, using a Python tool
 harnesses/insights-team      Sample agent team: customized prompt, two sub-agents, a delegated-only tool, a skill
+harnesses/copilot-coding-agent  GitHub Copilot's coding agent: full prompt and built-in tools, asks before risky actions
 harnesses/text-summarizer    Minimal harness created from the configurator template (no tools)
 policy/                      Operator execution policy (ceilings and acknowledged security gaps)
 tools/python/                Pinned Python tool packaged into execution images
@@ -70,6 +71,10 @@ caller --API key--> agent-api --(Postgres ledger)--> job-dispatcher <--claim/hea
 - Harnesses can use Copilot SDK features beyond a single prompt: customizing sections of the Copilot foundation
   prompt, reasoning effort, sub-agents with their own tools and skills, and skills packaged with the harness. Admission
   and the executor check that the chosen runner supports each feature, and the policy caps reasoning effort.
+- Harnesses range from a single structured answer to Copilot's full coding agent. Built-in Copilot tools (files,
+  shell, web, built-in agents) are opt-in per harness and per policy, and every action they take follows the
+  harness permission rules: deny, ask a person, or allow. Approvals and questions appear in the job console's
+  Sessions view, where the job's caller answers them.
 
 See [docs/RUNNER-PROTOCOL.md](docs/RUNNER-PROTOCOL.md) to plug in another agent implementation and
 [docs/SECURITY.md](docs/SECURITY.md) for the enforced boundaries and known gaps.
@@ -104,11 +109,15 @@ and runs the executor container. A dev API key is generated on first run (`aspir
 ### Job console
 
 Open the `agent-api` URL (from the Aspire dashboard, or the deployed `https://agent-api…azurecontainerapps.io`) in a
-browser and paste the API key. The console lists published harnesses, prefills input from the schema's `examples`,
-submits jobs with either agent profile, streams live events, renders results in the output schema's order, and can
-cancel or retry. It is static, same-origin, and served with a strict Content Security Policy; the key stays in the
-page (or in `sessionStorage` if you choose "Keep for this tab"). Set `CONSOLE_ENABLED=false` on `agent-api` to turn
-it off.
+browser and paste the API key. The **Sessions** view lists every job with its state and a **Needs you** count, and
+the inbox collects pending approvals and questions from agents across sessions; approve, deny (with a note for the
+agent) or answer them in place. A session shows live activity, the result, and cancel or retry. **New session**
+lists published harnesses, prefills input from the schema's `examples`, and submits with either agent profile. The
+console is static, same-origin, and served with a strict Content Security Policy; agent-generated content is shown as
+text only. The key stays in the page (or in `sessionStorage` if you choose "Keep for this tab"). Set
+`CONSOLE_ENABLED=false` on `agent-api` to turn it off.
+
+![Job console Sessions view](docs/images/job-console-sessions.png)
 
 ### REST client
 
@@ -147,6 +156,9 @@ Add `"profile": "python-agent"` to run the same harness with the customer Python
 | `POST` | `/v1/jobs/{id}:cancel` | Cancels queued jobs immediately; running attempts are aborted and their capability revoked |
 | `POST` | `/v1/jobs/{id}:retry` | Grants one more attempt to a `failed` or `needs_review` job |
 | `GET` | `/v1/jobs/{id}/artifacts` | Lists `result.json` for succeeded jobs |
+| `GET` | `/v1/input-requests` | The caller's approvals and questions (`?state=pending` oldest first, or `all`) |
+| `GET` | `/v1/jobs/{id}/input-requests` | One job's approvals and questions, all states |
+| `POST` | `/v1/jobs/{id}/input-requests/{requestId}/respond` | `{"kind":"permission","approved":true,"scope":"once"}` (or `"kind"` for the rest of the run, `"feedback"` when denying) or `{"kind":"question","answer":"…"}` |
 | `GET` | `/v1/harnesses` | Published harnesses with their input and output schemas |
 | `GET` | `/` | Browser job console |
 | `GET` | `/health`, `/alive` | Readiness (database) and liveness |

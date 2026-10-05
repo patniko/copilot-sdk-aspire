@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { REASONING_EFFORTS, RUNNER_FEATURES, SLUG } from "./harness.js";
+import { BUILTIN_TOOL_GROUPS, type HarnessDefinition, REASONING_EFFORTS, RUNNER_FEATURES, SLUG } from "./harness.js";
 import { RUNNER_PROTOCOL_VERSION } from "./runner-protocol.js";
 
 export const ProcessIsolation = z.enum(["none", "uid"]);
@@ -80,6 +80,10 @@ export const ExecutionPolicy = z
     maxReasoningEffort: z.enum(REASONING_EFFORTS).optional(),
     /** Whether harnesses may request the long-context model tier. Omitted means not allowed. */
     allowLongContext: z.boolean().optional(),
+    /** Built-in tool groups harnesses may enable. Omitted means none. */
+    builtinTools: z.array(z.enum(BUILTIN_TOOL_GROUPS)).optional(),
+    /** Permission modes harnesses may use besides deny ("ask" routes to people, "allow" approves automatically). */
+    permissionModes: z.array(z.enum(["ask", "allow"])).optional(),
   })
   .strict();
 export type ExecutionPolicy = z.infer<typeof ExecutionPolicy>;
@@ -106,6 +110,36 @@ export function modelOptionViolations(
   });
   if (definition.model.contextTier === "long_context" && !policy.allowLongContext) {
     problems.push({ path: "model.contextTier", message: "The operator policy does not allow the long-context tier." });
+  }
+  return problems;
+}
+
+/** Checks built-in tools and permission modes against the policy. Same shape as modelOptionViolations. */
+export function toolPolicyViolations(
+  definition: Pick<HarnessDefinition, "builtinTools" | "permissions">,
+  policy: Pick<ExecutionPolicy, "builtinTools" | "permissionModes">,
+): Array<{ path: string; message: string }> {
+  const problems: Array<{ path: string; message: string }> = [];
+  const allowedGroups = new Set(policy.builtinTools ?? []);
+  (definition.builtinTools ?? []).forEach((group, index) => {
+    if (!allowedGroups.has(group)) {
+      problems.push({ path: `builtinTools.${index}`, message: `The operator policy does not allow the '${group}' built-in tools.` });
+    }
+  });
+  const allowedModes = new Set<string>(["deny", ...(policy.permissionModes ?? [])]);
+  const permissions = definition.permissions;
+  if (permissions) {
+    if (!allowedModes.has(permissions.default)) {
+      problems.push({ path: "permissions.default", message: `The operator policy does not allow the '${permissions.default}' permission mode.` });
+    }
+    for (const [kind, mode] of Object.entries(permissions.kinds ?? {})) {
+      if (mode && !allowedModes.has(mode)) {
+        problems.push({ path: `permissions.kinds.${kind}`, message: `The operator policy does not allow the '${mode}' permission mode.` });
+      }
+    }
+    if (permissions.questions && !allowedModes.has("ask")) {
+      problems.push({ path: "permissions.questions", message: "Questions need the 'ask' permission mode, which the operator policy does not allow." });
+      }
   }
   return problems;
 }

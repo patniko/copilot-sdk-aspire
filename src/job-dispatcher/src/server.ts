@@ -1,6 +1,8 @@
 import {
   ExecutorCapabilities,
+  InputRequestBody,
   JobErrorCode,
+  RUNNER_REQUEST_ID,
   RunnerEventBody,
   securityGaps,
   type ExecutionPolicy,
@@ -22,6 +24,14 @@ const LeaseBody = z.object({ leaseToken: z.string().min(16).max(200) }).strict()
 
 const EventsBody = z
   .object({ leaseToken: z.string().min(16).max(200), events: z.array(RunnerEventBody).min(1).max(100) })
+  .strict();
+
+const CreateInputRequestBody = z
+  .object({
+    leaseToken: z.string().min(16).max(200),
+    runnerRequestId: z.string().regex(RUNNER_REQUEST_ID),
+    request: InputRequestBody,
+  })
   .strict();
 
 const ProvenanceBody = z
@@ -171,6 +181,45 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
       }
     }
     return { ok: true };
+  });
+
+  app.post("/internal/attempts/:id/input-requests", async (request, reply) => {
+    executorOnly(request);
+    const body = parse(CreateInputRequestBody, request.body);
+    try {
+      const created = await deps.store.createInputRequest(
+        attemptIdOf(request),
+        body.leaseToken,
+        body.runnerRequestId,
+        body.request,
+      );
+      if (!created) {
+        return reply.status(409).send({ error: { code: "lease_lost", message: "Stale attempt." } });
+      }
+      return reply.status(201).send(created);
+    } catch (error) {
+      if (error instanceof Error && "code" in error && (error as { code?: string }).code === "quota_exceeded") {
+        return reply.status(429).send({ error: { code: "quota_exceeded", message: error.message } });
+      }
+      throw error;
+    }
+  });
+
+  app.post("/internal/attempts/:id/input-requests/:requestId/poll", async (request, reply) => {
+    executorOnly(request);
+    const { leaseToken } = parse(LeaseBody, request.body);
+    const requestId = (request.params as { requestId: string }).requestId;
+    if (!z.string().uuid().safeParse(requestId).success) {
+      throw new HttpError(404, "not_found", "Input request not found.");
+    }
+    const result = await deps.store.pollInputRequest(attemptIdOf(request), leaseToken, requestId);
+    if (result === undefined) {
+      return reply.status(409).send({ error: { code: "lease_lost", message: "Stale attempt." } });
+    }
+    if (result === null) {
+      throw new HttpError(404, "not_found", "Input request not found.");
+    }
+    return result;
   });
 
   app.post("/internal/attempts/:id/complete", async (request, reply) => {

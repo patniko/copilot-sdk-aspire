@@ -1,7 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
-import { HarnessDefinition, parseSkillMarkdown, renderSkillMarkdown } from "@copilot-agent/contracts";
+import { HarnessDefinition, InputResponseSubmission, parseSkillMarkdown, renderSkillMarkdown } from "@copilot-agent/contracts";
 import { canonicalJson } from "@copilot-agent/service-defaults";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z, ZodError } from "zod";
@@ -278,7 +278,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         name: z.string().regex(SLUG, "Use lowercase letters, digits, and hyphens (2-63 characters)."),
         from: z.string().optional(),
         version: z.string().regex(SEMVER).optional(),
-        template: z.enum(["structured-answer", "data-analysis", "skill-guided", "agent-team"]).optional(),
+        template: z.enum(["structured-answer", "data-analysis", "skill-guided", "agent-team", "copilot-coding"]).optional(),
         document: z.unknown().optional(),
       })
       .parse(request.body);
@@ -580,6 +580,22 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   app.post("/api/try/:target/jobs/:id/cancel", async (request, reply) =>
     relay(reply, tryService.forward(tryTarget(request), "POST", `/v1/jobs/${jobId(request)}:cancel`)),
   );
+  // Approvals and questions from running agents, answered through the selected service.
+  app.get("/api/try/:target/input-requests", async (request, reply) => {
+    const state = z.enum(["pending", "all"]).catch("pending").parse((request.query as { state?: string }).state);
+    return relay(reply, tryService.forward(tryTarget(request), "GET", `/v1/input-requests?state=${state}&limit=50`));
+  });
+  app.get("/api/try/:target/jobs/:id/input-requests", async (request, reply) =>
+    relay(reply, tryService.forward(tryTarget(request), "GET", `/v1/jobs/${jobId(request)}/input-requests`)),
+  );
+  app.post("/api/try/:target/jobs/:id/input-requests/:requestId/respond", async (request, reply) => {
+    const requestId = z.string().uuid().parse((request.params as { requestId: string }).requestId);
+    const body = InputResponseSubmission.parse(request.body);
+    return relay(
+      reply,
+      tryService.forward(tryTarget(request), "POST", `/v1/jobs/${jobId(request)}/input-requests/${requestId}/respond`, body),
+    );
+  });
 
   // ---------------------------------------------------------------------------
   // UI

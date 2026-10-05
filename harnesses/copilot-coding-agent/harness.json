@@ -1,0 +1,135 @@
+{
+  "schemaVersion": "1",
+  "name": "copilot-coding-agent",
+  "version": "1.0.0",
+  "description": "GitHub Copilot's coding agent with its full prompt and built-in tools. Reads are allowed; shell, file writes and web access ask the requester first.",
+  "instructionsFile": "instructions.md",
+  "prompt": {
+    "mode": "append"
+  },
+  "model": {
+    "preferred": "grok-4.6",
+    "allowed": [
+      "grok-4.6"
+    ]
+  },
+  "tools": [],
+  "builtinTools": [
+    "files",
+    "shell",
+    "web",
+    "agents"
+  ],
+  "permissions": {
+    "default": "ask",
+    "kinds": {
+      "read": "allow",
+      "write": "ask",
+      "shell": "ask",
+      "url": "ask"
+    },
+    "questions": true,
+    "timeoutSeconds": 900
+  },
+  "input": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task"
+      ],
+      "examples": [
+        {
+          "task": "Create fizzbuzz.py that prints FizzBuzz for 1 to 30, run it, and show the output in your summary."
+        }
+      ],
+      "properties": {
+        "task": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000
+        },
+        "repository": {
+          "type": "string",
+          "pattern": "^https://",
+          "maxLength": 500
+        }
+      }
+    }
+  },
+  "output": {
+    "schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "summary",
+        "changes"
+      ],
+      "properties": {
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8000
+        },
+        "changes": {
+          "type": "array",
+          "maxItems": 200,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "path",
+              "change"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500
+              },
+              "change": {
+                "type": "string",
+                "enum": [
+                  "created",
+                  "modified",
+                  "deleted"
+                ]
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 1000
+              }
+            }
+          }
+        },
+        "patch": {
+          "type": "string",
+          "maxLength": 200000
+        },
+        "notes": {
+          "type": "array",
+          "maxItems": 10,
+          "items": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        }
+      }
+    }
+  },
+  "limits": {
+    "maxDurationSeconds": 1800,
+    "maxInferenceTokens": 1000000
+  },
+  "retry": {
+    "safeToRetry": false,
+    "maxAttempts": 1
+  },
+  "runners": {
+    "allowedProfiles": [
+      "node-ts-agent",
+      "python-agent"
+    ],
+    "defaultProfile": "node-ts-agent"
+  }
+}

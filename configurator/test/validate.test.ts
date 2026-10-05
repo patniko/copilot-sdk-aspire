@@ -90,6 +90,24 @@ describe("validateHarness", () => {
     expect(errors(doc)).toContain("model.reasoningEffort");
   });
 
+  it("rejects built-in tools and permission modes the policy does not allow", () => {
+    const doc = harness((d) => {
+      d.manifest.builtinTools = ["shell"];
+      d.manifest.permissions = { default: "allow", kinds: { read: "ask" }, questions: true };
+    });
+    expect(errors(doc)).toEqual(expect.arrayContaining(["builtinTools.0", "permissions.default", "permissions.kinds.read", "permissions.questions"]));
+    const allowed = { ...policy, builtinTools: ["shell" as const], permissionModes: ["ask" as const, "allow" as const] };
+    const capable = profiles.map((p) => ({ ...p, capabilities: [...p.capabilities, "builtin-tools", "interactive"] }));
+    expect(errors(doc, { policy: allowed, profiles: capable })).toEqual([]);
+  });
+
+  it("warns when built-in tools are enabled but every action is denied", () => {
+    const doc = harness((d) => void (d.manifest.builtinTools = ["files"]));
+    const capable = profiles.map((p) => ({ ...p, capabilities: [...p.capabilities, "builtin-tools"] }));
+    const issues = validate(doc, { policy: { ...policy, builtinTools: ["files"] }, profiles: capable });
+    expect(issues).toEqual(expect.arrayContaining([expect.objectContaining({ level: "warning", path: "permissions" })]));
+  });
+
   it("warns when the policy does not approve a profile and errors when no model is approved", () => {
     const unapprovedProfile = harness((d) => void (d.manifest.runners = { allowedProfiles: ["node-ts-agent", "python-agent"], defaultProfile: "node-ts-agent" }));
     expect(validate(unapprovedProfile).some((i) => i.level === "warning" && i.path === "runners.allowedProfiles")).toBe(true);
@@ -145,6 +163,19 @@ describe("validateHarness", () => {
       const issues = validateHarness(document, { policy: shippedPolicy, profiles: shippedProfiles, all: [document] });
       expect(issues.filter((i) => i.level === "error"), template.id).toEqual([]);
     }
+  });
+
+  it("ships the Copilot coding agent sample, valid and matching its template", async () => {
+    const repo = new Repo(repoRoot);
+    const [shippedPolicy, shippedProfiles, document] = await Promise.all([repo.readPolicy(), repo.listProfiles(), repo.readHarness("copilot-coding-agent")]);
+    const issues = validateHarness(document, { policy: shippedPolicy, profiles: shippedProfiles, all: [document] });
+    expect(issues.filter((i) => i.level === "error")).toEqual([]);
+    const fromTemplate = createFromTemplate("copilot-coding", "copilot-coding-agent", shippedPolicy.allowedModels[0]!, document.manifest.runners.allowedProfiles, shippedPolicy);
+    expect(document.manifest).toEqual(fromTemplate.manifest);
+    const result = decisions(document, { policy: shippedPolicy, profiles: shippedProfiles, all: [document] });
+    expect(result).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "gap", title: "Shell and web tools can reach any network address" })]));
+    const snapshots = await loadHarnesses(repoRoot);
+    expect(harnessDigest(document)).toBe(snapshots.get("copilot-coding-agent")![0]!.digest);
   });
 });
 

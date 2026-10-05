@@ -45,7 +45,70 @@ export const RunnerCancel = z
   .strict();
 export type RunnerCancel = z.infer<typeof RunnerCancel>;
 
-export const ExecutorToRunner = z.discriminatedUnion("type", [RunnerStart, RunnerCancel]);
+// ---------------------------------------------------------------------------
+// Input requests: the agent asks a person for a permission decision or an answer.
+// The runner sends input_request; the executor relays it to the dispatcher, where callers answer it
+// through the API, and sends input_response back. Content is agent-generated: display it as text.
+// ---------------------------------------------------------------------------
+
+/** What a permission request asks for, reduced to fields a person needs to decide. */
+export const PermissionPrompt = z
+  .object({
+    /** SDK permission kind; kinds without a dedicated rule are reported as "other". */
+    type: z.enum(["read", "write", "shell", "url", "mcp", "other"]),
+    intention: z.string().max(1000).optional(),
+    /** Shell: full command text. */
+    command: z.string().max(8000).optional(),
+    /** Read or write: file path. */
+    path: z.string().max(1000).optional(),
+    url: z.string().max(2000).optional(),
+    /** Write: unified diff of the change (truncated). */
+    diff: z.string().max(20_000).optional(),
+    /** MCP or other tool name. */
+    tool: z.string().max(200).optional(),
+    warning: z.string().max(1000).optional(),
+  })
+  .strict();
+export type PermissionPrompt = z.infer<typeof PermissionPrompt>;
+
+export const InputRequestBody = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("permission"), permission: PermissionPrompt }).strict(),
+  z
+    .object({
+      kind: z.literal("question"),
+      question: z.string().min(1).max(4000),
+      choices: z.array(z.string().min(1).max(500)).max(20).optional(),
+      allowFreeform: z.boolean(),
+    })
+    .strict(),
+]);
+export type InputRequestBody = z.infer<typeof InputRequestBody>;
+
+export const InputResponseBody = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("permission"),
+      approved: z.boolean(),
+      /** "kind" also approves later requests of the same permission type for the rest of the attempt. */
+      scope: z.enum(["once", "kind"]).optional(),
+      feedback: z.string().max(2000).optional(),
+    })
+    .strict(),
+  z.object({ kind: z.literal("question"), answer: z.string().max(8000), wasFreeform: z.boolean() }).strict(),
+  /** No answer arrived in time, or the request was cancelled; the runner denies or answers empty. */
+  z.object({ kind: z.literal("expired") }).strict(),
+]);
+export type InputResponseBody = z.infer<typeof InputResponseBody>;
+
+/** Correlation id chosen by the runner, unique within an attempt. */
+export const RUNNER_REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+export const RunnerInputResponse = z
+  .object({ type: z.literal("input_response"), id: z.string().regex(RUNNER_REQUEST_ID), response: InputResponseBody })
+  .strict();
+export type RunnerInputResponse = z.infer<typeof RunnerInputResponse>;
+
+export const ExecutorToRunner = z.discriminatedUnion("type", [RunnerStart, RunnerCancel, RunnerInputResponse]);
 export type ExecutorToRunner = z.infer<typeof ExecutorToRunner>;
 
 // ---------------------------------------------------------------------------
@@ -112,10 +175,16 @@ export const RunnerFailure = z
   .strict();
 export type RunnerFailure = z.infer<typeof RunnerFailure>;
 
+export const RunnerInputRequest = z
+  .object({ type: z.literal("input_request"), id: z.string().regex(RUNNER_REQUEST_ID), request: InputRequestBody })
+  .strict();
+export type RunnerInputRequest = z.infer<typeof RunnerInputRequest>;
+
 export const RunnerToExecutor = z.discriminatedUnion("type", [
   RunnerHello,
   RunnerEvent,
   RunnerResult,
   RunnerFailure,
+  RunnerInputRequest,
 ]);
 export type RunnerToExecutor = z.infer<typeof RunnerToExecutor>;

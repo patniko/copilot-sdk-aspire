@@ -180,6 +180,52 @@ describe("session options", () => {
     expect(options.enableSkills).toBe(true);
     expect(options.skillDirectories).toEqual(["/w/skills"]);
   });
+
+  it("maps built-in tool groups without changing existing harness defaults", () => {
+    const definition = structuredClone(harnesses.get("dataset-analyst")![0]!.definition);
+    definition.builtinTools = ["files", "shell", "web"];
+    definition.permissions = { default: "deny", questions: true };
+    const options = buildSessionOptions(definition, ["compute_statistics", "submit_result"], "/w/skills");
+    expect(options.availableTools).toEqual([
+      "custom:compute_statistics",
+      "custom:submit_result",
+      "builtin:view",
+      "builtin:glob",
+      "builtin:grep",
+      "builtin:create",
+      "builtin:edit",
+      "builtin:apply_patch",
+      "builtin:bash",
+      "builtin:read_bash",
+      "builtin:write_bash",
+      "builtin:stop_bash",
+      "builtin:list_bash",
+      "builtin:powershell",
+      "builtin:read_powershell",
+      "builtin:write_powershell",
+      "builtin:stop_powershell",
+      "builtin:list_powershell",
+      "builtin:web_fetch",
+      "builtin:ask_user",
+    ]);
+    expect(options.excludedBuiltinAgents).toEqual(BUILTIN_AGENTS);
+    expect(requiredRunnerCapabilities(definition)).toEqual(["builtin-tools", "interactive"]);
+  });
+
+  it("enables built-in agents only for the agents tool group", () => {
+    const definition = structuredClone(harnesses.get("dataset-analyst")![0]!.definition);
+    definition.builtinTools = ["agents"];
+    const options = buildSessionOptions(definition, ["compute_statistics", "submit_result"], "/w/skills");
+    expect(options.availableTools).toEqual([
+      "custom:compute_statistics",
+      "custom:submit_result",
+      "builtin:task",
+      "builtin:read_agent",
+      "builtin:list_agents",
+      "builtin:write_agent",
+    ]);
+    expect(options.excludedBuiltinAgents).toEqual([]);
+  });
 });
 
 describe("admission of harness features", () => {

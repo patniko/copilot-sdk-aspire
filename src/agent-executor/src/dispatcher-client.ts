@@ -1,6 +1,9 @@
 import type {
   ExecutorCapabilities,
   HarnessSnapshot,
+  InputRequestBody,
+  InputRequestState,
+  InputResponseBody,
   JobErrorCode,
   RunnerEventBody,
   RunnerHello,
@@ -27,6 +30,15 @@ export type Outcome =
   | { kind: "failed"; code: JobErrorCode; message: string; retryable: boolean; uncertainEffects: boolean };
 
 export class LeaseLostError extends Error {}
+
+export class InputRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+  }
+}
 
 export class NotEligibleError extends Error {
   constructor(readonly gaps: string[]) {
@@ -103,12 +115,57 @@ export class DispatcherClient {
     throw new Error("completion could not be delivered");
   }
 
-  #post(path: string, body: unknown): Promise<Response> {
+  async createInputRequest(
+    attemptId: string,
+    leaseToken: string,
+    runnerRequestId: string,
+    request: InputRequestBody,
+    signal?: AbortSignal,
+  ): Promise<{ id: string; expiresAt: string }> {
+    const response = await this.#post(
+      `/internal/attempts/${attemptId}/input-requests`,
+      { leaseToken, runnerRequestId, request },
+      signal,
+    );
+    if (response.status === 409) {
+      throw new LeaseLostError("lease lost");
+    }
+    if (!response.ok) {
+      throw new InputRequestError(`input request failed with ${response.status}`, response.status);
+    }
+    return (await response.json()) as { id: string; expiresAt: string };
+  }
+
+  async pollInputRequest(
+    attemptId: string,
+    leaseToken: string,
+    requestId: string,
+    signal?: AbortSignal,
+  ): Promise<{ state: InputRequestState; response?: InputResponseBody } | undefined> {
+    const response = await this.#post(
+      `/internal/attempts/${attemptId}/input-requests/${requestId}/poll`,
+      { leaseToken },
+      signal,
+    );
+    if (response.status === 409) {
+      throw new LeaseLostError("lease lost");
+    }
+    if (response.status === 404) {
+      return undefined;
+    }
+    if (!response.ok) {
+      throw new InputRequestError(`input request poll failed with ${response.status}`, response.status);
+    }
+    return (await response.json()) as { state: InputRequestState; response?: InputResponseBody };
+  }
+
+  #post(path: string, body: unknown, signal?: AbortSignal): Promise<Response> {
+    const timeout = AbortSignal.timeout(15_000);
     return fetch(`${this.baseUrl}${path}`, {
       method: "POST",
       headers: { "content-type": "application/json", "x-internal-key": this.executorKey },
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(15_000),
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
   }
 }

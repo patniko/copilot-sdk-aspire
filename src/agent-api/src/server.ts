@@ -1,4 +1,10 @@
-import { JobSubmission, TERMINAL_STATES, type HarnessSnapshot, type JobEventView } from "@copilot-agent/contracts";
+import {
+  InputResponseSubmission,
+  JobSubmission,
+  TERMINAL_STATES,
+  type HarnessSnapshot,
+  type JobEventView,
+} from "@copilot-agent/contracts";
 import { JobEventListener, JobStore, StoreError } from "@copilot-agent/job-store";
 import { ApiKeyAuthenticator, createService, HttpError } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -33,6 +39,13 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
       throw new HttpError(404, "not_found", "Job not found.");
     }
     return id;
+  };
+  const requestIdOf = (request: FastifyRequest) => {
+    const requestId = (request.params as { requestId: string }).requestId;
+    if (!UUID.test(requestId)) {
+      throw new HttpError(400, "invalid_request", "Input request id must be a UUID.");
+    }
+    return requestId;
   };
 
   app.get("/v1/harnesses", async (request) => {
@@ -96,6 +109,50 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
       throw new HttpError(404, "not_found", "Job not found.");
     }
     return view;
+  });
+
+  app.get("/v1/input-requests", async (request) => {
+    const principal = principalOf(request);
+    const query = request.query as { state?: string; limit?: string };
+    const state = query.state ?? "pending";
+    if (state !== "pending" && state !== "all") {
+      throw new HttpError(400, "invalid_request", "'state' must be 'pending' or 'all'.");
+    }
+    const limit = Math.min(Math.max(Number.parseInt(query.limit ?? "50", 10) || 50, 1), 100);
+    const requests = await deps.store.listInputRequests(principal, { state, limit });
+    return { requests };
+  });
+
+  app.get("/v1/jobs/:id/input-requests", async (request) => {
+    const principal = principalOf(request);
+    const id = jobIdOf(request);
+    if (!(await deps.store.getJob(principal, id))) {
+      throw new HttpError(404, "not_found", "Job not found.");
+    }
+    const requests = await deps.store.listInputRequests(principal, {
+      jobId: id,
+      state: "all",
+      limit: 100,
+      order: "oldest",
+    });
+    return { requests };
+  });
+
+  app.post("/v1/jobs/:id/input-requests/:requestId/respond", async (request) => {
+    const principal = principalOf(request);
+    const jobId = jobIdOf(request);
+    const requestId = requestIdOf(request);
+    const parsed = InputResponseSubmission.safeParse(request.body);
+    if (!parsed.success) {
+      throw new HttpError(400, "invalid_request", "The input response is invalid.", {
+        issues: parsed.error.issues.slice(0, 20).map((i) => ({ path: i.path.join("."), message: i.message })),
+      });
+    }
+    try {
+      return await deps.store.respondInputRequest(principal, jobId, requestId, parsed.data, principal);
+    } catch (error) {
+      throw mapStoreError(error);
+    }
   });
 
   // Custom methods (`/v1/jobs/{id}:cancel`, `/v1/jobs/{id}:retry`) share one route because the
@@ -236,7 +293,13 @@ function headerValue(request: FastifyRequest, name: string): string | undefined 
 
 function mapStoreError(error: unknown): unknown {
   if (error instanceof StoreError) {
-    const status = { idempotency_conflict: 409, quota_exceeded: 429, not_found: 404, invalid_state: 409 }[error.code];
+    const status = {
+      idempotency_conflict: 409,
+      quota_exceeded: 429,
+      not_found: 404,
+      invalid_state: 409,
+      invalid_request: 400,
+    }[error.code];
     return new HttpError(status, error.code, error.message);
   }
   return error;

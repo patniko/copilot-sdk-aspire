@@ -143,6 +143,70 @@ export function PolicyView() {
         </div>
       </Card>
 
+      <Card
+        title="Built-in tools and permissions"
+        subtitle="Which built-in Copilot tool groups harnesses may enable, and how their actions may be approved."
+      >
+        <div className="grid gap-6 md:grid-cols-2">
+          <div className="space-y-2">
+            <div className="flex items-center gap-1">
+              <span className="label !mb-0">Allowed tool groups</span>
+              <HelpButton topic="policy.builtinTools" />
+            </div>
+            {(
+              [
+                ["files", "Files", "view, glob, grep, create, edit"],
+                ["shell", "Shell", "bash commands in the runner container"],
+                ["web", "Web", "web_fetch"],
+                ["agents", "Built-in agents", "explore, general-purpose and the task tools"],
+              ] as const
+            ).map(([id, label, detail]) => (
+              <Toggle
+                key={id}
+                checked={(draft.builtinTools ?? []).includes(id)}
+                onChange={(checked) =>
+                  update((p) => {
+                    const order = ["files", "shell", "web", "agents"] as const;
+                    const next = order.filter((g) => (g === id ? checked : (p.builtinTools ?? []).includes(g)));
+                    if (next.length) p.builtinTools = [...next];
+                    else delete p.builtinTools;
+                  })
+                }
+                label={label}
+                description={detail}
+              />
+            ))}
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center gap-1">
+              <span className="label !mb-0">Allowed permission modes</span>
+              <HelpButton topic="policy.permissionModes" />
+            </div>
+            <Toggle checked disabled label="Deny" description="Always available; the default for every harness." onChange={() => undefined} />
+            {(
+              [
+                ["ask", "Ask", "Route actions and questions to the person who submitted the job."],
+                ["allow", "Allow (yolo)", "Let harnesses approve actions automatically."],
+              ] as const
+            ).map(([id, label, detail]) => (
+              <Toggle
+                key={id}
+                checked={(draft.permissionModes ?? []).includes(id)}
+                onChange={(checked) =>
+                  update((p) => {
+                    const next = (["ask", "allow"] as const).filter((m) => (m === id ? checked : (p.permissionModes ?? []).includes(m)));
+                    if (next.length) p.permissionModes = [...next];
+                    else delete p.permissionModes;
+                  })
+                }
+                label={label}
+                description={detail}
+              />
+            ))}
+          </div>
+        </div>
+      </Card>
+
       <Card title="Model options" subtitle="Ceilings for the model settings harnesses and sub-agents can request.">
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Maximum reasoning effort" help="policy.maxReasoningEffort" hint="Jobs from harnesses above the cap are rejected at admission.">

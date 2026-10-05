@@ -22,6 +22,24 @@ export const BUILTIN_AGENTS = [
   "rem-agent",
 ];
 
+const BUILTIN_TOOL_GROUPS: Record<NonNullable<HarnessDefinition["builtinTools"]>[number], string[]> = {
+  files: ["view", "glob", "grep", "create", "edit", "apply_patch"],
+  shell: [
+    "bash",
+    "read_bash",
+    "write_bash",
+    "stop_bash",
+    "list_bash",
+    "powershell",
+    "read_powershell",
+    "write_powershell",
+    "stop_powershell",
+    "list_powershell",
+  ],
+  web: ["web_fetch"],
+  agents: ["task", "read_agent", "list_agents", "write_agent"],
+};
+
 export type HarnessSessionOptions = Pick<
   SessionConfig,
   | "systemMessage"
@@ -63,10 +81,18 @@ export function buildSessionOptions(
   const agents = definition.agents ?? [];
   const skills = definition.skills ?? [];
   const availableTools = customToolNames.map((name) => `custom:${name}`);
+  for (const group of definition.builtinTools ?? []) {
+    availableTools.push(...BUILTIN_TOOL_GROUPS[group].map((name) => `builtin:${name}`));
+  }
   if (agents.length > 0) availableTools.push("builtin:task");
   if (skills.length > 0) availableTools.push("builtin:skill");
+  if (definition.permissions?.questions === true) availableTools.push("builtin:ask_user");
 
-  const options: HarnessSessionOptions = { systemMessage, availableTools, excludedBuiltinAgents: [...BUILTIN_AGENTS] };
+  const options: HarnessSessionOptions = {
+    systemMessage,
+    availableTools: [...new Set(availableTools)],
+    excludedBuiltinAgents: definition.builtinTools?.includes("agents") ? [] : [...BUILTIN_AGENTS],
+  };
   if (definition.model.reasoningEffort) options.reasoningEffort = definition.model.reasoningEffort;
   if (definition.model.contextTier) options.contextTier = definition.model.contextTier;
   if (agents.length > 0) {

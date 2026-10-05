@@ -33,6 +33,26 @@ function errorCode(fn: () => unknown): string | undefined {
   return undefined;
 }
 
+function httpError(fn: () => unknown): HttpError {
+  try {
+    fn();
+  } catch (error) {
+    if (error instanceof HttpError) {
+      return error;
+    }
+  }
+  throw new Error("Expected HttpError");
+}
+
+function admitWithDefinition(definition: HarnessSnapshot["definition"], policyOverrides: Partial<ExecutionPolicy> = {}) {
+  const snapshot: HarnessSnapshot = { definition, digest: `test:${definition.name}` };
+  return new Admission({
+    harnesses: new Map([[definition.name, [snapshot]]]),
+    profiles,
+    policy: { ...policy, ...policyOverrides },
+  }).admit({ harness: { name: definition.name }, input: validInput });
+}
+
 describe("Admission", () => {
   it("admits the published harness with intersected limits", () => {
     const admitted = admit({ harness: { name: "dataset-analyst" }, input: validInput, deadlineSeconds: 45 });
@@ -76,5 +96,30 @@ describe("Admission", () => {
     expect(
       errorCode(() => admit({ harness: { name: "dataset-analyst" }, input: validInput }, { allowedModels: ["other"] })),
     ).toBe("policy_rejected");
+  });
+
+  it("rejects built-in tools disallowed by policy", () => {
+    const base = harnesses.get("dataset-analyst")![0]!.definition;
+    const error = httpError(() =>
+      admitWithDefinition({ ...base, builtinTools: ["shell"] }, { builtinTools: [] }),
+    );
+    expect(error.code).toBe("policy_rejected");
+    expect(error.details).toMatchObject({
+      problems: [{ path: "builtinTools.0" }],
+    });
+  });
+
+  it("rejects permission modes disallowed by policy", () => {
+    const base = harnesses.get("dataset-analyst")![0]!.definition;
+    const error = httpError(() =>
+      admitWithDefinition(
+        { ...base, permissions: { default: "allow", kinds: { shell: "ask" }, questions: true } },
+        { permissionModes: [] },
+      ),
+    );
+    expect(error.code).toBe("policy_rejected");
+    expect(error.details).toMatchObject({
+      problems: [{ path: "permissions.default" }, { path: "permissions.kinds.shell" }, { path: "permissions.questions" }],
+    });
   });
 });

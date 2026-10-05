@@ -2,11 +2,13 @@ import clsx from "clsx";
 import { ExternalLink, Laptop, Cloud, Play, RefreshCw, Square, Copilot, Wrench, CheckCircle2, XCircle, FlaskConical } from "../components/icons";
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import type { TryTarget } from "../../server/types";
+import type { InputRequestView, InputResponseSubmission } from "@copilot-agent/contracts";
 import { api, errorMessage } from "../api";
+import { InputRequestCard } from "../components/InputRequestCard";
 import { ResultView } from "../components/ResultView";
 import { Badge, Card, Empty, Field, Flash, JsonEditor, PageHeader, Spinner, stateTone } from "../components/ui";
 import { useApp } from "../state";
-import { BookIcon, CommentIcon, DotFillIcon, SyncIcon } from "@primer/octicons-react";
+import { AlertIcon, BookIcon, CommentIcon, DotFillIcon, PersonIcon, SyncIcon } from "@primer/octicons-react";
 
 interface LiveVersion {
   version: string;
@@ -91,6 +93,10 @@ function describe(event: JobEvent): string {
       return `Retry scheduled after attempt ${b.attempt} (${b.reason})`;
     case "job.failed":
       return `Failed: ${b.code} — ${b.message}`;
+    case "job.input_requested":
+      return b.kind === "question" ? `Waiting for your answer — ${b.summary}` : `Waiting for your approval — ${b.summary}`;
+    case "job.input_resolved":
+      return b.state === "answered" ? (b.approved === false ? "Denied" : b.approved ? "Approved" : "Answered") : b.state === "expired" ? "Request expired without an answer" : "Request cancelled";
     default:
       return String(b.type).replace("job.", "").replaceAll("_", " ");
   }
@@ -123,6 +129,10 @@ function eventIcon(event: JobEvent): { icon: ReactNode; className?: string } {
       return { icon: <Play /> };
     case "job.retry_scheduled":
       return { icon: <SyncIcon size={14} />, className: "fg-attention" };
+    case "job.input_requested":
+      return { icon: <AlertIcon size={14} />, className: "!bg-[var(--bgColor-attention-muted)] fg-attention" };
+    case "job.input_resolved":
+      return { icon: <PersonIcon size={14} />, className: b.approved === false ? "fg-danger" : "fg-success" };
     default:
       return { icon: <DotFillIcon size={14} /> };
   }
@@ -142,7 +152,7 @@ function EventItem({ event }: { event: JobEvent }) {
 }
 
 export function TryView() {
-  const { local, settings, workspace, setView } = useApp();
+  const { local, settings, workspace, setView, toast } = useApp();
   const [target, setTarget] = useState<TryTarget>(local?.running ? "local" : "azure");
   const [apiUrl, setApiUrl] = useState<string>();
   const [connectError, setConnectError] = useState<string>();
@@ -154,6 +164,8 @@ export function TryView() {
   const [submitError, setSubmitError] = useState<string>();
   const [job, setJob] = useState<Job>();
   const [events, setEvents] = useState<JobEvent[]>([]);
+  const [requests, setRequests] = useState<InputRequestView[]>([]);
+  const [pendingElsewhere, setPendingElsewhere] = useState(0);
   const [busy, setBusy] = useState(false);
   const cursor = useRef(0);
   const connectRequest = useRef(0);
@@ -198,19 +210,21 @@ export function TryView() {
   const newerOnDisk = workspace?.harnesses.filter((h) => h.name === name && !harness?.versions.some((v) => v.version === h.version)) ?? [];
   const stale = (onDisk && onDisk.digest && live && onDisk.digest !== live.digest) || newerOnDisk.length > 0;
 
-  // Poll the job until it finishes.
+  // Poll the job until it finishes, with its approvals and questions.
   useEffect(() => {
     if (!job || TERMINAL.has(job.state)) return;
     const timer = setInterval(async () => {
       try {
-        const [next, page] = await Promise.all([
+        const [next, page, inputs] = await Promise.all([
           api<Job>(`/api/try/${target}/jobs/${job.id}`),
           api<{ events: JobEvent[] }>(`/api/try/${target}/jobs/${job.id}/events?after=${cursor.current}`),
+          api<{ requests: InputRequestView[] }>(`/api/try/${target}/jobs/${job.id}/input-requests`).catch(() => undefined),
         ]);
         if (page.events.length) {
           cursor.current = page.events.at(-1)!.seq;
           setEvents((current) => [...current, ...page.events]);
         }
+        if (inputs) setRequests(inputs.requests);
         setJob(next);
       } catch {
         // Retried on the next tick.
@@ -218,6 +232,36 @@ export function TryView() {
     }, 1500);
     return () => clearInterval(timer);
   }, [job, target]);
+
+  // Other sessions waiting for an answer (any harness, any caller-owned job on this service).
+  useEffect(() => {
+    if (!apiUrl) return;
+    let cancelled = false;
+    const load = () =>
+      api<{ requests: InputRequestView[] }>(`/api/try/${target}/input-requests?state=pending`)
+        .then((r) => !cancelled && setPendingElsewhere(r.requests.filter((x) => x.jobId !== job?.id).length))
+        .catch(() => undefined);
+    void load();
+    const timer = setInterval(load, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [apiUrl, target, job?.id]);
+
+  const respond = async (request: InputRequestView, submission: InputResponseSubmission) => {
+    try {
+      const updated = await api<InputRequestView>(`/api/try/${target}/jobs/${request.jobId}/input-requests/${request.id}/respond`, {
+        method: "POST",
+        body: submission,
+      });
+      setRequests((current) => current.map((r) => (r.id === updated.id ? updated : r)));
+    } catch (error) {
+      toast(errorMessage(error), "error");
+      const fresh = await api<{ requests: InputRequestView[] }>(`/api/try/${target}/jobs/${request.jobId}/input-requests`).catch(() => undefined);
+      if (fresh) setRequests(fresh.requests);
+    }
+  };
 
   async function submit() {
     setBusy(true);
@@ -229,6 +273,7 @@ export function TryView() {
       });
       cursor.current = 0;
       setEvents([]);
+      setRequests([]);
       setJob(created);
     } catch (error) {
       setSubmitError(errorMessage(error));
@@ -271,6 +316,19 @@ export function TryView() {
           </div>
         }
       />
+
+      {pendingElsewhere > 0 && apiUrl && (
+        <Flash
+          tone="warn"
+          actions={
+            <a className="btn-secondary btn-sm" href={`${apiUrl}/#inbox`} target="_blank" rel="noreferrer">
+              Open Sessions <ExternalLink className="h-3 w-3" />
+            </a>
+          }
+        >
+          {pendingElsewhere} approval(s) or question(s) from other sessions are waiting for you in the job console.
+        </Flash>
+      )}
 
       {connectError ? (
         <Card>
@@ -405,6 +463,16 @@ export function TryView() {
                   </div>
                 </div>
                 {job.acknowledgedGaps.length > 0 && <Badge tone="amber">gaps: {job.acknowledgedGaps.join(", ")}</Badge>}
+                {requests.length > 0 && (
+                  <div className="space-y-3" aria-live="polite">
+                    {[...requests]
+                      .sort((a, b) => (a.state === "pending" ? 0 : 1) - (b.state === "pending" ? 0 : 1))
+                      .filter((r, index) => r.state === "pending" || index < 20)
+                      .map((r) => (
+                        <InputRequestCard key={r.id} request={r} onRespond={(submission) => respond(r, submission)} />
+                      ))}
+                  </div>
+                )}
                 {job.error && (
                   <Flash tone="error">
                     <code>{job.error.code}</code> {job.error.message}

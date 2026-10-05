@@ -74,6 +74,52 @@ Authorization: Bearer {{apiKey}}
 GET {{baseUrl}}/v1/jobs?limit=10
 Authorization: Bearer {{apiKey}}
 
+### Copilot coding agent: asks before shell commands, file writes and web access, and can ask questions
+# @name coding
+POST {{baseUrl}}/v1/jobs
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{
+  "harness": { "name": "copilot-coding-agent" },
+  "input": { "task": "Create fizzbuzz.py that prints FizzBuzz for 1 to 30, run it, and show the output in your summary." }
+}
+
+@codingJobId = {{coding.response.body.$.id}}
+
+### Pending approvals and questions across all of your jobs (oldest first)
+# @name pending
+GET {{baseUrl}}/v1/input-requests?state=pending
+Authorization: Bearer {{apiKey}}
+
+### One job's approvals and questions, all states
+GET {{baseUrl}}/v1/jobs/{{codingJobId}}/input-requests
+Authorization: Bearer {{apiKey}}
+
+@requestId = {{pending.response.body.$.requests[0].id}}
+@requestJobId = {{pending.response.body.$.requests[0].jobId}}
+
+### Approve the oldest pending permission request (use "scope": "kind" to allow that kind for the rest of the run)
+POST {{baseUrl}}/v1/jobs/{{requestJobId}}/input-requests/{{requestId}}/respond
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{ "kind": "permission", "approved": true, "scope": "once" }
+
+### Deny it with a note for the agent
+POST {{baseUrl}}/v1/jobs/{{requestJobId}}/input-requests/{{requestId}}/respond
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{ "kind": "permission", "approved": false, "feedback": "Do not install packages; use the standard library." }
+
+### Answer a question
+POST {{baseUrl}}/v1/jobs/{{requestJobId}}/input-requests/{{requestId}}/respond
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{ "kind": "question", "answer": "Use Python 3.12." }
+
 ### Negative check: invalid input is rejected before queuing (expect 400 invalid_input)
 POST {{baseUrl}}/v1/jobs
 Authorization: Bearer {{apiKey}}

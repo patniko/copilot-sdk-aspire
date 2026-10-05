@@ -188,6 +188,7 @@ describe("templates and imports", () => {
       "data-analysis",
       "skill-guided",
       "agent-team",
+      "copilot-coding",
     ]);
 
     const created = await app.inject({
@@ -254,6 +255,46 @@ describe("templates and imports", () => {
     expect(body.report.notApplicable.join("\n")).toContain("inference gateway");
     expect(body.issues.filter((issue: { level: string }) => issue.level === "error")).toEqual([]);
     await expect(readFile(join(root, "harnesses", "imported-plan", "harness.json"), "utf8")).rejects.toThrow();
+  });
+
+  it("creates the Copilot coding agent from its template", async () => {
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/harnesses",
+      headers: headers(),
+      payload: { mode: "new", name: "coder", template: "copilot-coding" },
+    });
+    expect(created.statusCode).toBe(200);
+    const detail = created.json();
+    expect(detail.document.manifest).toMatchObject({
+      prompt: { mode: "append" },
+      builtinTools: ["files", "shell", "web", "agents"],
+      permissions: { default: "ask", kinds: { read: "allow", write: "ask", shell: "ask", url: "ask" }, questions: true },
+      retry: { safeToRetry: false },
+    });
+    expect(detail.issues.filter((issue: { level: string }) => issue.level === "error")).toEqual([]);
+    expect(detail.requiredCapabilities).toEqual(expect.arrayContaining(["builtin-tools", "interactive", "prompt-sections"]));
+    expect(detail.decisions.map((d: { title: string }) => d.title).join("\n")).toContain("Asks you before: write, shell, url");
+  });
+
+  it("maps a coding plan with allow-all to built-in tools and yolo permissions", async () => {
+    const plan = {
+      schemaVersion: 2,
+      name: "Yolo Coder",
+      clientMode: "copilot-cli",
+      inventory: "coding-defaults",
+      prompt: { mode: "default", content: "Fix the bug." },
+      tools: { bash: { action: "keep" }, view: { action: "keep" }, web_fetch: { action: "override" } },
+      policy: { permissionMode: "allow-all", preToolHook: true },
+    };
+    const response = await app.inject({ method: "POST", url: "/api/import/planner", headers: headers(), payload: { plan } });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.document.manifest.builtinTools).toEqual(["files", "shell", "web", "agents"]);
+    expect(body.document.manifest.permissions).toMatchObject({ default: "allow" });
+    expect(body.report.mapped.join("\n")).toContain("allow-all");
+    expect(body.report.needsWork.join("\n")).toContain("override");
+    expect(body.report.notApplicable.join("\n")).toContain("hooks");
   });
 });
 

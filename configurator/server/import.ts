@@ -1,4 +1,4 @@
-import { PROMPT_SECTIONS, REASONING_EFFORTS, SLUG } from "@copilot-agent/contracts";
+import { BUILTIN_TOOL_GROUPS, type BuiltinToolGroup, PROMPT_SECTIONS, REASONING_EFFORTS, SLUG } from "@copilot-agent/contracts";
 import { createFromTemplate } from "./templates.js";
 import type { ExecutionPolicy, HarnessDocument, ImportReport, ProfileSummary } from "./types.js";
 
@@ -88,10 +88,105 @@ export function mapPlannerPlan(
   mapPrompt(plan, document, report);
   mapModelOptions(modelPlan, document, policy, report);
   mapAgents(plan, document, policy, report);
+  mapBuiltinToolsAndPermissions(plan, document, policy, report);
   mapUnsupportedFields(plan, report);
   report.needsWork.push("Define the job input and output schemas.");
 
   return { document, report };
+}
+
+const TOOL_GROUPS: Record<string, BuiltinToolGroup> = {
+  view: "files",
+  glob: "files",
+  grep: "files",
+  create: "files",
+  edit: "files",
+  apply_patch: "files",
+  str_replace_editor: "files",
+  bash: "shell",
+  read_bash: "shell",
+  write_bash: "shell",
+  stop_bash: "shell",
+  list_bash: "shell",
+  powershell: "shell",
+  read_powershell: "shell",
+  write_powershell: "shell",
+  stop_powershell: "shell",
+  list_powershell: "shell",
+  web_fetch: "web",
+  web_search: "web",
+  task: "agents",
+  read_agent: "agents",
+  list_agents: "agents",
+  write_agent: "agents",
+};
+
+/** Built-in tools the plan kept become tool groups; its permission mode becomes harness permissions. */
+function mapBuiltinToolsAndPermissions(plan: JsonObject, document: HarnessDocument, policy: ExecutionPolicy, report: ImportReport): void {
+  const groups = new Set<BuiltinToolGroup>();
+  let questions = false;
+  let overrides = 0;
+  if (isObject(plan.tools)) {
+    for (const [toolName, raw] of Object.entries(plan.tools)) {
+      if (!isObject(raw) || (raw.action !== "keep" && raw.action !== "override")) continue;
+      if (raw.action === "override") overrides += 1;
+      if (toolName === "ask_user") questions = true;
+      const group = TOOL_GROUPS[toolName];
+      if (group) groups.add(group);
+    }
+  }
+  if (plan.inventory === "coding-defaults" || plan.clientMode === "copilot-cli") {
+    for (const group of BUILTIN_TOOL_GROUPS) groups.add(group);
+    questions = true;
+  }
+  if (overrides > 0) {
+    report.needsWork.push(`${overrides} built-in tool override(s) are not supported; the built-in implementations are used.`);
+  }
+  const allowedGroups = new Set(policy.builtinTools ?? []);
+  const kept = BUILTIN_TOOL_GROUPS.filter((group) => groups.has(group) && allowedGroups.has(group));
+  const blocked = BUILTIN_TOOL_GROUPS.filter((group) => groups.has(group) && !allowedGroups.has(group));
+  if (blocked.length > 0) {
+    report.needsWork.push(`Built-in tool groups not allowed by the operator policy were dropped: ${blocked.join(", ")}.`);
+  }
+  if (kept.length > 0) {
+    document.manifest.builtinTools = kept;
+    report.mapped.push(`Built-in tools were carried into the harness as groups: ${kept.join(", ")}.`);
+  }
+
+  const planPolicy = isObject(plan.policy) ? plan.policy : {};
+  const permissionMode = text(planPolicy.permissionMode);
+  const modes = new Set(policy.permissionModes ?? []);
+  if (kept.length === 0 && !questions && !permissionMode) return;
+  if (permissionMode === "allow-all") {
+    if (modes.has("allow")) {
+      document.manifest.permissions = { default: "allow", ...(questions && modes.has("ask") ? { questions: true } : {}) };
+      report.mapped.push("Permission mode allow-all became permissions that approve every action automatically.");
+    } else if (modes.has("ask")) {
+      document.manifest.permissions = { default: "ask", kinds: { read: "ask" }, ...(questions ? { questions: true } : {}) };
+      report.needsWork.push("Permission mode allow-all is not allowed by the operator policy; every action asks the requester instead.");
+    } else {
+      report.needsWork.push("Permission mode allow-all is not allowed by the operator policy; built-in tool actions will be denied.");
+    }
+  } else if (modes.has("ask")) {
+    document.manifest.permissions = {
+      default: "ask",
+      kinds: { read: modes.has("allow") ? "allow" : "ask", write: "ask", shell: "ask", url: "ask" },
+      ...(questions ? { questions: true } : {}),
+    };
+    report.mapped.push(
+      permissionMode === "host"
+        ? "Permission mode host became approvals routed to the requester (reads are allowed)."
+        : "Built-in tool actions ask the requester before running (reads are allowed).",
+    );
+  } else if (kept.length > 0) {
+    report.needsWork.push("The operator policy does not allow the ask or allow permission modes, so built-in tool actions will be denied.");
+  }
+  if (document.manifest.permissions) {
+    document.manifest.retry = { ...document.manifest.retry, safeToRetry: false, maxAttempts: 1 };
+  }
+  if (planPolicy.preToolHook === true || planPolicy.postToolHook === true) {
+    report.notApplicable.push("Pre- and post-tool hooks are not supported by hosted harness sessions.");
+  }
 }
 
 function mapPrompt(plan: JsonObject, document: HarnessDocument, report: ImportReport): void {
@@ -247,12 +342,6 @@ function mapUnsupportedFields(plan: JsonObject, report: ImportReport): void {
     report.needsWork.push(`MCP server '${name}' is not supported by harness sessions yet.`);
   }
 
-  if (isObject(plan.tools)) {
-    const exposed = Object.values(plan.tools).some((tool) => isObject(tool) && (tool.action === "keep" || tool.action === "override"));
-    if (exposed) {
-      report.notApplicable.push("Built-in tools: harness sessions use an explicit tool allowlist; built-in coding tools are not exposed.");
-    }
-  }
   if (has(plan, "rootExcludedTools")) {
     report.notApplicable.push("Root excluded tools are a Harness Builder UI setting; harness sessions expose only listed tools.");
   }
@@ -261,9 +350,8 @@ function mapUnsupportedFields(plan: JsonObject, report: ImportReport): void {
   }
   const fieldNotes: Record<string, string> = {
     preset: "Presets are builder UI shortcuts; the harness stores explicit fields.",
-    clientMode: "Client mode is not part of hosted harness sessions.",
+    clientMode: "Client mode is not part of hosted harness sessions; built-in tools are listed explicitly.",
     inventory: "Inventory and discovery data are not deployed with a harness.",
-    policy: "Operator policy is managed separately by this configurator.",
     identity: "Runtime identity comes from the caller and the gateway.",
     session: "Session settings are client behavior, not harness definition.",
     events: "Event wiring is implemented by the hosted runner.",

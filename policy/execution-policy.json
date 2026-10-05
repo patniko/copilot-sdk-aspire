@@ -2,8 +2,8 @@
   "schemaVersion": "1",
   "allowedProfiles": ["node-ts-agent", "python-agent"],
   "allowedModels": ["grok-4.6"],
-  "maxDurationSeconds": 600,
-  "maxInferenceTokensPerJob": 500000,
+  "maxDurationSeconds": 3600,
+  "maxInferenceTokensPerJob": 2000000,
   "maxConcurrentAttemptsPerPrincipal": 4,
   "maxQueuedJobsPerPrincipal": 100,
   "retry": {
@@ -16,5 +16,7 @@
     "egress": "gateway-only"
   },
   "acknowledgedGaps": ["egress-not-enforced"],
-  "maxReasoningEffort": "high"
+  "maxReasoningEffort": "high",
+  "builtinTools": ["files", "shell", "web", "agents"],
+  "permissionModes": ["ask", "allow"]
 }

@@ -2,6 +2,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { chown, mkdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
+  isInteractive,
   JsonLineDecoder,
   requiredRunnerCapabilities,
   RUNNER_MAX_LINE_BYTES,
@@ -9,7 +10,9 @@ import {
   RunnerToExecutor,
   type ExecutionProfile,
   type ExecutorToRunner,
+  type InputResponseBody,
   type RunnerEventBody,
+  type RunnerInputRequest,
 } from "@copilot-agent/contracts";
 import { createAjv, type Logger } from "@copilot-agent/service-defaults";
 import { LeaseLostError, type ClaimResponse, type DispatcherClient, type Outcome } from "./dispatcher-client.js";
@@ -58,6 +61,9 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
   let killTimer: NodeJS.Timeout | undefined;
   const pendingEvents: RunnerEventBody[] = [];
   const stderrTail: string[] = [];
+  const inputRequestsAbort = new AbortController();
+  const seenInputRequestIds = new Set<string>();
+  const inputTasks = new Set<Promise<void>>();
 
   const send = (message: ExecutorToRunner) => {
     if (child && !child.stdin.destroyed) {
@@ -87,6 +93,83 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
     log.info({ reason }, "stopping runner");
     send({ type: "cancel", reason });
     killTimer = setTimeout(kill, CANCEL_GRACE_MS);
+  };
+  const sendInputResponse = (id: string, response: InputResponseBody) =>
+    send({ type: "input_response", id, response });
+  const handleInputRequest = (message: RunnerInputRequest) => {
+    if (seenInputRequestIds.has(message.id)) {
+      return;
+    }
+    seenInputRequestIds.add(message.id);
+    const task = (async () => {
+      if (!isInteractive(claim.job.harness.definition.permissions)) {
+        sendInputResponse(message.id, { kind: "expired" });
+        return;
+      }
+      let requestId: string;
+      try {
+        requestId = (
+          await ctx.dispatcher.createInputRequest(
+            claim.attempt.id,
+            claim.attempt.leaseToken,
+            message.id,
+            message.request,
+            inputRequestsAbort.signal,
+          )
+        ).id;
+      } catch (error) {
+        if (error instanceof LeaseLostError) {
+          leaseLost = true;
+          log.warn("lease lost while creating input request; terminating runner");
+          kill();
+          return;
+        }
+        if (!inputRequestsAbort.signal.aborted) {
+          log.warn({ err: error, runnerRequestId: message.id }, "input request could not be created");
+          sendInputResponse(message.id, { kind: "expired" });
+        }
+        return;
+      }
+
+      while (!inputRequestsAbort.signal.aborted) {
+        try {
+          await delay(1_000, inputRequestsAbort.signal);
+          const polled = await ctx.dispatcher.pollInputRequest(
+            claim.attempt.id,
+            claim.attempt.leaseToken,
+            requestId,
+            inputRequestsAbort.signal,
+          );
+          if (!polled) {
+            sendInputResponse(message.id, { kind: "expired" });
+            return;
+          }
+          if (polled.state === "pending") {
+            continue;
+          }
+          sendInputResponse(
+            message.id,
+            polled.state === "answered" && polled.response ? polled.response : { kind: "expired" },
+          );
+          return;
+        } catch (error) {
+          if (inputRequestsAbort.signal.aborted) {
+            return;
+          }
+          if (error instanceof LeaseLostError) {
+            leaseLost = true;
+            log.warn("lease lost while polling input request; terminating runner");
+            kill();
+            return;
+          }
+          log.warn({ err: error, runnerRequestId: message.id }, "input request polling failed");
+          sendInputResponse(message.id, { kind: "expired" });
+          return;
+        }
+      }
+    })();
+    inputTasks.add(task);
+    void task.finally(() => inputTasks.delete(task));
   };
 
   try {
@@ -189,6 +272,9 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
                     uncertainEffects: message.uncertainEffects,
                   };
             break;
+          case "input_request":
+            handleInputRequest(message);
+            break;
         }
       }
     });
@@ -256,6 +342,8 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
     ctx.shutdown.addEventListener("abort", onShutdown, { once: true });
 
     const exitCode = await exited;
+    inputRequestsAbort.abort();
+    await Promise.allSettled([...inputTasks]);
     clearInterval(heartbeat);
     clearInterval(flush);
     clearTimeout(deadlineTimer);
@@ -290,6 +378,7 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
     }
     return outcome;
   } finally {
+    inputRequestsAbort.abort();
     kill();
     await rm(workspace, { recursive: true, force: true }).catch((error) =>
       log.warn({ err: error }, "workspace cleanup failed"),
@@ -353,4 +442,21 @@ function safeParse(line: string) {
 
 function protocolFailure(message: string): Outcome {
   return { kind: "failed", code: "protocol_error", message, retryable: false, uncertainEffects: false };
+}
+
+function delay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return Promise.reject(new Error("aborted"));
+  }
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, ms);
+    signal.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new Error("aborted"));
+      },
+      { once: true },
+    );
+  });
 }

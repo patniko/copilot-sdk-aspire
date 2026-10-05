@@ -283,6 +283,8 @@ function orderManifest(manifest: HarnessManifest): HarnessManifest {
     "prompt",
     "model",
     "tools",
+    "builtinTools",
+    "permissions",
     "skills",
     "agents",
     "input",

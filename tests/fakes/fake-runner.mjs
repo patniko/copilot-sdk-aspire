@@ -8,16 +8,29 @@ write({
   type: "hello",
   protocol: "1",
   runner: { name: "fake-runner", version: "0.0.1", language: "javascript", sdkVersion: "none" },
-  capabilities: ["cancel", "structured-result"],
+  capabilities: ["cancel", "structured-result", "interactive"],
 });
 
 const lines = createInterface({ input: process.stdin });
 let cancelled = false;
+const inputResponses = new Map();
+
+function waitForInputResponse(id) {
+  return new Promise((resolve) => {
+    inputResponses.set(id, resolve);
+  });
+}
+
 lines.on("line", async (line) => {
   if (!line.trim()) {
     return;
   }
   const message = JSON.parse(line);
+  if (message.type === "input_response") {
+    inputResponses.get(message.id)?.(message.response);
+    inputResponses.delete(message.id);
+    return;
+  }
   if (message.type === "cancel") {
     cancelled = true;
     write({ type: "failure", code: "cancelled", message: "cancelled", retryable: false, uncertainEffects: false });
@@ -29,6 +42,20 @@ lines.on("line", async (line) => {
   const question = message.input?.question ?? "";
   const leaked = Object.keys(process.env).filter((k) => /KEY|SECRET|TOKEN|AZURE|IDENTITY|services__/i.test(k));
   write({ type: "event", event: { kind: "agent.turn_started" } });
+  if (message.input?.ask !== undefined) {
+    const requests = Array.isArray(message.input.ask) ? message.input.ask : [message.input.ask];
+    const responses = [];
+    for (let i = 0; i < requests.length; i++) {
+      const id = `ask-${i + 1}`;
+      write({ type: "input_request", id, request: requests[i] });
+      responses.push(await waitForInputResponse(id));
+      if (cancelled) {
+        return;
+      }
+    }
+    write({ type: "result", output: { response: responses[0], responses } });
+    process.exit(0);
+  }
   const response = await fetch(`${message.inference.baseUrl}chat/completions`, {
     method: "POST",
     headers: { "content-type": "application/json", authorization: `Bearer ${message.inference.token}` },
