@@ -1,5 +1,7 @@
 # Configurator
 
+[Documentation hub](README.md) | [First run](USER-GUIDE.md) | [Developer guide](DEVELOPER-GUIDE.md)
+
 The configurator is a local web app for this repository. It edits the real configuration files, checks them with the
 same contracts the service uses, and drives the build, local run, test job, and Azure deployment, so the whole loop
 happens in one place.
@@ -12,7 +14,7 @@ pnpm configure
 ```
 
 `pnpm configure` builds the UI, starts a companion server on `127.0.0.1:4280` (the next free port if taken), and opens
-your browser with a one-time session URL. Keep the terminal open; press Ctrl+C to stop.
+your browser with a per-launch session URL. Keep the terminal open; press Ctrl+C to stop.
 
 | Variable | Effect |
 | --- | --- |
@@ -120,6 +122,8 @@ attempt deadline. Only the job's caller (its API key) can answer. The REST endpo
 
 Execution profiles and tool implementations are code; the configurator lists them but does not edit them. To add a
 tool, implement it in the runners and add its binding to the profiles (see [RUNNER-PROTOCOL.md](RUNNER-PROTOCOL.md)).
+For policy, profile, or tool changes, follow the [publication rules](DEVELOPER-GUIDE.md#configuration-publication):
+**Reload harnesses** restarts only the API, not every configuration consumer.
 
 ## Security
 

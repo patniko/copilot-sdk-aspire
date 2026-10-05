@@ -1,5 +1,7 @@
 # Security model
 
+[Documentation hub](README.md) | [Architecture](ARCHITECTURE.md) | [Product boundaries](PRODUCT.md#boundaries-and-open-work)
+
 This document lists the boundaries the reference implementation enforces today, how each was verified, and the
 gaps that remain. Gaps are explicit: a requirement the execution target cannot enforce must be acknowledged in
 [`policy/execution-policy.json`](../policy/execution-policy.json), or executors on that target cannot claim work.
@@ -14,7 +16,7 @@ gaps that remain. Gaps are explicit: a requirement the execution target cannot e
 | Runner process isolation | Runners execute as an unprivileged user dedicated to their executor slot (uid 10001–10008), with a private 0700 workspace and an allowlisted environment (PATH, HOME/TMP in the workspace, locale, non-secret profile settings). Concurrent attempts on one executor cannot read each other's workspaces. The executor's environment, including its dispatcher key and the platform identity header, is unreadable to the runner. | Container inspection of a live runner and Copilot runtime process |
 | Executor holds no data or provider access | The executor has no database reference, no Azure role, and no ingress; it authenticates to the dispatcher with one service key. | Generated Bicep (`agent-executor`) |
 | Authoritative, fenced job state | Leases with random lease tokens; heartbeats, events, and completion are rejected for stale owners; lost leases are retried only for read-only harnesses, otherwise `needs_review`. | `tests/integration/job-store.test.ts` |
-| Cancellation and revocation | Cancel revokes the attempt's capability immediately, signals the executor, and the runner aborts its SDK session; unresponsive runners are killed. | Integration test, live run |
+| Cancellation and revocation | Cancel records capability revocation in the ledger and signals the executor through heartbeat responses; the runner is asked to abort and unresponsive runners are killed. Gateway introspection may be cached for up to 2 seconds; already-forwarded inference and external side effects are not rolled back. | Integration test; `src/inference-gateway/src/dispatcher-client.ts`, `src/agent-executor/src/attempt.ts` |
 | Output validation | Results must match the harness output schema in the runner and again in the executor. | End-to-end test |
 | Caller isolation | API keys map to principals; every read and write is scoped to the principal, including idempotency keys. | `tests/integration/job-store.test.ts` |
 | Policy cannot be widened by callers | Effective limits are the intersection of harness, operator policy, and caller request; profiles, models, and tool bindings must be approved. | `tests/unit/admission.test.ts` |

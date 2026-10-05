@@ -1,5 +1,7 @@
 # Runner protocol v1
 
+[Documentation hub](README.md) | [Developer guide](DEVELOPER-GUIDE.md) | [Execution flow](ARCHITECTURE.md#job-execution)
+
 A runner is the process that hosts one agent attempt. The platform ships a TypeScript reference runner
 (`src/harness-hosting`) and a sample customer-authored Python runner (`execution-profiles/python-agent`).
 Any runner that implements this protocol and is approved as an execution profile can run harnesses.
@@ -17,7 +19,7 @@ The contracts are defined in [`contracts/src/runner-protocol.ts`](../contracts/s
 
 ```text
 executor                         runner
-   |  spawn (uid 10001, minimal env, private workspace)
+   |  spawn (slot uid 10001-10008, minimal env, private workspace)
    |<--------------------------------- hello
    |  validate protocol + capabilities
    |-- start ------------------------->

@@ -1,198 +1,55 @@
 # Copilot SDK + Aspire
 
-A repository-first agent service for the GitHub Copilot SDK. You configure a harness, keep the code in your
-own repository, run it locally with Aspire, and deploy the same application model into your own Azure
-subscription.
+A repository-first agent service for the GitHub Copilot SDK: configure a harness, own the code, run locally
+with Aspire, and deploy the same application model into your Azure subscription.
 
-The platform is TypeScript end to end: the Aspire AppHost, the control-plane services, the contracts, and the
-reference agent runner. Agents themselves are pluggable through approved execution profiles. The repository ships
-a TypeScript Copilot SDK agent that uses Python tools, and a customer-authored Python Copilot SDK agent, both
-running through the same job contract and security boundaries.
+The control plane is TypeScript. Agent implementations are pluggable through approved execution profiles:
+the repository ships a TypeScript Copilot SDK runner with Python tools and a Python Copilot SDK runner.
+Both use the same durable job API, runner protocol, and inference gateway.
 
-See the [architecture and delivery plan](docs/PLAN.md) for the full design and the
-[implementation status](docs/PLAN.md#24-implementation-status) for what is built and which gates remain open.
+**Start with the [documentation hub](docs/README.md).** Current behavior is documented separately from the
+original delivery plan; the [product guide](docs/PRODUCT.md) distinguishes shipped capabilities from open work.
 
-## Quick start: the configurator
+## Quick start
+
+With Node.js, pnpm, Aspire, Docker, and Azure CLI available:
 
 ```powershell
 pnpm install
 pnpm configure
 ```
 
-This opens a local web app to create and edit harnesses and the execution policy, set local and Azure parameters,
-build, run the stack locally, try jobs, and deploy to your subscription. See [docs/CONFIGURATOR.md](docs/CONFIGURATOR.md).
-The rest of this README covers the same steps from the command line.
+The local configurator edits harnesses and policy, configures model access, and drives build, local run,
+test jobs, and Azure deployment. It does not commit or push your changes.
 
-## What is here
+Follow the [user guide](docs/USER-GUIDE.md) for prerequisites, model configuration, your first job, approvals,
+and troubleshooting. Prefer the command line? Use [Run locally without the configurator](docs/USER-GUIDE.md#run-locally-without-the-configurator).
 
-```text
-apphost.mts                  Aspire TypeScript AppHost (local run + Azure Container Apps deployment)
-configurator/                Local web app + companion server: configure, build, run, try, deploy (pnpm configure)
-contracts/                   Versioned schemas: harness, execution profile/policy, jobs, events, runner protocol
-src/agent-api                Public job API (submit, list, status, SSE events, cancel, retry) and browser console
-src/job-dispatcher           Authoritative job ledger owner: leases, fencing, retries, capability minting
-src/inference-gateway        OpenAI-compatible gateway; owns the Foundry identity, enforces job capabilities
-src/agent-executor           Claims attempts and runs runners as an unprivileged user with a minimal environment
-src/harness-hosting          TypeScript Copilot SDK reference runner (no Aspire dependency)
-src/job-store                PostgreSQL ledger and migrations
-src/service-defaults         Shared config, logging, HTTP, auth, Postgres, registry, capability helpers
-execution-profiles/          Operator-approved runner profiles (node-ts-agent, python-agent sample runner)
-harnesses/dataset-analyst    Sample read-only harness with JSON Schema input and output, using a Python tool
-harnesses/insights-team      Sample agent team: customized prompt, two sub-agents, a delegated-only tool, a skill
-harnesses/copilot-coding-agent  GitHub Copilot's coding agent: full prompt and built-in tools, asks before risky actions
-harnesses/text-summarizer    Minimal harness created from the configurator template (no tools)
-policy/                      Operator execution policy (ceilings and acknowledged security gaps)
-tools/python/                Pinned Python tool packaged into execution images
-deploy/Dockerfile            Multi-stage images for every service
-http/agent-api.http          VS Code REST Client requests for every endpoint
-tests/                       Unit and integration tests (Vitest)
-```
+## Architecture
 
-## How a job runs
+![Architecture: callers use the job API; API and dispatcher share PostgreSQL; an executor runs agents that call Foundry through the inference gateway.](docs/images/architecture.svg)
 
-```text
-caller --API key--> agent-api --(Postgres ledger)--> job-dispatcher <--claim/heartbeat-- agent-executor
-                                                          |                                   |
-                                         signs job-scoped capability            spawns runner as uid 10001
-                                                          |                                   |
-                         inference-gateway <--capability-- runner (Copilot SDK, BYOK provider = gateway)
-                                 |
-                         own managed identity --> Azure AI Foundry model deployment
-```
+The API admits jobs into PostgreSQL. Executors claim leased attempts from the dispatcher and launch runners
+with a private workspace and a job-scoped inference capability. Only the gateway holds the model-provider
+identity; the runner holds no provider, database, or service credential.
 
-- The runner never holds a provider credential, a database credential, or a service key. It gets a short-lived,
-  job-scoped capability that the gateway verifies, checks for revocation and budget, and swaps for its own Entra
-  token. There is no direct-provider fallback.
-- The dispatcher owns job state. Attempts are leased and fenced; stale executors cannot report results; read-only
-  work is retried after executor loss, and uncertain external effects go to `needs_review`.
-- Executors report what they actually enforce. If the operator policy requires a control the executor cannot
-  enforce and the gap is not explicitly acknowledged, the executor cannot claim work. Acknowledged gaps are
-  recorded on every attempt and shown on the job.
-- Harnesses can use Copilot SDK features beyond a single prompt: customizing sections of the Copilot foundation
-  prompt, reasoning effort, sub-agents with their own tools and skills, and skills packaged with the harness. Admission
-  and the executor check that the chosen runner supports each feature, and the policy caps reasoning effort.
-- Harnesses range from a single structured answer to Copilot's full coding agent. Built-in Copilot tools (files,
-  shell, web, built-in agents) are opt-in per harness and per policy, and every action they take follows the
-  harness permission rules: deny, ask a person, or allow. Approvals and questions appear in the job console's
-  Sessions view, where the job's caller answers them.
+This is a reference implementation, **not a claim of production hardening or cross-customer isolation**.
+Egress is not enforced and other controls remain open. Read the [security model](docs/SECURITY.md) before
+running workloads with sensitive data or external side effects.
 
-See [docs/RUNNER-PROTOCOL.md](docs/RUNNER-PROTOCOL.md) to plug in another agent implementation and
-[docs/SECURITY.md](docs/SECURITY.md) for the enforced boundaries and known gaps.
+## Choose your guide
 
-## Prerequisites
+| I want to... | Read |
+| --- | --- |
+| Run jobs, inspect results, and answer approvals | [User guide](docs/USER-GUIDE.md) |
+| Create or edit a harness in the UI | [Configurator](docs/CONFIGURATOR.md) |
+| Integrate a client with the job service | [Job API reference](docs/API.md) and [REST Client examples](http/agent-api.http) |
+| Understand the product, scope, and open work | [Product guide](docs/PRODUCT.md) |
+| Understand components, trust boundaries, and job flows | [Architecture](docs/ARCHITECTURE.md) |
+| Change, extend, or test the implementation | [Developer guide](docs/DEVELOPER-GUIDE.md) |
+| Implement another agent runner | [Runner protocol](docs/RUNNER-PROTOCOL.md) |
+| Deploy, operate, or remove the Azure resources | [Deployment guide](docs/DEPLOYMENT.md) |
+| Keep code and documentation synchronized | [Contributing](CONTRIBUTING.md) and [documentation maintenance](docs/MAINTAINING-DOCS.md) |
 
-- Node.js 24 (or 22.12+) and pnpm 10
-- Aspire CLI 13.6
-- Docker (the executor always runs in a Linux container, also locally)
-- Azure CLI signed in to the tenant that owns your Foundry resource
-- An Azure AI Foundry / Azure OpenAI deployment that serves the OpenAI v1 chat completions API, and the
-  `Cognitive Services OpenAI User` (or broader) data-plane role for your developer identity
-
-## Run locally
-
-```powershell
-pnpm install
-pnpm build
-
-aspire secret set "Parameters:foundry-endpoint" "https://<resource>.openai.azure.com/openai/v1"
-aspire secret set "Parameters:foundry-deployments" "<deployment-name>"
-# Optional: package proxies used inside image builds
-aspire secret set "Parameters:npm-registry" "https://<npm-proxy>/"
-aspire secret set "Parameters:pip-index-url" "https://<pypi-proxy>/simple/"
-
-aspire run --apphost ./apphost.mts
-```
-
-The AppHost starts PostgreSQL in a container, runs the API, dispatcher, and gateway as Node processes, and builds
-and runs the executor container. A dev API key is generated on first run (`aspire secret get "Parameters:dev-api-key"`).
-
-### Job console
-
-Open the `agent-api` URL (from the Aspire dashboard, or the deployed `https://agent-api…azurecontainerapps.io`) in a
-browser and paste the API key. The **Sessions** view lists every job with its state and a **Needs you** count, and
-the inbox collects pending approvals and questions from agents across sessions; approve, deny (with a note for the
-agent) or answer them in place. A session shows live activity, the result, and cancel or retry. **New session**
-lists published harnesses, prefills input from the schema's `examples`, and submits with either agent profile. The
-console is static, same-origin, and served with a strict Content Security Policy; agent-generated content is shown as
-text only. The key stays in the page (or in `sessionStorage` if you choose "Keep for this tab"). Set
-`CONSOLE_ENABLED=false` on `agent-api` to turn it off.
-
-![Job console Sessions view](docs/images/job-console-sessions.png)
-
-### REST client
-
-[`http/agent-api.http`](http/agent-api.http) covers every endpoint, including negative checks, for the VS Code
-REST Client extension. Put `AGENT_API_URL` and `AGENT_API_KEY` in `http/.env` (git-ignored).
-
-### PowerShell
-
-```powershell
-$key = aspire secret get "Parameters:dev-api-key"
-$api = "<agent-api URL from the dashboard>"
-
-$body = @{
-  harness = @{ name = "dataset-analyst" }
-  input = @{
-    question = "Which region had the highest average revenue?"
-    dataset = @{ name = "sales"; columns = @("region", "revenue"); rows = @(@("north", 120), @("south", 90), @("north", 130)) }
-  }
-} | ConvertTo-Json -Depth 8
-
-$job = Invoke-RestMethod -Method Post "$api/v1/jobs" -Headers @{ Authorization = "Bearer $key"; "Idempotency-Key" = "demo-1" } `
-  -ContentType "application/json" -Body $body
-Invoke-RestMethod "$api/v1/jobs/$($job.id)" -Headers @{ Authorization = "Bearer $key" }
-```
-
-Add `"profile": "python-agent"` to run the same harness with the customer Python agent.
-
-### Job API
-
-| Method | Path | Notes |
-| --- | --- | --- |
-| `POST` | `/v1/jobs` | Submit; optional `Idempotency-Key` header (scoped to the caller) |
-| `GET` | `/v1/jobs` | The caller's jobs, newest first (`?limit=`, `?before=<createdAt>`); results omitted |
-| `GET` | `/v1/jobs/{id}` | Status, result, error, usage, acknowledged gaps |
-| `GET` | `/v1/jobs/{id}/events` | JSON page (`?after=<seq>`) or SSE with `Accept: text/event-stream` and `Last-Event-ID` |
-| `POST` | `/v1/jobs/{id}:cancel` | Cancels queued jobs immediately; running attempts are aborted and their capability revoked |
-| `POST` | `/v1/jobs/{id}:retry` | Grants one more attempt to a `failed` or `needs_review` job |
-| `GET` | `/v1/jobs/{id}/artifacts` | Lists `result.json` for succeeded jobs |
-| `GET` | `/v1/input-requests` | The caller's approvals and questions (`?state=pending` oldest first, or `all`) |
-| `GET` | `/v1/jobs/{id}/input-requests` | One job's approvals and questions, all states |
-| `POST` | `/v1/jobs/{id}/input-requests/{requestId}/respond` | `{"kind":"permission","approved":true,"scope":"once"}` (or `"kind"` for the rest of the run, `"feedback"` when denying) or `{"kind":"question","answer":"…"}` |
-| `GET` | `/v1/harnesses` | Published harnesses with their input and output schemas |
-| `GET` | `/` | Browser job console |
-| `GET` | `/health`, `/alive` | Readiness (database) and liveness |
-
-## Test
-
-```powershell
-pnpm test:unit          # no external dependencies
-pnpm test:integration   # starts a disposable postgres:17-alpine container (or set TEST_DATABASE_URL)
-pnpm test               # both
-```
-
-Integration tests run the real API, dispatcher, gateway, and executor against a fake model upstream and a fake
-runner, covering credential replacement, schema validation, fencing, retries, cancellation, and budgets.
-
-## Deploy to Azure
-
-Deployment uses the same AppHost. Inputs come from environment variables (user secrets are only read in
-development):
-
-```powershell
-az login --tenant "<tenant-id>"
-
-$env:Azure__SubscriptionId = "<subscription-id>"
-$env:Azure__Location = "westus2"
-$env:Azure__ResourceGroup = "copilot-agent-staging"
-${env:Parameters__foundry-endpoint} = "https://<resource>.openai.azure.com/openai/v1"
-${env:Parameters__foundry-deployments} = "<deployment-name>"
-${env:Parameters__foundry-account} = "<existing Foundry account name>"
-${env:Parameters__foundry-resource-group} = "<its resource group>"
-
-aspire publish --apphost ./apphost.mts --output-path ./artifacts/deployment   # review the Bicep
-aspire deploy --apphost ./apphost.mts
-```
-
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for what gets created, required permissions, costs, verification,
-and teardown.
+The [original architecture and delivery plan](docs/PLAN.md) preserves design rationale and milestone history.
+It is not the setup guide or the authority for current runtime behavior.

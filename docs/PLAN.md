@@ -2,7 +2,13 @@
 
 Date: 2026-10-01
 
-Status: plan with a reference implementation through M3 (secure execution, durable service, Azure deployment). See [section 24](#24-implementation-status) for what is built, how it was verified, and the gates that remain open.
+Status: original design and delivery history, with dated implementation evidence in
+[section 24](#24-implementation-status). Earlier sections include target architecture and proposals that are not
+implemented; do not treat them as current feature or security guarantees.
+
+For the current checkout, start at the [documentation hub](README.md), [product scope](PRODUCT.md),
+[current architecture](ARCHITECTURE.md), and [security gap register](SECURITY.md#known-gaps).
+This plan preserves rationale and historical verification; the current guides own setup and runtime behavior.
 
 ## 1. Product goal
 
@@ -647,7 +653,9 @@ The TypeScript SDK integration must explicitly wire the supported trace-context 
 
 ## 17. Local developer workflow
 
-The commands below run against this repository's reference implementation; the README has the exact parameters. A generated customer repository would expose the same commands.
+The commands below record the reference workflow at the time of this plan. Use the
+[user guide](USER-GUIDE.md#run-locally-without-the-configurator) and [deployment guide](DEPLOYMENT.md)
+for current commands and parameters. A generated customer repository would expose the same application model.
 
 Prerequisites:
 
@@ -924,7 +932,8 @@ boundary-by-boundary detail.
   existing harness digests do not change. Each maps to a runner capability (`prompt-sections`, `model-options`,
   `custom-agents`, `skills`) that admission checks against the profile and the executor checks against the runner's
   hello. Skills are inlined into the published snapshot so a job never reads harness files at run time. Runners
-  always exclude the SDK's built-in agents, so delegation only reaches the harness's own sub-agents.
+  exclude the SDK's built-in agents unless the harness explicitly enables the policy-approved `agents` built-in
+  tool group; otherwise delegation reaches only the harness's own sub-agents.
 - **People in the loop.** Section 12's "initially reject interaction" is replaced by bounded interaction: the
   runner sends `input_request` over the runner protocol, the executor stores it with the dispatcher (fenced by the
   attempt lease), and the job's principal answers through `/v1/jobs/{id}/input-requests/{requestId}/respond`.

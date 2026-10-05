@@ -1,5 +1,7 @@
 # Deploying to Azure
 
+[Documentation hub](README.md) | [User prerequisites](USER-GUIDE.md#before-you-start) | [Deployment topology](ARCHITECTURE.md#local-and-azure-topology)
+
 The same AppHost that runs locally deploys the service to Azure Container Apps with `aspire deploy`. Review the
 generated infrastructure with `aspire publish` first; neither command needs a project-operated service.
 
@@ -78,7 +80,8 @@ Invoke-RestMethod "$api/v1/harnesses" -Headers @{ Authorization = "Bearer $key" 
 
 Or open `$api` in a browser for the job console and paste the key, or use `http/agent-api.http`.
 
-Then submit a job as shown in the README. Executor logs report the enforced controls at startup:
+Then submit a job using the [API example](API.md#powershell-example) or
+[job console](USER-GUIDE.md#run-a-job-in-the-console). Executor logs report the enforced controls at startup:
 
 ```powershell
 az containerapp logs show -g $rg -n agent-executor --tail 20
@@ -97,7 +100,7 @@ renewed). Model usage is billed by the Foundry deployment. More executor replica
 
 ```powershell
 az group delete -n $env:Azure__ResourceGroup
-az role assignment list --scope (az cognitiveservices account show -g <foundry-rg> -n <foundry-account> --query id -o tsv) `
+az role assignment list --scope (az cognitiveservices account show -g "<foundry-rg>" -n "<foundry-account>" --query id -o tsv) `
   --query "[?roleDefinitionName=='Cognitive Services OpenAI User']"   # remove the gateway's assignment
 ```
 

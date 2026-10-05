@@ -1,0 +1,84 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-labelledby="title description">
+  <title id="title">Copilot SDK and Aspire service architecture</title>
+  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The executor polls the dispatcher and runs an unprivileged SDK runner. The runner sends a scoped capability to the inference gateway, which checks the dispatcher and uses its own Entra identity to call existing Foundry. Outbound network isolation is not enforced.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#576574"/>
+    </marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #172b4d; }
+      .title { font-size: 27px; font-weight: 700; }
+      .heading { font-size: 19px; font-weight: 700; }
+      .body { font-size: 15px; }
+      .label { font-size: 14px; fill: #42526e; }
+      .small { font-size: 13px; fill: #42526e; }
+      .edge { fill: none; stroke: #576574; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1280" height="900" fill="#ffffff"/>
+  <text x="32" y="42" class="title">From a caller's task to a structured result</text>
+  <text x="32" y="70" class="body">Current implementation | service responsibilities and credential boundaries</text>
+
+  <rect x="55" y="100" width="230" height="72" rx="12" fill="#eaf2ff" stroke="#3572b0"/>
+  <text x="170" y="128" class="heading" text-anchor="middle">Caller</text>
+  <text x="170" y="151" class="body" text-anchor="middle">Console or API client</text>
+  <text x="345" y="123" class="body">Solid arrows show request direction.</text>
+  <text x="345" y="147" class="body">Responses and event reads use the same connections.</text>
+
+  <rect x="24" y="195" width="930" height="525" rx="18" fill="#f6f8fa" stroke="#a7b5c4" stroke-width="2"/>
+  <text x="345" y="226" class="heading">Service deployment: one trust boundary</text>
+  <path d="M 170 172 V 265" class="edge"/>
+  <text x="184" y="244" class="label">caller key</text>
+
+  <rect x="55" y="265" width="230" height="105" rx="12" fill="#eaf2ff" stroke="#3572b0"/>
+  <text x="170" y="295" class="heading" text-anchor="middle">agent-api</text>
+  <text x="170" y="321" class="body" text-anchor="middle">Admission and caller actions</text>
+  <text x="170" y="347" class="body" text-anchor="middle">Console, jobs, events, inputs</text>
+
+  <rect x="345" y="265" width="235" height="105" rx="12" fill="#f0eaff" stroke="#8250df"/>
+  <text x="462" y="295" class="heading" text-anchor="middle">PostgreSQL</text>
+  <text x="462" y="321" class="body" text-anchor="middle">Shared transactional ledger</text>
+  <text x="462" y="347" class="body" text-anchor="middle">Jobs, attempts, events, inputs</text>
+
+  <rect x="645" y="265" width="275" height="105" rx="12" fill="#eaf2ff" stroke="#3572b0"/>
+  <text x="782" y="295" class="heading" text-anchor="middle">job-dispatcher</text>
+  <text x="782" y="321" class="body" text-anchor="middle">Leases, fencing, retries</text>
+  <text x="782" y="347" class="body" text-anchor="middle">Capabilities and attempt reports</text>
+  <path d="M 285 317 H 345" class="edge"/>
+  <path d="M 645 317 H 580" class="edge"/>
+  <text x="462" y="391" class="small" text-anchor="middle">Both services use the shared job-store library.</text>
+
+  <rect x="595" y="450" width="325" height="205" rx="14" fill="#fff4df" stroke="#b7791f"/>
+  <text x="757" y="480" class="heading" text-anchor="middle">agent-executor</text>
+  <text x="757" y="505" class="body" text-anchor="middle">Service key; polls the dispatcher</text>
+  <rect x="615" y="535" width="285" height="94" rx="10" fill="#ffffff" stroke="#b7791f"/>
+  <text x="757" y="560" class="heading" text-anchor="middle">SDK runner + packaged tools</text>
+  <text x="757" y="585" class="body" text-anchor="middle">Unprivileged uid per executor slot</text>
+  <text x="757" y="609" class="body" text-anchor="middle">Private workspace; JSONL protocol</text>
+  <path d="M 820 450 V 370" class="edge"/>
+  <text x="832" y="408" class="label">claim /</text>
+  <text x="832" y="427" class="label">heartbeat</text>
+
+  <rect x="65" y="520" width="300" height="115" rx="12" fill="#e6f6ed" stroke="#22863a"/>
+  <text x="215" y="548" class="heading" text-anchor="middle">inference-gateway</text>
+  <text x="215" y="573" class="body" text-anchor="middle">Approved model routes</text>
+  <text x="215" y="597" class="body" text-anchor="middle">Checks capability and reported usage</text>
+  <text x="215" y="620" class="body" text-anchor="middle">Owns model-provider identity</text>
+  <path d="M 615 580 H 365" class="edge"/>
+  <text x="480" y="565" class="label" text-anchor="middle">job capability</text>
+  <path d="M 215 520 V 430 H 710 V 370" class="edge"/>
+  <text x="455" y="418" class="label" text-anchor="middle">capability status + usage reports</text>
+
+  <rect x="985" y="520" width="270" height="115" rx="12" fill="#e6f6ed" stroke="#22863a"/>
+  <text x="1120" y="548" class="heading" text-anchor="middle">Existing Foundry account</text>
+  <text x="1120" y="575" class="body" text-anchor="middle">OpenAI v1 chat completions</text>
+  <text x="1120" y="600" class="body" text-anchor="middle">Customer-owned deployment</text>
+  <text x="1120" y="622" class="small" text-anchor="middle">Outside the service lifecycle</text>
+  <path d="M 215 635 V 688 H 1120 V 635" class="edge"/>
+  <text x="660" y="678" class="label" text-anchor="middle">Entra-authenticated inference: gateway identity only</text>
+
+  <rect x="24" y="754" width="1231" height="115" rx="12" fill="#fff4df" stroke="#b7791f"/>
+  <text x="44" y="785" class="heading">Boundary limitation: outbound network access is not enforced.</text>
+  <text x="44" y="814" class="body">Arrows show the intended inference path, not a firewall. Runners have no provider, database, or service credentials.</text>
+  <text x="44" y="842" class="body">The configurator edits local files and operates the AppHost; it is not in the deployed job request path. See docs/SECURITY.md.</text>
+</svg>

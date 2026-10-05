@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="710" viewBox="0 0 1280 710" role="img" aria-labelledby="title description">
+  <title id="title">Local and Azure deployment topology</title>
+  <desc id="description">One Aspire AppHost places the API, dispatcher, and gateway in local Node processes or Azure Container Apps. PostgreSQL is a local container or an Azure managed server. The executor is a Linux container in both modes. Local inference uses developer Azure CLI identity and deployed inference uses gateway managed identity. The Foundry account already exists.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#576574"/>
+    </marker>
+    <style>
+      text { font-family: Arial, Helvetica, sans-serif; fill: #172b4d; }
+      .title { font-size: 27px; font-weight: 700; }
+      .heading { font-size: 20px; font-weight: 700; }
+      .node { font-size: 17px; font-weight: 700; }
+      .body { font-size: 15px; }
+      .label { font-size: 14px; fill: #42526e; }
+      .edge { fill: none; stroke: #576574; stroke-width: 2; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1280" height="710" fill="#ffffff"/>
+  <text x="32" y="42" class="title">One application model, two placements</text>
+  <text x="32" y="70" class="body">The executor stays containerized locally; model credentials stay with the gateway.</text>
+  <rect x="440" y="95" width="400" height="75" rx="12" fill="#f0eaff" stroke="#8250df"/>
+  <text x="640" y="125" class="heading" text-anchor="middle">Aspire TypeScript AppHost</text>
+  <text x="640" y="151" class="body" text-anchor="middle">apphost.mts: wiring, resources, identities</text>
+  <path d="M 640 170 V 200 H 324 V 230" class="edge"/>
+  <path d="M 640 200 H 954 V 230" class="edge"/>
+  <text x="350" y="191" class="label">run</text>
+  <text x="838" y="191" class="label">publish / deploy</text>
+
+  <rect x="24" y="230" width="600" height="402" rx="16" fill="#f6f8fa" stroke="#a7b5c4" stroke-width="2"/>
+  <text x="48" y="267" class="heading">Local workstation</text>
+  <rect x="48" y="290" width="552" height="65" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
+  <text x="324" y="317" class="node" text-anchor="middle">Node processes</text>
+  <text x="324" y="341" class="body" text-anchor="middle">agent-api | job-dispatcher | inference-gateway</text>
+  <rect x="48" y="375" width="265" height="90" rx="10" fill="#f0eaff" stroke="#8250df"/>
+  <text x="180" y="405" class="node" text-anchor="middle">PostgreSQL container</text>
+  <text x="180" y="435" class="body" text-anchor="middle">Local job ledger</text>
+  <rect x="335" y="375" width="265" height="90" rx="10" fill="#fff4df" stroke="#b7791f"/>
+  <text x="467" y="405" class="node" text-anchor="middle">Linux executor container</text>
+  <text x="467" y="435" class="body" text-anchor="middle">Runner slots + packaged tools</text>
+  <rect x="48" y="485" width="552" height="64" rx="10" fill="#e6f6ed" stroke="#22863a"/>
+  <text x="324" y="512" class="node" text-anchor="middle">Gateway uses developer Azure CLI identity</text>
+  <text x="324" y="537" class="body" text-anchor="middle">Model data-plane role on the existing Foundry account</text>
+  <text x="48" y="581" class="body">Aspire dashboard: service health, URLs, and logs.</text>
+  <text x="48" y="606" class="body">Optional local configurator: author, build, try, deploy.</text>
+
+  <rect x="654" y="230" width="600" height="402" rx="16" fill="#f6f8fa" stroke="#a7b5c4" stroke-width="2"/>
+  <text x="678" y="267" class="heading">Customer Azure subscription</text>
+  <rect x="678" y="290" width="552" height="65" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
+  <text x="954" y="317" class="node" text-anchor="middle">Azure Container Apps</text>
+  <text x="954" y="341" class="body" text-anchor="middle">API | dispatcher | gateway | Linux executor</text>
+  <rect x="678" y="375" width="265" height="90" rx="10" fill="#f0eaff" stroke="#8250df"/>
+  <text x="810" y="405" class="node" text-anchor="middle">Managed PostgreSQL</text>
+  <text x="810" y="435" class="body" text-anchor="middle">Entra-authenticated ledger</text>
+  <rect x="965" y="375" width="265" height="90" rx="10" fill="#fff4df" stroke="#b7791f"/>
+  <text x="1097" y="405" class="node" text-anchor="middle">Ingress boundaries</text>
+  <text x="1097" y="429" class="body" text-anchor="middle">Only agent-api is external</text>
+  <text x="1097" y="451" class="body" text-anchor="middle">Executor has no ingress</text>
+  <rect x="678" y="485" width="552" height="64" rx="10" fill="#e6f6ed" stroke="#22863a"/>
+  <text x="954" y="512" class="node" text-anchor="middle">Gateway uses its managed identity</text>
+  <text x="954" y="537" class="body" text-anchor="middle">Model role scoped to the existing Foundry account</text>
+  <text x="678" y="581" class="body">Registry and pull identity: service images.</text>
+  <text x="678" y="606" class="body">Container Apps environment and Log Analytics: hosting/logs.</text>
+
+  <text x="32" y="670" class="body">Both modes use the existing Foundry deployment. Deploying the service does not create or delete that account.</text>
+  <text x="32" y="697" class="label">Placement parity is not production hardening. Network egress remains unenforced; see docs/SECURITY.md and docs/DEPLOYMENT.md.</text>
+</svg>
