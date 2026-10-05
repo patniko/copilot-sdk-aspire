@@ -1,6 +1,10 @@
 # Product guide
 
-[Documentation hub](README.md) | [User guide](USER-GUIDE.md) | [Architecture](ARCHITECTURE.md)
+[Documentation hub](README.md) | [Detailed product overview](PRODUCT-OVERVIEW.md) | [User guide](USER-GUIDE.md) | [Architecture](ARCHITECTURE.md)
+
+This is the concise product contract: users, scope, and acceptance criteria. The
+[product overview](PRODUCT-OVERVIEW.md) preserves the deeper six-question assessment of deployment, concurrent
+instances, authoring, supervision, comparisons, and the enterprise agent-runner vision.
 
 ## Purpose
 
@@ -11,6 +15,9 @@ control plane.
 The unit of work is a **job with a structured result**, not a hosted general-purpose chat conversation.
 The local configurator helps author and operate the repository; the deployed console helps callers use jobs.
 
+**Job durability is not SDK-session durability; configuration versioning is not evaluation; credential separation
+is not complete execution confinement.** Browser reconnection restores a job view, not an ended SDK conversation.
+
 ## Users and responsibilities
 
 | Role | Goal | Responsibility |
@@ -18,6 +25,7 @@ The local configurator helps author and operate the repository; the deployed con
 | Job caller | Submit a task and retrieve a result | Supply schema-valid input, answer requests, inspect uncertain outcomes before retrying |
 | Harness author | Define a repeatable agent behavior | Maintain instructions, schemas, tool requests, permissions, model choices, and versions |
 | Platform developer | Add tools, runner features, or service behavior | Preserve contracts and boundaries across admission, execution, both runners, and clients |
+| Evaluation author | Compare harness configurations on repeatable cases | Use an external orchestrator/scorer today; retain inputs, digests, environment details, and trial-to-job mappings |
 | Deployment operator | Run the service in a customer-owned environment | Approve profiles/policy, configure identity/model access, review gaps, manage infrastructure and cost |
 
 These are product responsibilities, not separately implemented authorization roles. In particular, the job caller
@@ -32,6 +40,8 @@ and approver currently share one API-key principal.
 | Execution policy | Operator ceilings and required controls; a harness cannot grant itself extra authority |
 | Job | Durable caller-owned task, with an admitted harness snapshot, input, state, events, and result |
 | Attempt | One leased execution of a job, with its own deadline, workspace, runner process, and capability |
+| Root SDK session | Ephemeral agent context created for one attempt; not a separately resumable service resource |
+| Sub-agent | A specialist within that attempt's runtime, not an independently scheduled platform job |
 | Capability | Short-lived job/attempt-scoped inference authorization; not a provider credential |
 | Input request | A bounded permission prompt or question answered by the job's caller |
 
@@ -45,6 +55,7 @@ and approver currently share one API-key principal.
 | Rich harnesses | Prompt sections, reasoning/context options, sub-agents, delegated tools, packaged skills | [Harness contract](../contracts/src/harness.ts) |
 | Interactive jobs | Optional built-in tools, per-kind permission rules, approvals and questions | [User interaction](USER-GUIDE.md#approvals-and-questions) |
 | Durable execution | Leases, fencing, backoff, cancellation, and explicit review of uncertain effects | [Job states](ARCHITECTURE.md#job-state-transitions) |
+| Concurrent invocations | Separate jobs can use the same harness at once, subject to executor slots, policy, and model quota | [Instances and limits](PRODUCT-OVERVIEW.md#2-what-is-an-instance-and-can-several-run-concurrently) |
 | Controlled inference path | Foundry chat completions through a gateway with its own provider identity | [Security](SECURITY.md) |
 | Local-to-Azure workflow | One AppHost; local processes/containers become Azure Container Apps and PostgreSQL | [Deployment](DEPLOYMENT.md) |
 
@@ -64,6 +75,10 @@ isolation or compliance claims. Historical live-run evidence is recorded in
    target, verify a job, and retain responsibility for access, cost, and teardown.
 5. **Extend the platform:** add a tool binding or compatible runner without giving execution processes provider
    credentials or authority over job state.
+6. **Compare candidate configurations externally:** preserve explicit harness versions, submit bounded independent
+   trials, collect job results, and score/store comparisons outside the service. See
+   [comparison methodology](PRODUCT-OVERVIEW.md#5-can-it-version-configurations-run-comparisons-and-store-results);
+   the platform does not yet provide an experiment UI or evaluation engine.
 
 ## Boundaries and open work
 
@@ -75,12 +90,29 @@ isolation or compliance claims. Historical live-run evidence is recorded in
 | Copilot-authenticated inference route | The implemented production route is Foundry with gateway-owned Entra identity |
 | General artifact/file persistence or repository automation | Attempt files are temporary; coding jobs do not automatically check out, commit, or push a repository |
 | Resumable chat/session history | Retrying a job starts a fresh attempt, not an SDK conversation resume |
+| Proactive steering, suspended waits, or continuous multi-hour attempts | Interaction is agent-requested; waiting uses an executor slot and attempt time; the current attempt maximum is one hour |
+| Cross-job workflows, triggers, and completion webhooks | Sub-agents run within one attempt; an external workflow engine or client must coordinate jobs |
+| Integrated experiments and scoring | Version labels, digests, raw results, and partial provenance do not provide datasets, trials, scorers, or regression comparisons |
+| Complete execution provenance or billing-grade measurement | Public job views omit some stored evidence; asynchronous reported usage is not complete request accounting or a hard spend cap |
 | Export of a new customer starter repository | The configurator edits this repository; resolved harness JSON export is a different feature |
 | Shipped OIDC deployment automation/template release pipeline | Deployment is documented from a workstation; the delivery plan describes future automation |
 
 The [security gap register](SECURITY.md#known-gaps) owns hardening details. The
 [delivery plan](PLAN.md#20-delivery-milestones) owns proposed milestones. Do not turn a proposal into a
 current feature claim until the implementation and supporting evidence exist.
+
+## Direction beyond the job service
+
+The [enterprise vision](PRODUCT-OVERVIEW.md#6-how-does-this-support-the-enterprise-agent-runner-vision) builds an
+agent operations and comparison platform for software factories on the shared execution core, rather than replacing
+the SDK or rewriting the platform.
+
+The overview recommends clarifying the product/provenance contract, adding a minimal comparison layer, then
+durable artifacts and explicit recovery, followed by cross-job workflows and repository adapters. Production
+hardening is a parallel gate, not a result of adding those features. This is a **proposed scope expansion**, not
+an agreed schedule or a description of shipped functionality; the
+[recommended sequence](PRODUCT-OVERVIEW.md#recommended-product-decomposition-and-delivery-sequence) owns the
+detailed acceptance outcomes.
 
 ## Acceptance criteria for changes
 
@@ -92,6 +124,7 @@ These are review criteria, not claims that quality or operational metrics are al
 | A harness change is understandable | Valid schema examples, explicit output contract, correct versioning, and visible permission behavior |
 | A failure is actionable | Caller-visible state/error and a documented next action; uncertain effects are not silently repeated |
 | A runner is interchangeable where advertised | Contract/capability checks and representative execution on each supported runner |
+| A comparison is interpretable | Preserved input and harness digest, recorded runtime/policy/scorer context, and explicit treatment of failures and human assistance |
 | Deployment ownership remains clear | Inspectable resource changes, permissions, costs, and teardown documentation |
 | Product claims stay trustworthy | Matching user/developer docs and diagrams; limitations remain explicit |
 

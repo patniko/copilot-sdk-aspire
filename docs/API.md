@@ -97,6 +97,10 @@ existing job; a different request under that key returns `409 idempotency_confli
 Use a new key for a deliberately new job. Pin the harness version when replaying across publication changes:
 omitting it can resolve to a different version. Admission still runs on a replay.
 
+Version labels are not immutable publication records: an operator can change content under the same name/version.
+Record/check the returned harness digest for comparisons. The API has no expected-digest submission field;
+see [publication semantics](DEVELOPER-GUIDE.md#configuration-publication).
+
 ## Job views and pagination
 
 A job view contains `id`, `state`, `harness` (`name`, `version`, `digest`), `profile`, timestamps,
@@ -104,11 +108,24 @@ A job view contains `id`, `state`, `harness` (`name`, `version`, `digest`), `pro
 `usage` contains `inputTokens`, `outputTokens`, and `requests`. `result` is present for a succeeded detail view;
 `error` (`code`, `message`) is included for failed, review-needed, or retry-waiting jobs.
 
+The original input, resolved harness snapshot, and selected top-level model are stored but not included in
+`JobView`. There are no dedicated public snapshot or attempt-provenance endpoints. Retain submitted inputs and
+environment metadata in your client when building comparisons; the
+[evidence inventory](PRODUCT-OVERVIEW.md#what-data-is-stored-versus-exposed) distinguishes storage from exposure.
+
 `GET /v1/jobs?limit=25&before=<createdAt>` accepts a limit from 1 to 100 (default 25). Pass the returned `next`
 timestamp as `before` for older jobs. This is a timestamp cursor, not a snapshot of a changing collection.
 
 See the [state table](USER-GUIDE.md#understand-the-outcome) for user actions and the
 [state diagram](ARCHITECTURE.md#job-state-transitions) for cancellation and retry semantics.
+
+### Measurement limits
+
+`usage.requests` counts recorded nonzero provider usage reports, not every HTTP inference request. Usage reporting
+is asynchronous and can fail, so token totals are not a billing-grade ledger or exact in-flight spending cap.
+Likewise, `updatedAt - createdAt` can include queueing, retries, human waits, and usage updates; it is not a
+dedicated execution-latency metric. There is no built-in pricing catalog, experiment score, or per-model/sub-agent
+usage breakdown.
 
 ## Events
 
@@ -134,6 +151,9 @@ Events are an allowlisted application contract, **not raw SDK events or a full c
 queued/started/retried/terminal jobs, sanitized runner activity, and input requested/resolved notifications.
 Use [`JobEventBody`](../contracts/src/jobs.ts) for the complete discriminated union and
 [runner events](RUNNER-PROTOCOL.md#lifecycle) for allowed activity payloads.
+
+These cursors reconnect clients to persisted job events; they do not resume the runner's SDK session. The API
+does not expose unsolicited job messages, terminal attachment, a completion webhook, or a workflow scheduler.
 
 ## Approvals and questions
 

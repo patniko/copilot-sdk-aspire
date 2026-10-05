@@ -105,7 +105,12 @@ require a Python **agent**.
 
 **Coding jobs do not edit your local checkout automatically.** Each attempt gets a temporary workspace inside
 the executor. That workspace is removed afterwards. Only the structured result is exposed as an artifact today;
-there is no general file upload/download, repository checkout, or commit/push workflow in the platform.
+there is no general file upload/download, platform-managed checkout, or commit/push workflow.
+
+The coding sample accepts an optional public `repository` URL and instructs the agent to clone it using its tools,
+subject to permissions. That is not a managed checkout or private-repository credential service. Ask for the patch
+or file contents in the structured result if you need them after cleanup; see
+[coding tasks and artifacts](PRODUCT-OVERVIEW.md#coding-tasks-and-artifacts-an-important-boundary).
 
 ### Approvals and questions
 
@@ -114,11 +119,16 @@ that an action is safe. Prefer a one-time approval; **kind** approval covers lat
 the remainder of that attempt. You can deny a request with feedback for the agent.
 
 Requests normally expire after 600 seconds, bounded by the harness setting and the attempt deadline. Waiting
-does not pause the deadline. Expired permissions are denied; the job may continue or fail depending on the task.
+does not pause the deadline or release the executor slot. Expired permissions are denied; the job may continue or
+fail depending on the task.
 The job remains `running` while waiting: there is no separate `waiting_for_input` job state.
 
 Only the job's caller principal can answer. Sharing an API key also shares the ability to see jobs and approve
 actions. See [API input requests](API.md#approvals-and-questions) for remote clients.
+
+You can reopen the console and reconnect to a server-side job with the same caller identity. You cannot send
+unsolicited mid-run chat, attach a terminal, or resume an SDK session after the attempt ends. The
+[interaction matrix](PRODUCT-OVERVIEW.md#supported-interaction) distinguishes these capabilities.
 
 ### Understand the outcome
 
@@ -153,6 +163,23 @@ or tool changes need the broader restart/rebuild described in
 [Configuration publication](DEVELOPER-GUIDE.md#configuration-publication).
 
 Commit the harness and policy files after review. Do not commit local keys or deployment settings.
+
+## Repeated runs and comparisons
+
+Submit separate jobs to run several invocations of the same harness concurrently. Each receives its own input,
+attempt, runner, and result; sub-agents remain part of their parent attempt rather than becoming independent
+jobs. Capacity is bounded by executor slots, policy, and model quota. See
+[current configured limits](PRODUCT-OVERVIEW.md#current-configured-limits) before submitting a batch.
+
+There is no built-in experiment runner, scorer, or comparison dashboard. An external script can submit a case set
+to preserved harness candidates, retain the input and trial-to-job mapping, collect results, and score them
+independently. Use a new idempotency key for each intended trial, pin a version, and record/check its returned
+digest: version labels alone do not enforce immutable content.
+
+Schema-valid output is not proof that an answer is correct. Usage is not billing-grade accounting, and a job's
+timestamp difference is not pure execution time. Follow the
+[comparison methodology](PRODUCT-OVERVIEW.md#5-can-it-version-configurations-run-comparisons-and-store-results)
+for reproducibility and evidence limitations.
 
 ## Troubleshooting
 

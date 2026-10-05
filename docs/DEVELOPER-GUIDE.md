@@ -99,6 +99,17 @@ folder such as `harnesses/<name>@<version>` when retaining an older version; dup
 rejected. Updating the version in the only folder removes that old version from *new admission*, not from
 already stored job snapshots.
 
+Versioning is a contributor convention, not an enforced immutable registry. The configurator warns when committed
+content changes without a version bump, but an operator can still publish changed content under that label.
+Two jobs can therefore have the same name/version and different digests. Preserve candidate versions separately
+and verify the returned job digest when reproducibility matters.
+
+The harness digest does not cover runner/tool binaries, images, operator policy, or the provider implementation.
+Attempt provenance is only partially captured and has no public export endpoint. For evaluation tooling, retain
+the original input and trial-to-job mapping externally, and record the environment/scorer identity separately.
+See the [evidence inventory and comparison design](PRODUCT-OVERVIEW.md#5-can-it-version-configurations-run-comparisons-and-store-results)
+before treating stored jobs as a complete experiment record.
+
 ## Add a harness or tool
 
 Use the [configurator](CONFIGURATOR.md#editing-harnesses) for harness authoring. For a custom tool:

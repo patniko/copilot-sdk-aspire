@@ -1,7 +1,8 @@
 # Documentation
 
 This is the entry point for the repository's knowledge base. Guides describe the implementation in this
-checkout; proposals and historical verification belong in the delivery plan, not in current feature claims.
+checkout. Proposed product layers are explicitly labeled in the product documents; historical verification
+belongs in the delivery plan, not in current feature claims.
 
 ## Reading paths
 
@@ -9,7 +10,7 @@ checkout; proposals and historical verification belong in the delivery plan, not
 | --- | --- | --- |
 | Job user | [User guide](USER-GUIDE.md) | [Configurator](CONFIGURATOR.md) for authoring; [API](API.md) for client integration |
 | Developer | [Developer guide](DEVELOPER-GUIDE.md) | [Architecture](ARCHITECTURE.md), [runner protocol](RUNNER-PROTOCOL.md), [contribution workflow](../CONTRIBUTING.md) |
-| Product contributor | [Product guide](PRODUCT.md) | [Security limitations](SECURITY.md#known-gaps), then [historical plan](PLAN.md) |
+| Product contributor | [Product guide](PRODUCT.md) | [Detailed product assessment](PRODUCT-OVERVIEW.md), [security limitations](SECURITY.md#known-gaps), then [historical plan](PLAN.md) |
 | Deployment operator | [Deployment guide](DEPLOYMENT.md) | [Security model](SECURITY.md) and [local/Azure topology](ARCHITECTURE.md#local-and-azure-topology) |
 
 ## Canonical topic map
@@ -28,6 +29,7 @@ sequences, endpoint tables, or security guarantees.
 | [Security](SECURITY.md) | Enforced boundaries, acknowledged gaps, limits on security claims |
 | [Deployment](DEPLOYMENT.md) | Azure inputs, permissions, provisioning, costs, verification, teardown |
 | [Product](PRODUCT.md) | Intended users, value, supported scope, non-goals, acceptance criteria |
+| [Product overview](PRODUCT-OVERVIEW.md) | Six-question capability assessment, comparison methodology, evidence limitations, and proposed enterprise delivery sequence |
 | [Documentation maintenance](MAINTAINING-DOCS.md) | Source-of-truth rules, change-to-document map, diagram editing, review checklist |
 | [Plan](PLAN.md) | Original proposals, design rationale, dated milestone and verification history |
 
@@ -37,6 +39,9 @@ sequences, endpoint tables, or security guarantees.
 - [Local and Azure topology](images/local-and-azure.svg): what runs where.
 - [Job execution](ARCHITECTURE.md#job-execution), [job states](ARCHITECTURE.md#job-state-transitions), and
   [approval flow](ARCHITECTURE.md#approvals-and-questions): editable Mermaid diagrams embedded in the architecture guide.
+- [Detailed product views](PRODUCT-OVERVIEW.md#1-where-does-a-configured-harness-eventually-run) and the
+  [proposed comparison layer](PRODUCT-OVERVIEW.md#recommended-comparison-layer-future-work): supplemental Mermaid
+  diagrams in the product overview, with current and future scope explicitly separated.
 - Product screenshots live with the [configurator](CONFIGURATOR.md) and [user guide](USER-GUIDE.md).
 
 The SVG files are editable vector sources, not exports from a separate drawing. Mermaid fences render on

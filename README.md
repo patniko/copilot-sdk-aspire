@@ -9,6 +9,8 @@ Both use the same durable job API, runner protocol, and inference gateway.
 
 **Start with the [documentation hub](docs/README.md).** Current behavior is documented separately from the
 original delivery plan; the [product guide](docs/PRODUCT.md) distinguishes shipped capabilities from open work.
+For a source-based explanation of the product, local/cloud topology, sessions, authoring, supervision, and harness
+comparison support, see the [detailed product overview](docs/PRODUCT-OVERVIEW.md).
 
 ## Quick start
 
@@ -45,6 +47,7 @@ running workloads with sensitive data or external side effects.
 | Create or edit a harness in the UI | [Configurator](docs/CONFIGURATOR.md) |
 | Integrate a client with the job service | [Job API reference](docs/API.md) and [REST Client examples](http/agent-api.http) |
 | Understand the product, scope, and open work | [Product guide](docs/PRODUCT.md) |
+| Understand instances, sessions, comparisons, and the enterprise vision | [Product overview](docs/PRODUCT-OVERVIEW.md) |
 | Understand components, trust boundaries, and job flows | [Architecture](docs/ARCHITECTURE.md) |
 | Change, extend, or test the implementation | [Developer guide](docs/DEVELOPER-GUIDE.md) |
 | Implement another agent runner | [Runner protocol](docs/RUNNER-PROTOCOL.md) |

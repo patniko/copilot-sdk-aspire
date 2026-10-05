@@ -37,6 +37,23 @@ The executor is always a Linux container, including during local development. It
 runner under a separate unprivileged uid, with a private workspace and minimal environment. It is **not** one
 Container App or virtual machine per job. See [Deployment](DEPLOYMENT.md) for supporting resources and costs.
 
+## Concurrency and durability
+
+A harness definition is reusable configuration, not a permanently running bot. Separate jobs can invoke one
+version concurrently; each active attempt has its own runner and root SDK session. Sub-agents operate inside
+that runtime and share the parent attempt's lifetime and inference budget, not separate job scheduling or retries.
+
+Executor slots provide bounded parallelism. More replicas add potential slots, not guaranteed throughput or model
+quota, and the AppHost does not configure queue-driven executor autoscaling. Human waits still occupy a slot.
+The [product assessment](PRODUCT-OVERVIEW.md#current-configured-limits) records the configured limits and their
+source; [`main.ts`](../src/agent-executor/src/main.ts) implements the slot lifecycle.
+
+PostgreSQL preserves job disposition and history independently of a browser or worker. SDK context and workspace
+are ephemeral: reconnecting to a job view does not restore an ended conversation. Attempt duration is capped at
+one hour by the contracts; queueing and retries can extend total job lifetime without providing continuous
+multi-hour execution. Checkpointed sessions, suspended waits, retained files, and cross-job workflows are proposed
+product layers, not properties of the current lease mechanism.
+
 ## Job execution
 
 ```mermaid
@@ -182,8 +199,8 @@ sequenceDiagram
 
 The API does not call the runner directly, and the executor needs no incoming connection. A request can expire
 without the whole job failing. Pending requests are cancelled when the attempt settles; waiting still consumes
-the attempt deadline. The [protocol](RUNNER-PROTOCOL.md) owns message shapes and bounds; the [API](API.md)
-owns caller response semantics.
+the attempt deadline and an executor slot. The [protocol](RUNNER-PROTOCOL.md) owns message shapes and bounds;
+the [API](API.md) owns caller response semantics.
 
 ## Configuration and code publication
 
