@@ -5,10 +5,13 @@ import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp } from "./app.js";
+import { CUSTOMER_WORKSPACE_DIR, ensureCustomerWorkspace } from "./workspace.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const configuratorDir = resolve(here, "..");
 const root = resolve(configuratorDir, "..");
+const workspaceRoot = join(root, CUSTOMER_WORKSPACE_DIR);
+await ensureCustomerWorkspace(root, workspaceRoot);
 const dev = process.argv.includes("--dev");
 const noOpen = process.argv.includes("--no-open") || process.env.CONFIGURATOR_NO_OPEN === "1";
 const preferredPort = Number.parseInt(process.env.CONFIGURATOR_PORT ?? "4280", 10);
@@ -35,6 +38,7 @@ if (!dev && !existsSync(join(staticDir, "index.html"))) {
 
 const app = await buildApp({
   root,
+  workspaceRoot,
   token,
   port,
   staticDir: dev ? undefined : staticDir,
@@ -45,7 +49,8 @@ await app.listen({ host: "127.0.0.1", port });
 const url = dev ? `http://127.0.0.1:5173/?t=${token}` : `http://127.0.0.1:${port}/?t=${token}`;
 console.log("");
 console.log("  Agent Service Configurator");
-console.log(`  Repository: ${root}`);
+console.log(`  Platform:   ${root}`);
+console.log(`  Workspace:  ${workspaceRoot}`);
 console.log(`  Open:       ${url}`);
 console.log("");
 console.log("  The URL carries a one-time session token. Press Ctrl+C to stop.");

@@ -5,6 +5,7 @@ import { HttpError, loadHarnesses, loadPolicy, loadProfiles } from "@copilot-age
 import { Admission } from "../../src/agent-api/src/admission.js";
 
 const root = join(import.meta.dirname, "..", "..");
+const customerConfigRoot = join(root, "examples", "customer-config");
 let harnesses: Map<string, HarnessSnapshot[]>;
 let profiles: Map<string, ExecutionProfile>;
 let policy: ExecutionPolicy;
@@ -15,7 +16,11 @@ const validInput = {
 };
 
 beforeAll(async () => {
-  [harnesses, profiles, policy] = await Promise.all([loadHarnesses(root), loadProfiles(root), loadPolicy(root)]);
+  [harnesses, profiles, policy] = await Promise.all([
+    loadHarnesses(customerConfigRoot),
+    loadProfiles(root),
+    loadPolicy(customerConfigRoot),
+  ]);
 });
 
 function admit(submission: object, policyOverrides: Partial<ExecutionPolicy> = {}) {

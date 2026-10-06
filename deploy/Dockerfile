@@ -3,6 +3,7 @@
 # Registries are build arguments so builds work behind package proxies.
 
 ARG NODE_IMAGE=node:24-bookworm-slim
+ARG CUSTOMER_CONFIG_DIR=.copilot-agent-workspace
 
 # ---------------------------------------------------------------------------
 FROM ${NODE_IMAGE} AS build
@@ -20,6 +21,7 @@ COPY src/agent-api/package.json src/agent-api/
 COPY src/job-dispatcher/package.json src/job-dispatcher/
 COPY src/inference-gateway/package.json src/inference-gateway/
 COPY src/agent-executor/package.json src/agent-executor/
+COPY src/agent-host/package.json src/agent-host/
 COPY src/harness-hosting/package.json src/harness-hosting/
 COPY tests/package.json tests/
 COPY configurator/package.json configurator/
@@ -27,19 +29,21 @@ RUN pnpm install --frozen-lockfile --filter "./contracts" --filter "./src/**"
 COPY contracts contracts
 COPY src src
 RUN pnpm -r --filter "./contracts" --filter "./src/**" run build
-RUN for service in agent-api job-dispatcher inference-gateway agent-executor harness-hosting; do \
+RUN for service in agent-api job-dispatcher inference-gateway agent-executor harness-hosting agent-host; do \
       pnpm --filter "@copilot-agent/${service}" deploy --legacy --prod "/out/${service}" || exit 1; \
     done
 
 # ---------------------------------------------------------------------------
 FROM ${NODE_IMAGE} AS service-base
+ARG CUSTOMER_CONFIG_DIR
 ENV NODE_ENV=production \
     CONFIG_ROOT=/config \
+    PLATFORM_ROOT=/platform \
     PORT=8080
 WORKDIR /app
-COPY --chown=root:root harnesses /config/harnesses
-COPY --chown=root:root execution-profiles /config/execution-profiles
-COPY --chown=root:root policy /config/policy
+COPY --chown=root:root ${CUSTOMER_CONFIG_DIR}/harnesses /config/harnesses
+COPY --chown=root:root ${CUSTOMER_CONFIG_DIR}/policy /config/policy
+COPY --chown=root:root execution-profiles /platform/execution-profiles
 USER node
 EXPOSE 8080
 # Run node directly: the base image's shell entrypoint drops hyphenated variables such as
@@ -81,9 +85,21 @@ COPY tools /app/tools
 COPY execution-profiles /app/execution-profiles
 RUN chmod -R a+rX /app
 ENV NODE_ENV=production \
-    CONFIG_ROOT=/app \
+    PLATFORM_ROOT=/app \
     WORKSPACE_ROOT=/work \
     RUNNER_UID=10001 \
     RUNNER_GID=10001
 WORKDIR /app/src/agent-executor
+ENTRYPOINT ["node", "dist/main.js"]
+
+FROM agent-executor AS agent-host
+ARG CUSTOMER_CONFIG_DIR
+COPY --from=build /out/agent-host /app/src/agent-host
+COPY ${CUSTOMER_CONFIG_DIR}/harnesses /config/harnesses
+COPY ${CUSTOMER_CONFIG_DIR}/policy /config/policy
+RUN mkdir -m 0711 /data
+ENV CONFIG_ROOT=/config \
+    DEMO_HOST_DATA=/data
+WORKDIR /app/src/agent-host
+EXPOSE 8080
 ENTRYPOINT ["node", "dist/main.js"]

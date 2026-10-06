@@ -18,12 +18,17 @@ import { Admission } from "../../src/agent-api/src/admission.js";
 import { BUILTIN_AGENTS, buildSessionOptions, RESULT_CONTRACT } from "../../src/harness-hosting/src/session-config.js";
 
 const root = join(import.meta.dirname, "..", "..");
+const customerConfigRoot = join(root, "examples", "customer-config");
 let harnesses: Map<string, HarnessSnapshot[]>;
 let profiles: Map<string, ExecutionProfile>;
 let policy: ExecutionPolicy;
 
 beforeAll(async () => {
-  [harnesses, profiles, policy] = await Promise.all([loadHarnesses(root), loadProfiles(root), loadPolicy(root)]);
+  [harnesses, profiles, policy] = await Promise.all([
+    loadHarnesses(customerConfigRoot),
+    loadProfiles(root),
+    loadPolicy(customerConfigRoot),
+  ]);
 });
 
 const team = () => harnesses.get("insights-team")![0]!.definition;
@@ -53,9 +58,9 @@ describe("harness features contract", () => {
     expect(Object.keys(definition)).not.toContain("skills");
     expect(Object.keys(definition)).not.toContain("prompt");
     expect(requiredRunnerCapabilities(definition)).toEqual([]);
-    const manifest = JSON.parse(await readFile(join(root, "harnesses", "dataset-analyst", "harness.json"), "utf8"));
+    const manifest = JSON.parse(await readFile(join(customerConfigRoot, "harnesses", "dataset-analyst", "harness.json"), "utf8"));
     const { instructionsFile, ...rest } = manifest;
-    const instructions = await readFile(join(root, "harnesses", "dataset-analyst", instructionsFile), "utf8");
+    const instructions = await readFile(join(customerConfigRoot, "harnesses", "dataset-analyst", instructionsFile), "utf8");
     expect(harnesses.get("dataset-analyst")![0]!.digest).toBe(`sha256:${sha256Hex(canonicalJson({ ...rest, instructions }))}`);
   });
 
@@ -138,7 +143,7 @@ describe("skill loading", () => {
     const harnessDir = join(dir, "harnesses", "h");
     await rm(join(dir, "harnesses"), { recursive: true, force: true });
     await mkdir(join(harnessDir, "skills", "s-one"), { recursive: true });
-    const manifest = JSON.parse(await readFile(join(root, "harnesses", "text-summarizer", "harness.json"), "utf8"));
+    const manifest = JSON.parse(await readFile(join(customerConfigRoot, "harnesses", "text-summarizer", "harness.json"), "utf8"));
     await writeFile(join(harnessDir, "harness.json"), JSON.stringify({ ...manifest, skills }));
     await writeFile(join(harnessDir, manifest.instructionsFile), "Summarize.");
     if (skillText !== undefined) await writeFile(join(harnessDir, "skills", "s-one", "SKILL.md"), skillText);

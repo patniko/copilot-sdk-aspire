@@ -5,6 +5,11 @@
 The same AppHost that runs locally deploys the service to Azure Container Apps with `aspire deploy`. Review the
 generated infrastructure with `aspire publish` first; neither command needs a project-operated service.
 
+The AppHost ensures `.copilot-agent-workspace/` exists, seeding missing `harnesses/` and `policy/` directories from
+`examples/customer-config/` without overwriting existing customer files. Docker builds package harnesses and policy
+from that workspace, while execution profiles and runner/tool code remain platform-owned inputs from this checkout.
+Review workspace contents before publishing because those files become the deployed configuration.
+
 ## What gets created
 
 In the target resource group:

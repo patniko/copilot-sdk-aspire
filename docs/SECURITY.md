@@ -4,7 +4,13 @@
 
 This document lists the boundaries the reference implementation enforces today, how each was verified, and the
 gaps that remain. Gaps are explicit: a requirement the execution target cannot enforce must be acknowledged in
-[`policy/execution-policy.json`](../policy/execution-policy.json), or executors on that target cannot claim work.
+the customer workspace's `policy/execution-policy.json` (seeded from
+[`examples/customer-config/policy/execution-policy.json`](../examples/customer-config/policy/execution-policy.json)),
+or executors on that target cannot claim work.
+
+The ignored customer workspace is a local configuration boundary, not a secrets vault or an authorization
+boundary. Anyone who can modify it before build/start can change admitted harness behavior and operator policy.
+Store no credentials there, protect its delivery like application configuration, and review it before deployment.
 
 ## Enforced boundaries
 

@@ -1,32 +1,51 @@
-import { execFile } from "node:child_process";
-import { cp, mkdtemp, readFile, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildApp } from "../server/app.js";
+import { ensureCustomerWorkspace } from "../server/workspace.js";
 
 const repoRoot = join(import.meta.dirname, "..", "..");
-const run = promisify(execFile);
 const token = "test-token-0123456789abcdef";
 const port = 4999;
 let root: string;
+let platformRoot: string;
 let app: FastifyInstance;
 
 const headers = (extra: Record<string, string> = {}) => ({ host: `127.0.0.1:${port}`, "x-configurator-token": token, ...extra });
 
+describe("customer workspace bootstrap", () => {
+  it("seeds missing directories without overwriting customer files", async () => {
+    const temp = await mkdtemp(join(tmpdir(), "workspace-bootstrap-"));
+    const platform = join(temp, "platform");
+    const workspace = join(temp, "workspace");
+    try {
+      await mkdir(join(platform, "examples", "customer-config", "harnesses", "sample"), { recursive: true });
+      await mkdir(join(platform, "examples", "customer-config", "policy"), { recursive: true });
+      await writeFile(join(platform, "examples", "customer-config", "harnesses", "sample", "harness.json"), "example");
+      await writeFile(join(platform, "examples", "customer-config", "policy", "execution-policy.json"), "policy");
+      await mkdir(join(workspace, "harnesses", "sample"), { recursive: true });
+      await writeFile(join(workspace, "harnesses", "sample", "harness.json"), "customer");
+
+      await ensureCustomerWorkspace(platform, workspace);
+
+      expect(await readFile(join(workspace, "harnesses", "sample", "harness.json"), "utf8")).toBe("customer");
+      expect(await readFile(join(workspace, "policy", "execution-policy.json"), "utf8")).toBe("policy");
+    } finally {
+      await rm(temp, { recursive: true, force: true });
+    }
+  });
+});
+
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), "configurator-test-"));
-  for (const dir of ["harnesses", "policy", "execution-profiles"]) {
-    await cp(join(repoRoot, dir), join(root, dir), { recursive: true });
-  }
-  await run("git", ["init"], { cwd: root });
-  await run("git", ["config", "user.email", "tests@example.com"], { cwd: root });
-  await run("git", ["config", "user.name", "Configurator Tests"], { cwd: root });
-  await run("git", ["add", "harnesses", "policy", "execution-profiles"], { cwd: root });
-  await run("git", ["commit", "-m", "Initial test configuration"], { cwd: root });
-  app = await buildApp({ root, token, port });
+  platformRoot = join(root, "platform");
+  await cp(join(repoRoot, "examples", "customer-config"), join(platformRoot, "examples", "customer-config"), { recursive: true });
+  await cp(join(repoRoot, "execution-profiles"), join(platformRoot, "execution-profiles"), { recursive: true });
+  await cp(join(repoRoot, "examples", "customer-config", "harnesses"), join(root, "harnesses"), { recursive: true });
+  await cp(join(repoRoot, "examples", "customer-config", "policy"), join(root, "policy"), { recursive: true });
+  app = await buildApp({ root: platformRoot, workspaceRoot: root, token, port });
 });
 
 afterAll(async () => {
@@ -69,7 +88,13 @@ describe("request security", () => {
   });
 
   it("serves the UI with a restrictive content security policy and 404s unknown API paths", async () => {
-    const staticApp = await buildApp({ root, token, port, staticDir: join(repoRoot, "configurator", "dist") });
+    const staticApp = await buildApp({
+      root: platformRoot,
+      workspaceRoot: root,
+      token,
+      port,
+      staticDir: join(repoRoot, "configurator", "dist"),
+    });
     try {
       const page = await staticApp.inject({ method: "GET", url: "/", headers: { host: `127.0.0.1:${port}` } });
       expect(page.statusCode).toBe(200);

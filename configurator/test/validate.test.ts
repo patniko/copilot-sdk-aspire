@@ -11,6 +11,7 @@ import { decisions, harnessDigest, validateHarness, validatePolicy } from "../se
 import { effectiveLimits } from "../server/validate.js";
 
 const repoRoot = join(import.meta.dirname, "..", "..");
+const customerConfigRoot = join(repoRoot, "examples", "customer-config");
 
 const profiles: ProfileSummary[] = [
   { id: "node-ts-agent", displayName: "TS", language: "typescript", sdk: "sdk", sdkVersion: "1", firstParty: true, toolBindings: ["python:stats"], capabilities: ["cancel", "structured-result"] },
@@ -120,7 +121,7 @@ describe("validateHarness", () => {
     expect(errors(a, { all: [a, b] })).toContain("version");
   });
 
-  it("asks for a version bump when committed content changed, ignoring line endings", () => {
+  it("asks for a version bump when example content changed, ignoring line endings", () => {
     const doc = harness();
     const committed = { manifest: JSON.stringify(doc.manifest), instructions: doc.instructions.replace(/\n/g, "\r\n") };
     expect(validate(doc, { committed })).toEqual([]);
@@ -138,14 +139,14 @@ describe("validateHarness", () => {
   });
 
   it("matches the platform loader digest for insights-team", async () => {
-    const repo = new Repo(repoRoot);
+    const repo = new Repo(customerConfigRoot, repoRoot);
     const document = await repo.readHarness("insights-team");
-    const snapshots = await loadHarnesses(repoRoot);
+    const snapshots = await loadHarnesses(customerConfigRoot);
     expect(harnessDigest(document)).toBe(snapshots.get("insights-team")![0]!.digest);
   });
 
   it("describes decisions for the insights-team harness", async () => {
-    const repo = new Repo(repoRoot);
+    const repo = new Repo(customerConfigRoot, repoRoot);
     const document = await repo.readHarness("insights-team");
     const context = { policy: await repo.readPolicy(), profiles: await repo.listProfiles(), all: await repo.listHarnesses() };
     const result = decisions(document, context);
@@ -155,7 +156,7 @@ describe("validateHarness", () => {
   });
 
   it("validates every shipped template without errors", async () => {
-    const repo = new Repo(repoRoot);
+    const repo = new Repo(customerConfigRoot, repoRoot);
     const shippedPolicy = await repo.readPolicy();
     const shippedProfiles = await repo.listProfiles();
     for (const template of listTemplates(shippedPolicy, shippedProfiles)) {
@@ -166,7 +167,7 @@ describe("validateHarness", () => {
   });
 
   it("ships the Copilot coding agent sample, valid and matching its template", async () => {
-    const repo = new Repo(repoRoot);
+    const repo = new Repo(customerConfigRoot, repoRoot);
     const [shippedPolicy, shippedProfiles, document] = await Promise.all([repo.readPolicy(), repo.listProfiles(), repo.readHarness("copilot-coding-agent")]);
     const issues = validateHarness(document, { policy: shippedPolicy, profiles: shippedProfiles, all: [document] });
     expect(issues.filter((i) => i.level === "error")).toEqual([]);
@@ -174,7 +175,7 @@ describe("validateHarness", () => {
     expect(document.manifest).toEqual(fromTemplate.manifest);
     const result = decisions(document, { policy: shippedPolicy, profiles: shippedProfiles, all: [document] });
     expect(result).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "gap", title: "Shell and web tools can reach any network address" })]));
-    const snapshots = await loadHarnesses(repoRoot);
+    const snapshots = await loadHarnesses(customerConfigRoot);
     expect(harnessDigest(document)).toBe(snapshots.get("copilot-coding-agent")![0]!.digest);
   });
 });

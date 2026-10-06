@@ -12,3 +12,6 @@ __pycache__/
 
 # Local configurator settings (deployment targets; no secrets)
 .configurator/
+
+# User-authored harnesses and policy. Seeded from examples/customer-config on first run.
+.copilot-agent-workspace/

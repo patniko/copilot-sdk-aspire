@@ -155,14 +155,14 @@ export function LivePlan() {
         </section>
       )}
 
-      {workspace && workspace.git.changedConfig.length > 0 && (
+      {workspace && workspace.changes.items.length > 0 && (
         <section className="card">
           <div className="box-header">
-            <h2 className="text-sm font-semibold leading-6">Uncommitted configuration</h2>
-            <Counter>{workspace.git.changedConfig.length}</Counter>
+            <h2 className="text-sm font-semibold leading-6">Workspace changes from platform examples</h2>
+            <Counter>{workspace.changes.items.length}</Counter>
           </div>
           <ul className="space-y-0.5 p-3 font-mono text-[11px] fg-muted">
-            {workspace.git.changedConfig.slice(0, 8).map((c) => (
+            {workspace.changes.items.slice(0, 8).map((c) => (
               <li key={c} className="truncate" title={c}>
                 {c}
               </li>

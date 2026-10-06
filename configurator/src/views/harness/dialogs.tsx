@@ -369,7 +369,7 @@ function ReportSection({ title, icon, items, empty }: { title: string; icon: Rea
 }
 
 // ---------------------------------------------------------------------------
-// Changes since last commit
+// Changes from the platform example
 // ---------------------------------------------------------------------------
 
 export function ChangesPanel({ folder, refreshKey }: { folder: string; refreshKey: string }) {
@@ -389,14 +389,14 @@ export function ChangesPanel({ folder, refreshKey }: { folder: string; refreshKe
     <section className="card">
       <div className="box-header">
         <div>
-          <h2 className="text-sm font-semibold leading-6">Changes since last commit</h2>
+          <h2 className="text-sm font-semibold leading-6">Changes from platform example</h2>
           <p className="text-xs fg-muted">Saved files compared with git HEAD.</p>
         </div>
         <Counter>{changes.committed ? changes.changes.length : "new"}</Counter>
       </div>
       <div className="card-pad">
         {!changes.committed ? (
-          <p className="text-xs fg-muted">This folder has not been committed yet; everything in it is new.</p>
+          <p className="text-xs fg-muted">This workspace harness has no platform example; everything in it is customer-authored.</p>
         ) : changes.changes.length === 0 ? (
           <p className="text-xs fg-muted">No saved changes. Unsaved edits are not included.</p>
         ) : (

@@ -104,10 +104,10 @@ back to `sanitized` and restart the executor to disable it.
 
 | Sample | Use it for |
 | --- | --- |
-| [`dataset-analyst`](../harnesses/dataset-analyst/harness.json) | Read-only tabular analysis using a packaged Python statistics tool |
-| [`text-summarizer`](../harnesses/text-summarizer/harness.json) | A minimal structured-answer example without custom tools |
-| [`insights-team`](../harnesses/insights-team/harness.json) | Customized prompt sections, sub-agents, a delegated-only tool, and a skill |
-| [`copilot-coding-agent`](../harnesses/copilot-coding-agent/harness.json) | Coding in an attempt workspace with built-in tools and human approvals |
+| [`dataset-analyst`](../examples/customer-config/harnesses/dataset-analyst/harness.json) | Read-only tabular analysis using a packaged Python statistics tool |
+| [`text-summarizer`](../examples/customer-config/harnesses/text-summarizer/harness.json) | A minimal structured-answer example without custom tools |
+| [`insights-team`](../examples/customer-config/harnesses/insights-team/harness.json) | Customized prompt sections, sub-agents, a delegated-only tool, and a skill |
+| [`copilot-coding-agent`](../examples/customer-config/harnesses/copilot-coding-agent/harness.json) | Coding in an attempt workspace with built-in tools and human approvals |
 
 Use the published input schema and its examples rather than assuming every harness accepts a `prompt` field.
 The `python-agent` profile runs the same job contract with a Python SDK implementation; a Python **tool** does not

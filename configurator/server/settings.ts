@@ -1,6 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
+import { DemoHostSettings } from "@copilot-agent/contracts";
 import { capture, stripAnsi } from "./process.js";
 import type { DeployTarget, LocalSettings, SettingsInfo } from "./types.js";
 
@@ -23,6 +24,7 @@ const deployment = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/, "Deployment names 
 
 export const LocalSettingsSchema = z
   .object({
+    demoHost: DemoHostSettings.optional(),
     foundryEndpoint: optionalHttpsUrl,
     foundryDeployments: z.array(deployment).max(20),
     npmRegistry: optionalHttpsUrl,
@@ -33,6 +35,7 @@ export const LocalSettingsSchema = z
 
 export const DeployTargetSchema = z
   .object({
+    demoHost: DemoHostSettings.optional(),
     name: z.string().regex(/^[a-z][a-z0-9-]{0,30}$/, "Use lowercase letters, digits, and hyphens."),
     tenantId: z.string().regex(GUID, "Tenant ID must be a GUID."),
     subscriptionId: z.string().regex(GUID, "Subscription ID must be a GUID."),
@@ -151,6 +154,16 @@ export class Settings {
     return typeof value === "string" ? value : undefined;
   }
 
+  /** Used only as a secret deployment parameter, never returned by settings.read(). */
+  async demoHostGitHubToken(): Promise<string | undefined> {
+    const value = (await this.#readSecrets())["Parameters:demo-host-github-token"];
+    return typeof value === "string" && value.trim() ? value : undefined;
+  }
+
+  async writeDemoHostGitHubToken(token: string): Promise<void> {
+    await this.#writeSecrets({ "Parameters:demo-host-github-token": token || undefined });
+  }
+
   async #readStored(): Promise<StoredSettings> {
     try {
       return StoredSettings.parse(JSON.parse(await readFile(this.file, "utf8")));
@@ -171,6 +184,11 @@ export class Settings {
     const [secrets, stored] = await Promise.all([this.#readSecrets(), this.#readStored()]);
     const text = (key: string) => (typeof secrets[key] === "string" ? (secrets[key] as string) : "");
     const local: LocalSettings = {
+      demoHost: DemoHostSettings.parse({
+        transport: text("Parameters:demo-host-transport") || "disabled",
+        owner: text("Parameters:demo-host-owner"),
+        harness: text("Parameters:demo-host-harness") || "interactive-demo",
+      }),
       foundryEndpoint: text(SECRET_KEYS.foundryEndpoint),
       foundryDeployments: text(SECRET_KEYS.foundryDeployments)
         .split(",")
@@ -202,6 +220,9 @@ export class Settings {
       [SECRET_KEYS.foundryDeployments]: local.foundryDeployments.join(","),
       [SECRET_KEYS.npmRegistry]: local.npmRegistry,
       [SECRET_KEYS.pipIndexUrl]: local.pipIndexUrl,
+      "Parameters:demo-host-transport": local.demoHost?.transport === "disabled" ? undefined : local.demoHost?.transport,
+      "Parameters:demo-host-owner": local.demoHost?.owner,
+      "Parameters:demo-host-harness": local.demoHost?.transport && local.demoHost.transport !== "disabled" ? local.demoHost.harness : undefined,
     });
     const stored = await this.#readStored();
     await this.#writeStored({ ...stored, nugetServiceIndex: local.nugetServiceIndex });
@@ -271,6 +292,12 @@ export function deployEnvironment(target: DeployTarget, local: LocalSettings): R
     "Parameters__foundry-account": target.foundryAccount,
     "Parameters__foundry-resource-group": target.foundryResourceGroup,
   };
+  const host = target.demoHost;
+  env["Parameters__demo-host-transport"] = host?.transport ?? "disabled";
+  if (host && host.transport !== "disabled") {
+    env["Parameters__demo-host-owner"] = host.owner;
+    env["Parameters__demo-host-harness"] = host.harness;
+  }
   if (local.npmRegistry) {
     env["Parameters__npm-registry"] = local.npmRegistry;
   }

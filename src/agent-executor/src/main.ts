@@ -3,11 +3,11 @@ import { join } from "node:path";
 import type { ExecutorCapabilities } from "@copilot-agent/contracts";
 import {
   ConfigError,
-  configRoot,
   createLogger,
   intEnv,
   loadProfiles,
   optionalEnv,
+  platformRoot,
   requireEnv,
   serviceUrl,
 } from "@copilot-agent/service-defaults";
@@ -16,7 +16,7 @@ import { DispatcherClient, NotEligibleError } from "./dispatcher-client.js";
 import { probeIsolation } from "./isolation.js";
 
 const logger = createLogger("agent-executor");
-const root = configRoot();
+const root = platformRoot();
 const profiles = await loadProfiles(root);
 const enabledProfiles = optionalEnv("EXECUTOR_PROFILES", [...profiles.keys()].join(","))
   .split(",")
@@ -85,7 +85,7 @@ async function slot(index: number): Promise<void> {
           isolation.processIsolation === "uid"
             ? { ...isolation, uid: runnerUid + index, gid: runnerGid + index }
             : isolation,
-        configRoot: root,
+        platformRoot: root,
         workspaceRoot,
         gatewayBaseUrl,
         eventDetail,

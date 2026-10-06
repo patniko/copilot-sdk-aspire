@@ -18,12 +18,18 @@ network isolation than the implementation provides.
 | `agent-executor` | Polling slots, runner uid/workspace isolation, protocol validation, deadlines/cancellation, result validation | [Main](../src/agent-executor/src/main.ts), [attempt](../src/agent-executor/src/attempt.ts), [isolation](../src/agent-executor/src/isolation.ts) |
 | Runner | One SDK attempt with harness tools, skills, sub-agents, and permission handlers | [TypeScript](../src/harness-hosting/src/runner.ts), [Python](../execution-profiles/python-agent/runner.py) |
 | `inference-gateway` | Approved chat-completions route, capability checks, upstream identity, token-usage reporting | [Gateway](../src/inference-gateway/src/server.ts), [routes](../src/inference-gateway/src/routes.ts) |
-| Configurator | Local file authoring and build/run/deploy controls; not part of the deployed request path | [Companion server](../configurator/server/app.ts) |
+| Configurator | Customer-workspace authoring plus platform build/run/deploy controls; not part of the deployed request path | [Companion server](../configurator/server/app.ts) |
 | Aspire AppHost | Resource placement, endpoint references, service secrets, Azure identities and roles | [AppHost](../apphost.mts) |
 
 The API and dispatcher both access PostgreSQL through the shared store. The dispatcher controls attempt execution;
 the API writes caller actions directly to the ledger. There is no separate message broker: executors poll the
 dispatcher for work, and the API reads persisted events with database notifications plus polling for SSE delivery.
+
+Configuration has two explicit ownership roots. `CONFIG_ROOT` supplies customer-authored harnesses and policy from
+`.copilot-agent-workspace/` locally or `/config` in images. `PLATFORM_ROOT` supplies immutable execution profiles
+and profile `{root}` entrypoints from the source checkout or `/app` in executor images. The configurator reads
+profiles/examples from the platform root but writes only the customer workspace. Image builds package the current
+workspace; they do not silently deploy the shipped examples.
 
 ## Local and Azure topology
 

@@ -2,9 +2,9 @@
 
 [Documentation hub](README.md) | [First run](USER-GUIDE.md) | [Developer guide](DEVELOPER-GUIDE.md)
 
-The configurator is a local web app for this repository. It edits the real configuration files, checks them with the
-same contracts the service uses, and drives the build, local run, test job, and Azure deployment, so the whole loop
-happens in one place.
+The configurator is a local web app for this platform checkout. It edits customer-owned configuration in the
+gitignored `.copilot-agent-workspace/`, checks it with the same contracts the service uses, and drives the platform
+build, local run, test job, and Azure deployment.
 
 ![Configurator overview](images/configurator-overview.png)
 
@@ -27,8 +27,8 @@ your browser with a per-launch session URL. Keep the terminal open; press Ctrl+C
    the policy every harness runs under.
 2. **Harnesses**: create, edit, version, import and export harnesses (see [Editing harnesses](#editing-harnesses)).
    Every edit is validated as you type against the contracts, the execution profiles, and the policy; saving is
-   blocked while there are errors. If committed content changes without a version bump, the editor offers a one-click
-   bump.
+   blocked while there are errors. If content diverges from a matching platform example without a version bump, the
+   editor offers a one-click bump.
 3. **Policy**: approved agent profiles and models, limits, the built-in tool groups and permission modes harnesses
    may use, model-option ceilings (maximum reasoning effort, long context), required controls, and acknowledged
    security gaps.
@@ -43,8 +43,9 @@ your browser with a per-launch session URL. Keep the terminal open; press Ctrl+C
    running), optionally **Preview infrastructure** (writes Bicep to `artifacts/deployment`), then **Deploy**. The
    Azure status card shows each container app, the API URL, and buttons to open the job console or copy the key.
 
-Command output streams into the task drawer at the bottom; long tasks can be cancelled. Commit `harnesses/` and
-`policy/` when you are happy: the configurator never commits or pushes for you.
+Command output streams into the task drawer at the bottom; long tasks can be cancelled. The customer workspace is
+deliberately not committed with the platform source. Back it up or version it in a separate customer-owned
+repository if it must be shared or audited.
 
 ## Editing harnesses
 
@@ -82,11 +83,14 @@ Other aids:
   servers need bindings, unapproved models), and what does not apply to hosted jobs (provider credentials, client
   mode, session storage, identity). Nothing is written until you create the harness.
 - **Export JSON** downloads the resolved definition the API loads (instructions and skills inlined).
-- **Changes since last commit** lists the saved fields, instructions and skills that differ from git HEAD.
+- **Changes from platform example** lists saved fields, instructions and skills that differ from the immutable
+  example with the same folder name. Harnesses without a matching example are marked as customer-authored.
 
-`harnesses/insights-team` is a sample that uses every feature: a customized prompt, reasoning effort, a statistician
-sub-agent that alone can call the Python statistics tool, and a reviewer sub-agent with a preloaded review skill.
-`harnesses/copilot-coding-agent` is the Copilot coding agent template as a ready-to-run harness.
+`examples/customer-config/harnesses/insights-team` is a sample that uses every feature: a customized prompt,
+reasoning effort, a statistician sub-agent that alone can call the Python statistics tool, and a reviewer sub-agent
+with a preloaded review skill. `examples/customer-config/harnesses/copilot-coding-agent` is the Copilot coding agent
+template as a ready-to-run harness. On first run, examples are copied into the workspace without overwriting an
+existing `harnesses/` or `policy/` directory.
 
 ## Approvals and questions
 
@@ -113,8 +117,10 @@ attempt deadline. Only the job's caller (its API key) can answer. The REST endpo
 
 | What | Where | Commit? |
 | --- | --- | --- |
-| Harnesses | `harnesses/<name>/` and `harnesses/<name>@<version>/` (`harness.json`, instructions, `skills/<name>/SKILL.md`) | Yes |
-| Execution policy | `policy/execution-policy.json` | Yes |
+| Customer harnesses | `.copilot-agent-workspace/harnesses/<name>/` and `<name>@<version>/` (`harness.json`, instructions, `skills/<name>/SKILL.md`) | No; use separate customer-owned version control if needed |
+| Customer execution policy | `.copilot-agent-workspace/policy/execution-policy.json` | No; use separate customer-owned version control if needed |
+| Shipped starter examples | `examples/customer-config/harnesses/` and `examples/customer-config/policy/` | Yes; platform-owned and not edited by the configurator |
+| Execution profiles and implementations | `execution-profiles/`, `src/`, and `tools/` | Yes; platform-owned |
 | Unsaved harness drafts | Browser local storage for the configurator origin | No |
 | Local run parameters (Foundry endpoint and deployments, diagnostic event detail, package proxies) | The AppHost's Aspire user secrets | No (outside the repo) |
 | Deployment targets, NuGet override for the Aspire CLI | `.configurator/settings.json` | No (git-ignored; IDs and names only) |
@@ -149,8 +155,9 @@ The companion server can edit files and run commands, so it is locked down:
 - Runs only a fixed set of commands (`pnpm build`/`test`, `aspire start`/`stop`/`resource restart`/`publish`/`deploy`,
   `az login`). Values that reach a command line (names, IDs, URLs) are validated against strict patterns, and
   shell-routed commands refuse metacharacters.
-- Writes only `harnesses/`, `policy/`, `.configurator/`, and the managed keys of the AppHost's user secrets; harness
-  folder names are validated and confined to `harnesses/`.
+- Writes customer definitions only under `.copilot-agent-workspace/harnesses/` and
+  `.copilot-agent-workspace/policy/`, plus `.configurator/` and managed AppHost user-secret keys. Harness folder
+  names are validated and confined to the workspace.
 - Status responses are allowlisted (Aspire `describe` output, which includes resource environments, is filtered).
   **Try it** attaches the API key on the server; the browser never needs it.
 

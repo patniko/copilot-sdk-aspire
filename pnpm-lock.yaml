@@ -137,6 +137,31 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  src/agent-host:
+    dependencies:
+      '@copilot-agent/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@copilot-agent/harness-hosting':
+        specifier: workspace:*
+        version: link:../harness-hosting
+      '@copilot-agent/service-defaults':
+        specifier: workspace:*
+        version: link:../service-defaults
+      '@github/copilot-sdk':
+        specifier: 1.0.16
+        version: 1.0.16
+      fastify:
+        specifier: ^5.4.0
+        version: 5.12.5
+      zod:
+        specifier: ^4.3.6
+        version: 4.6.5
+    devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   src/harness-hosting:
     dependencies:
       '@copilot-agent/contracts':
@@ -261,24 +286,39 @@ importers:
       '@copilot-agent/service-defaults':
         specifier: workspace:*
         version: link:../src/service-defaults
+      '@microsoft/agent-host-protocol':
+        specifier: 0.9.0
+        version: 0.9.0
+      '@types/libsodium-wrappers':
+        specifier: ^0.7.14
+        version: 0.7.14
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.4
       '@types/pg':
         specifier: ^8.15.0
         version: 8.23.1
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       fastify:
         specifier: ^5.4.0
         version: 5.12.5
       jose:
         specifier: ^6.0.11
         version: 6.2.12
+      libsodium-wrappers:
+        specifier: 0.7.15
+        version: 0.7.15
       pg:
         specifier: ^8.16.0
         version: 8.23.0
       vitest:
         specifier: ^4.0.0
         version: 4.1.11(@types/node@22.20.4)(vite@8.3.1(@types/node@22.20.4)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15))
+      ws:
+        specifier: ^8.18.1
+        version: 8.22.0
 
 packages:
 
@@ -724,6 +764,9 @@ packages:
     cpu: [x64]
     os: [win32]
 
+  '@microsoft/agent-host-protocol@0.9.0':
+    resolution: {integrity: sha1-JmNkbHzGmtiDQ035fBK9p/1Azck=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@microsoft/agent-host-protocol/-/agent-host-protocol-0.9.0.tgz}
+
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha1-dhnC6yGyVIP20WdUi0z9WnSIw9U=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@nodelib/fs.scandir/-/fs.scandir-2.1.5.tgz}
     engines: {node: '>= 8'}
@@ -867,6 +910,9 @@ packages:
   '@types/json-schema@7.0.15':
     resolution: {integrity: sha1-WWoXRyM2lNUPatinhp/Lb1bPWEE=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@types/json-schema/-/json-schema-7.0.15.tgz}
 
+  '@types/libsodium-wrappers@0.7.14':
+    resolution: {integrity: sha1-9oj41E5G7WHEAfgv91dYFlX7zEI=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@types/libsodium-wrappers/-/libsodium-wrappers-0.7.14.tgz}
+
   '@types/node@22.20.4':
     resolution: {integrity: sha512-zJRE40jpHtKqE/C4fgHrAKQLJuSpzEnP9ff9Y7YtoR3Wd2pwqzlekDeEuUQXjRd+QCYnVnNwuJYmhdk9XV8gvA==, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@types/node/-/node-22.20.4.tgz}
 
@@ -880,6 +926,9 @@ packages:
 
   '@types/react@19.3.0':
     resolution: {integrity: sha1-Ozzo2MFif7XM1NrdV+9EXFoVO3c=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@types/react/-/react-19.3.0.tgz}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha1-SEZOS/Ld/RfbE9hFRn9gcP/qSqk=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@types/ws/-/ws-8.18.1.tgz}
 
   '@typescript-eslint/eslint-plugin@8.70.1':
     resolution: {integrity: sha512-nDNrUQ/4ruSNYbu749TRY7cfrzPtoLHEXSNBI8aaNY32LlZCajixqRf3FqcKC4p5Cam4VOHYx/t+i5+nKXvrqA==, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@typescript-eslint/eslint-plugin/-/eslint-plugin-8.70.1.tgz}
@@ -1435,6 +1484,12 @@ packages:
   levn@0.4.1:
     resolution: {integrity: sha1-rkViwAdHO5MqYgDUAyaN0v/8at4=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/levn/-/levn-0.4.1.tgz}
     engines: {node: '>= 0.8.0'}
+
+  libsodium-wrappers@0.7.15:
+    resolution: {integrity: sha1-U/E+SDggJyo9VbI74uNEAqyYgFU=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/libsodium-wrappers/-/libsodium-wrappers-0.7.15.tgz}
+
+  libsodium@0.7.16:
+    resolution: {integrity: sha1-PU+daO2Ie7i/Lna7O6IxJl6uWKA=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/libsodium/-/libsodium-0.7.16.tgz}
 
   light-my-request@6.6.0:
     resolution: {integrity: sha1-yUSHcjI/ZfM3IPtZeceEHxQGCt0=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/light-my-request/-/light-my-request-6.6.0.tgz}
@@ -2076,6 +2131,18 @@ packages:
     resolution: {integrity: sha1-0sRcbdT7zmIaZvE2y+Mor9BBCzQ=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/word-wrap/-/word-wrap-1.2.5.tgz}
     engines: {node: '>=0.10.0'}
 
+  ws@8.22.0:
+    resolution: {integrity: sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg==, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/ws/-/ws-8.22.0.tgz}
+    engines: {node: '>=10.0.0'}
+    peerDependencies:
+      bufferutil: ^4.0.1
+      utf-8-validate: '>=5.0.2'
+    peerDependenciesMeta:
+      bufferutil:
+        optional: true
+      utf-8-validate:
+        optional: true
+
   wsl-utils@0.1.0:
     resolution: {integrity: sha1-h4PU32cdTVA2W+LuTHGRegVXuqs=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/wsl-utils/-/wsl-utils-0.1.0.tgz}
     engines: {node: '>=18'}
@@ -2457,6 +2524,8 @@ snapshots:
   '@koromix/koffi-win32-x64@3.2.1':
     optional: true
 
+  '@microsoft/agent-host-protocol@0.9.0': {}
+
   '@nodelib/fs.scandir@2.1.5':
     dependencies:
       '@nodelib/fs.stat': 2.0.5
@@ -2541,6 +2610,8 @@ snapshots:
 
   '@types/json-schema@7.0.15': {}
 
+  '@types/libsodium-wrappers@0.7.14': {}
+
   '@types/node@22.20.4':
     dependencies:
       undici-types: 6.21.0
@@ -2558,6 +2629,10 @@ snapshots:
   '@types/react@19.3.0':
     dependencies:
       csstype: 3.2.3
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 22.20.4
 
   '@typescript-eslint/eslint-plugin@8.70.1(@typescript-eslint/parser@8.70.1(eslint@10.11.0(jiti@1.21.7))(typescript@5.9.3))(eslint@10.11.0(jiti@1.21.7))(typescript@5.9.3)':
     dependencies:
@@ -3200,6 +3275,12 @@ snapshots:
       prelude-ls: 1.2.1
       type-check: 0.4.0
 
+  libsodium-wrappers@0.7.15:
+    dependencies:
+      libsodium: 0.7.16
+
+  libsodium@0.7.16: {}
+
   light-my-request@6.6.0:
     dependencies:
       cookie: 1.1.1
@@ -3735,6 +3816,8 @@ snapshots:
       stackback: 0.0.2
 
   word-wrap@1.2.5: {}
+
+  ws@8.22.0: {}
 
   wsl-utils@0.1.0:
     dependencies:

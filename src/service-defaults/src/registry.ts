@@ -14,9 +14,14 @@ import { Ajv2020 } from "ajv/dist/2020.js";
 import addFormats from "ajv-formats";
 import { ConfigError, optionalEnv } from "./config.js";
 
-/** Root containing harnesses/, execution-profiles/ and policy/. */
+/** Customer configuration root containing harnesses/ and policy/. */
 export function configRoot(): string {
   return resolve(optionalEnv("CONFIG_ROOT", process.cwd()));
+}
+
+/** Platform implementation root containing execution-profiles/ and packaged runner/tool code. */
+export function platformRoot(): string {
+  return resolve(optionalEnv("PLATFORM_ROOT", process.cwd()));
 }
 
 /** Canonical JSON with sorted keys, used for digests and idempotency hashes. */
@@ -121,7 +126,7 @@ async function loadSkills(harnessDir: string, harness: string, names: unknown): 
   return skills;
 }
 
-export async function loadProfiles(root = configRoot()): Promise<Map<string, ExecutionProfile>> {
+export async function loadProfiles(root = platformRoot()): Promise<Map<string, ExecutionProfile>> {
   const directory = join(root, "execution-profiles");
   const profiles = new Map<string, ExecutionProfile>();
   for (const entry of await readdir(directory, { withFileTypes: true })) {

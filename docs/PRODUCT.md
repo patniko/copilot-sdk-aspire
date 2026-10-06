@@ -8,7 +8,7 @@ instances, authoring, supervision, comparisons, and the enterprise agent-runner 
 
 ## Purpose
 
-Turn a repository-defined Copilot SDK harness into a durable job service that its owner can inspect, extend,
+Turn a customer-defined Copilot SDK harness into a durable job service that its owner can inspect, extend,
 run locally, and deploy into their own Azure subscription. The application does not depend on a project-operated
 control plane.
 
@@ -49,7 +49,7 @@ and approver currently share one API-key principal.
 
 | Capability | Current scope | Evidence / detail |
 | --- | --- | --- |
-| Repository-first configuration | Harnesses, profiles, policy, and tool code live in Git; the local UI edits harnesses and policy | [Configurator](CONFIGURATOR.md) |
+| Separate customer workspace | Harnesses and policy live in a gitignored customer workspace; profiles, examples, and implementation remain platform source | [Configurator](CONFIGURATOR.md) |
 | Structured agent jobs | Input validation, durable state, schema-validated results, JSON result artifact | [API](API.md) |
 | Two runner implementations | TypeScript SDK reference runner and Python SDK sample on one protocol | [Runner protocol](RUNNER-PROTOCOL.md) |
 | Rich harnesses | Prompt sections, reasoning/context options, sub-agents, delegated tools, packaged skills | [Harness contract](../contracts/src/harness.ts) |
@@ -94,7 +94,7 @@ isolation or compliance claims. Historical live-run evidence is recorded in
 | Cross-job workflows, triggers, and completion webhooks | Sub-agents run within one attempt; an external workflow engine or client must coordinate jobs |
 | Integrated experiments and scoring | Version labels, digests, raw results, and partial provenance do not provide datasets, trials, scorers, or regression comparisons |
 | Complete execution provenance or billing-grade measurement | Public job views omit some stored evidence; asynchronous reported usage is not complete request accounting or a hard spend cap |
-| Export of a new customer starter repository | The configurator edits this repository; resolved harness JSON export is a different feature |
+| Managed customer configuration repository | The workspace is local and gitignored; teams must back it with their own repository or configuration delivery process |
 | Shipped OIDC deployment automation/template release pipeline | Deployment is documented from a workstation; the delivery plan describes future automation |
 
 The [security gap register](SECURITY.md#known-gaps) owns hardening details. The

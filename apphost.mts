@@ -14,10 +14,14 @@ import {
   createBuilder,
   refExpr,
 } from './.aspire/modules/aspire.mjs';
+import { join } from 'node:path';
+import { CUSTOMER_WORKSPACE_DIR, ensureCustomerWorkspace } from './configurator/server/workspace.js';
 
 const builder = await createBuilder();
 const isPublish = await builder.executionContext().isPublishMode();
 const repoRoot = await builder.appHostDirectory();
+const customerConfigRoot = join(repoRoot, CUSTOMER_WORKSPACE_DIR);
+await ensureCustomerWorkspace(repoRoot, customerConfigRoot);
 
 // ---------------------------------------------------------------------------
 // Parameters
@@ -41,6 +45,18 @@ async function configured(key: string, fallback: string): Promise<string> {
 const npmRegistry = await configured('Parameters:npm-registry', 'https://registry.npmjs.org/');
 const pipIndexUrl = await configured('Parameters:pip-index-url', 'https://pypi.org/simple');
 const jobEventDetail = await configured('Parameters:job-event-detail', 'sanitized');
+const demoHostTransport = await configured('Parameters:demo-host-transport', 'disabled');
+if (!['disabled', 'direct', 'github', 'both'].includes(demoHostTransport)) {
+  throw new Error('Parameters:demo-host-transport must be disabled, direct, github, or both.');
+}
+const demoHostOwner = await configured('Parameters:demo-host-owner', '');
+const demoHostHarness = await configured('Parameters:demo-host-harness', 'interactive-demo');
+if (demoHostTransport !== 'disabled' && (
+  !/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(demoHostOwner) ||
+  !/^[a-z][a-z0-9-]{1,62}$/.test(demoHostHarness)
+)) {
+  throw new Error('Configure a valid demo-host-owner and demo-host-harness before enabling the host.');
+}
 if (jobEventDetail !== 'sanitized' && jobEventDetail !== 'full') {
   throw new Error("Parameters:job-event-detail must be 'sanitized' or 'full'.");
 }
@@ -64,6 +80,7 @@ function service(name: Stage) {
     return builder
       .addDockerfile(name, '.', { dockerfilePath: 'deploy/Dockerfile', stage: name })
       .withBuildArg('NPM_REGISTRY', npmRegistry)
+      .withBuildArg('CUSTOMER_CONFIG_DIR', CUSTOMER_WORKSPACE_DIR)
       .withContainerBuildOptions(async (ctx) => {
         await ctx.targetPlatform.set(ContainerTargetPlatform.LinuxAmd64);
       })
@@ -79,7 +96,8 @@ function service(name: Stage) {
     .withPnpm({ install: false })
     .withHttpEndpoint({ env: 'PORT' })
     .withHttpHealthCheck({ path: '/health' })
-    .withEnvironment('CONFIG_ROOT', repoRoot);
+    .withEnvironment('CONFIG_ROOT', customerConfigRoot)
+    .withEnvironment('PLATFORM_ROOT', repoRoot);
 }
 
 const dispatcher = service('job-dispatcher')
@@ -107,12 +125,54 @@ if (isPublish) {
   gateway.withCognitiveServicesRoleAssignments(foundry, [AzureOpenAIRole.CognitiveServicesOpenAIUser]);
 }
 
-service('agent-api')
+const api = service('agent-api')
   .withReference(jobsDb)
   .waitFor(jobsDb)
   .waitFor(dispatcher)
   .withEnvironment('API_KEYS', refExpr`dev:${devApiKey}`)
   .withExternalHttpEndpoints();
+
+if (demoHostTransport !== 'disabled') {
+  const hostKey = await builder.addParameterWithGeneratedValue('demo-host-key', generated, { secret: true, persist: true });
+  const connectionToken = await builder.addParameterWithGeneratedValue('demo-host-connection-token', generated, { secret: true, persist: true });
+  const direct = demoHostTransport === 'direct' || demoHostTransport === 'both';
+  dispatcher
+    .withEnvironment('DEMO_HOST_KEY', hostKey)
+    .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
+    .withEnvironment('DEMO_HOST_HARNESS', demoHostHarness);
+  api
+    .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
+    .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport);
+  if (direct) api.withEnvironment('DEMO_HOST_CONNECTION_TOKEN', connectionToken);
+  const host = builder
+    .addDockerfile('agent-host', '.', { dockerfilePath: 'deploy/Dockerfile', stage: 'agent-host' })
+    .withBuildArg('CUSTOMER_CONFIG_DIR', CUSTOMER_WORKSPACE_DIR)
+    .withBuildArg('NPM_REGISTRY', npmRegistry)
+    .withBuildArg('PIP_INDEX_URL', pipIndexUrl)
+    .withContainerBuildOptions(async (ctx) => {
+      if (isPublish) await ctx.targetPlatform.set(ContainerTargetPlatform.LinuxAmd64);
+    })
+    .withVolume('/data', { name: 'demo-host-data' })
+    .withHttpEndpoint({ targetPort: 8080, env: 'PORT' })
+    .withHttpHealthCheck({ path: '/health' })
+    .withReference(dispatcherEndpoint)
+    .withReference(await gateway.getEndpoint('http'))
+    .waitFor(dispatcher)
+    .waitFor(gateway)
+    .withEnvironment('DEMO_HOST_KEY', hostKey)
+    .withEnvironment('DEMO_HOST_CONNECTION_TOKEN', connectionToken)
+    .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
+    .withEnvironment('DEMO_HOST_HARNESS', demoHostHarness)
+    .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport)
+    .publishAsAzureContainerApp(async (_infra, app) => {
+      await app.configureScale({ minReplicas: 1 });
+    });
+  if (direct) host.withExternalHttpEndpoints();
+  if (demoHostTransport === 'github' || demoHostTransport === 'both') {
+    const githubToken = await builder.addParameter('demo-host-github-token', { secret: true });
+    host.withEnvironment('DEMO_HOST_GITHUB_TOKEN', githubToken);
+  }
+}
 
 // The executor holds no database, Azure, or provider credentials: only its dispatcher key.
 builder

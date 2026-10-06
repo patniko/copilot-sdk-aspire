@@ -12,7 +12,7 @@ tests
 !tests/package.json
 NuGet.config
 *.md
-!harnesses/**/*.md
+!.copilot-agent-workspace/harnesses/**/*.md
 
 configurator
 !configurator/package.json

@@ -1,11 +1,8 @@
-import { execFile } from "node:child_process";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
-import { promisify } from "node:util";
 import { ExecutionPolicy, ExecutionProfile, parseSkillMarkdown, renderSkillMarkdown, SLUG } from "@copilot-agent/contracts";
 import type { BindingInfo, HarnessDocument, HarnessManifest, ProfileSummary } from "./types.js";
-
-const run = promisify(execFile);
+import { EXAMPLE_CONFIG_DIR } from "./workspace.js";
 
 export class RepoError extends Error {
   constructor(
@@ -32,12 +29,19 @@ function skillNamesFromManifest(value: unknown): string[] {
   return [...names];
 }
 
-/** Reads and writes the repository's configuration files. All paths are confined to the repository. */
+/** Reads/writes customer configuration while resolving platform-owned profiles and examples separately. */
 export class Repo {
-  constructor(readonly root: string) {}
+  constructor(
+    readonly root: string,
+    readonly platformRoot = root,
+  ) {}
 
   get harnessesDir(): string {
     return join(this.root, "harnesses");
+  }
+
+  get examplesDir(): string {
+    return join(this.platformRoot, EXAMPLE_CONFIG_DIR);
   }
 
   #harnessDir(folder: string): string {
@@ -189,7 +193,7 @@ export class Repo {
   }
 
   async listProfiles(): Promise<ProfileSummary[]> {
-    const dir = join(this.root, "execution-profiles");
+    const dir = join(this.platformRoot, "execution-profiles");
     const profiles: ProfileSummary[] = [];
     for (const entry of await readdir(dir, { withFileTypes: true })) {
       if (!entry.isDirectory()) {
@@ -232,44 +236,76 @@ export class Repo {
     }));
   }
 
-  /** The committed (HEAD) content of a repository file, if any. */
-  async headContent(path: string): Promise<string | undefined> {
-    try {
-      const rel = relative(this.root, path).split(sep).join("/");
-      const { stdout } = await run("git", ["show", `HEAD:${rel}`], { cwd: this.root, maxBuffer: 4 * 1024 * 1024 });
-      return stdout;
-    } catch {
-      return undefined;
+  /** The platform example content corresponding to a customer workspace file, if any. */
+  async exampleContent(path: string): Promise<string | undefined> {
+    const rel = relative(this.root, path);
+    if (rel.startsWith("..") || resolve(this.root, rel) !== resolve(path)) {
+      throw new RepoError(400, "Workspace comparison path is outside the customer configuration root.");
     }
+    return readFile(join(this.examplesDir, rel), "utf8").catch(() => undefined);
   }
 
   harnessManifestPath(folder: string): string {
     return join(this.#harnessDir(folder), "harness.json");
   }
 
-  async gitInfo(): Promise<{ branch: string; changedConfig: string[]; untracked: Set<string>; modified: Set<string> }> {
-    const branch = await run("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: this.root })
-      .then((r) => r.stdout.trim())
-      .catch(() => "unknown");
-    const status = await run("git", ["status", "--porcelain", "--untracked-files=all", "--", "harnesses", "policy"], {
-      cwd: this.root,
-    })
-      .then((r) => r.stdout)
-      .catch(() => "");
-    const changedConfig: string[] = [];
+  async changeInfo(): Promise<{ items: string[]; untracked: Set<string>; modified: Set<string> }> {
+    const items: string[] = [];
     const untracked = new Set<string>();
     const modified = new Set<string>();
-    for (const line of status.split("\n").filter(Boolean)) {
-      const code = line.slice(0, 2);
-      const path = line.slice(3).trim().replaceAll('"', "");
-      changedConfig.push(`${code.trim() || "M"} ${path}`);
-      const folder = /^harnesses\/([^/]+)\//.exec(path)?.[1];
-      if (folder) {
-        (code === "??" ? untracked : modified).add(folder);
+    const currentFolders = new Set<string>();
+
+    for (const document of await this.listHarnesses()) {
+      currentFolders.add(document.folder);
+      const currentFiles = await filesUnder(join(this.harnessesDir, document.folder));
+      const exampleRoot = join(this.examplesDir, "harnesses", document.folder);
+      const exampleFiles = await filesUnder(exampleRoot);
+      if (exampleFiles.length === 0) {
+        untracked.add(document.folder);
+        items.push(`A harnesses/${document.folder}`);
+        continue;
+      }
+      const paths = new Set([...currentFiles, ...exampleFiles]);
+      for (const path of paths) {
+        const [current, example] = await Promise.all([
+          readFile(join(this.harnessesDir, document.folder, path), "utf8").catch(() => undefined),
+          readFile(join(exampleRoot, path), "utf8").catch(() => undefined),
+        ]);
+        if (current !== example) {
+          modified.add(document.folder);
+          items.push(`M harnesses/${document.folder}/${path.split(sep).join("/")}`);
+        }
+      }
+      for (const entry of await readdir(join(this.examplesDir, "harnesses"), { withFileTypes: true }).catch(() => [])) {
+        if (entry.isDirectory() && FOLDER.test(entry.name) && !currentFolders.has(entry.name)) {
+          items.push(`D harnesses/${entry.name}`);
+        }
       }
     }
-    return { branch, changedConfig, untracked, modified };
+
+    const [policy, examplePolicy] = await Promise.all([
+      readFile(this.#policyFile(), "utf8").catch(() => undefined),
+      readFile(join(this.examplesDir, "policy", "execution-policy.json"), "utf8").catch(() => undefined),
+    ]);
+    if (policy !== examplePolicy) {
+      items.push("M policy/execution-policy.json");
+    }
+
+    return { items, untracked, modified };
   }
+}
+
+async function filesUnder(root: string, prefix = ""): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(join(root, prefix), { withFileTypes: true }).catch(() => [])) {
+    const path = join(prefix, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await filesUnder(root, path)));
+    } else if (entry.isFile()) {
+      files.push(path);
+    }
+  }
+  return files.sort();
 }
 
 /** Writes harness.json with keys in a stable, readable order. */

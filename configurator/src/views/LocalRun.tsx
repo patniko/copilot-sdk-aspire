@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { LocalSettings } from "../../server/types";
 import { api, errorMessage } from "../api";
 import { FoundryPicker } from "../components/FoundryPicker";
+import { DemoHostFields } from "../components/DemoHostFields";
 import { Badge, Card, ChipsInput, CopyButton, Empty, Field, PageHeader, Spinner, stateTone } from "../components/ui";
 import { useApp } from "../state";
 
@@ -11,6 +12,21 @@ export function LocalRunView() {
   const [draft, setDraft] = useState<LocalSettings>();
   const [saving, setSaving] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [hostCredential, setHostCredential] = useState("");
+  const [savingCredential, setSavingCredential] = useState(false);
+
+  async function saveHostCredential() {
+    setSavingCredential(true);
+    try {
+      await api("/api/settings/demo-host-credential", { method: "PUT", body: { token: hostCredential } });
+      setHostCredential("");
+      toast("Saved the demo host credential to Aspire secrets", "success");
+    } catch (error) {
+      toast(errorMessage(error), "error");
+    } finally {
+      setSavingCredential(false);
+    }
+  }
 
   useEffect(() => {
     if (settings && !draft) setDraft(structuredClone(settings.local));
@@ -156,6 +172,17 @@ export function LocalRunView() {
           <Spinner />
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
+            <div className="md:col-span-2">
+              <DemoHostFields value={draft.demoHost} onChange={(demoHost) => setDraft({ ...draft, demoHost })} />
+            </div>
+            <div className="md:col-span-2 flex items-end gap-3">
+              <Field label="Demo host GitHub credential" className="flex-1" hint="For Mission Control. Saved only to Aspire secrets, never returned or stored in a deployment target.">
+                <input className="input" type="password" autoComplete="off" value={hostCredential}
+                  onChange={(event) => setHostCredential(event.target.value)} />
+              </Field>
+              <button type="button" className="btn-secondary" disabled={hostCredential.length < 20 || savingCredential}
+                onClick={() => void saveHostCredential()}>Save credential</button>
+            </div>
             <div className="md:col-span-2">
               <FoundryPicker
                 subscriptionId={environment?.azure.subscriptionId}

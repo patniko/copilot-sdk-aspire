@@ -25,7 +25,10 @@ import {
 } from "./validate.js";
 
 export interface AppOptions {
+  /** Platform source repository used for builds, profiles, tools and deployment. */
   root: string;
+  /** Customer-authored harness and policy workspace. Defaults to root for isolated tests. */
+  workspaceRoot?: string;
   token: string;
   port: number;
   /** Built UI to serve; omit in --dev mode where Vite serves the UI. */
@@ -57,7 +60,8 @@ const UI_HEADERS = {
 
 export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   const { root } = options;
-  const repo = new Repo(root);
+  const workspaceRoot = options.workspaceRoot ?? root;
+  const repo = new Repo(workspaceRoot, root);
   let aspireExtraEnv: Record<string, string> = {};
   const aspireEnv = () => ({ ...process.env, ...aspireExtraEnv });
   const settings = new Settings(root, aspireEnv);
@@ -129,7 +133,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     let committed: ValidationContext["committed"];
     if (await repo.harnessExists(document.folder)) {
       const manifestPath = repo.harnessManifestPath(document.folder);
-      const manifest = await repo.headContent(manifestPath);
+      const manifest = await repo.exampleContent(manifestPath);
       if (manifest) {
         const instructionsPath = join(repo.harnessesDir, document.folder, document.manifest.instructionsFile ?? "instructions.md");
         const committedSkills: Record<string, string> = {};
@@ -144,13 +148,13 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         }
         await Promise.all(
           [...names].map(async (name) => {
-            const content = await repo.headContent(join(repo.harnessesDir, document.folder, "skills", name, "SKILL.md"));
+            const content = await repo.exampleContent(join(repo.harnessesDir, document.folder, "skills", name, "SKILL.md"));
             if (content !== undefined) {
               committedSkills[name] = content;
             }
           }),
         );
-        committed = { manifest, instructions: await repo.headContent(instructionsPath), skills: committedSkills };
+        committed = { manifest, instructions: await repo.exampleContent(instructionsPath), skills: committedSkills };
       }
     }
     return { policy, profiles, all: documents, committed };
@@ -169,11 +173,11 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   }
 
   async function workspace(): Promise<WorkspaceInfo> {
-    const [documents, profiles, rawPolicy, git] = await Promise.all([
+    const [documents, profiles, rawPolicy, changes] = await Promise.all([
       repo.listHarnesses(),
       repo.listProfiles(),
       repo.readPolicyRaw(),
-      repo.gitInfo(),
+      repo.changeInfo(),
     ]);
     const { policy, issues: policyIssues } = validatePolicy(rawPolicy, profiles);
     if (!policy) {
@@ -195,8 +199,8 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         version: d.manifest.version,
         description: d.manifest.description ?? "",
         latest: latest.get(d.manifest.name) === d.manifest.version,
-        modified: git.modified.has(d.folder),
-        untracked: git.untracked.has(d.folder),
+        modified: changes.modified.has(d.folder),
+        untracked: changes.untracked.has(d.folder),
         errors: issues.filter((i) => i.level === "error").length,
         warnings: issues.filter((i) => i.level === "warning").length,
         digest: harnessDigest(d),
@@ -204,13 +208,14 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     }
     summaries.sort((a, b) => a.name.localeCompare(b.name) || compareVersions(b.version, a.version));
     return {
-      root,
+      root: workspaceRoot,
+      platformRoot: root,
       harnesses: summaries,
       profiles,
       bindings: repo.bindings(profiles),
       policy,
       policyIssues,
-      git: { branch: git.branch, changedConfig: git.changedConfig },
+      changes: { items: changes.items },
     };
   }
 
@@ -234,6 +239,12 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   // ---------------------------------------------------------------------------
 
   app.get("/api/session", async () => ({ root, port: options.port }));
+  app.put("/api/settings/demo-host-credential", async (request, reply) => {
+    const body = z.object({ token: z.string().max(16_384).refine((token) => token === "" || token.length >= 20) }).strict().parse(request.body);
+    await settings.writeDemoHostGitHubToken(body.token);
+    reply.header("cache-control", "no-store");
+    return { stored: body.token !== "" };
+  });
   app.get("/api/workspace", async () => workspace());
   app.get("/api/check", async () => check());
   app.get("/api/templates", async () => {
@@ -377,7 +388,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   app.get("/api/harnesses/:folder/changes", async (request): Promise<HarnessChanges> => {
     const folder = folderParam(request);
     const document = await repo.readHarness(folder);
-    const committedManifestText = await repo.headContent(repo.harnessManifestPath(folder));
+    const committedManifestText = await repo.exampleContent(repo.harnessManifestPath(folder));
     if (committedManifestText === undefined) {
       return { committed: false, changes: [] };
     }
@@ -395,13 +406,13 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     const instructionsFile = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}\.md$/.test(committedInstructionsFile ?? "")
       ? committedInstructionsFile!
       : document.manifest.instructionsFile;
-    const committedInstructions = await repo.headContent(join(repo.harnessesDir, folder, instructionsFile));
+    const committedInstructions = await repo.exampleContent(join(repo.harnessesDir, folder, instructionsFile));
     compareText("instructions", committedInstructions, document.instructions, changes);
 
     const names = new Set([...skillNames(isRecord(committedManifest) ? committedManifest.skills : undefined), ...document.skills.map((skill) => skill.name)]);
     await Promise.all(
       [...names].map(async (name) => {
-        const committed = await repo.headContent(join(repo.harnessesDir, folder, "skills", name, "SKILL.md"));
+        const committed = await repo.exampleContent(join(repo.harnessesDir, folder, "skills", name, "SKILL.md"));
         const current = document.skills.find((skill) => skill.name === name);
         compareText(
           `skills.${name}`,
@@ -504,6 +515,12 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         const target = await settings.target(undefined);
         const info = await settings.read();
         const env = deployEnvironment(target, info.local);
+        const hostTransport = target.demoHost?.transport;
+        const githubToken = hostTransport === "github" || hostTransport === "both" ? await settings.demoHostGitHubToken() : undefined;
+        if ((hostTransport === "github" || hostTransport === "both") && !githubToken) {
+          throw new SettingsError("Set the demo-host-github-token Aspire secret for the selected owner before deploying Mission Control hosting.");
+        }
+        if (githubToken) env["Parameters__demo-host-github-token"] = githubToken;
         const step =
           kind === "deploy"
             ? aspire("deploy", "--apphost", "apphost.mts")
@@ -511,7 +528,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         return {
           title: kind === "deploy" ? `Deploy to ${target.name} (${target.resourceGroup})` : `Generate Bicep for ${target.name}`,
           steps: [{ ...step, env }],
-          redact: [(await settings.devApiKey()) ?? ""],
+          redact: [(await settings.devApiKey()) ?? "", githubToken ?? ""],
         };
       }
       case "az-login": {

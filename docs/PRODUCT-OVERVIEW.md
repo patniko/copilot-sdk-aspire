@@ -267,7 +267,7 @@ same request returns the existing job rather than creating another trial.
 
 **Source:** [executor loop](../src/agent-executor/src/main.ts),
 [attempt lifecycle](../src/agent-executor/src/attempt.ts), [job store](../src/job-store/src/store.ts),
-[job contract](../contracts/src/jobs.ts), [current policy](../policy/execution-policy.json).
+[job contract](../contracts/src/jobs.ts), [example policy](../examples/customer-config/policy/execution-policy.json).
 
 ## 3. How are agents defined: visually, Markdown, or YAML?
 
@@ -342,7 +342,7 @@ importing a plan does not make those features run.
 **Source:** [configurator guide](CONFIGURATOR.md), [harness contract](../contracts/src/harness.ts),
 [TypeScript SDK mapping](../src/harness-hosting/src/session-config.ts),
 [Python SDK mapping](../execution-profiles/python-agent/runner.py),
-[team example](../harnesses/insights-team/harness.json), [tool bindings](../src/harness-hosting/src/tools.ts).
+[team example](../examples/customer-config/harnesses/insights-team/harness.json), [tool bindings](../src/harness-hosting/src/tools.ts).
 
 ## 4. How do I observe and steer an agent, and how can I use it today?
 
@@ -466,7 +466,7 @@ Thus, today it can perform a bounded coding task and return a patch/summary. It 
 
 **Source:** [public API](../src/agent-api/src/server.ts), [console](../src/agent-api/public/app.js),
 [runner](../src/harness-hosting/src/runner.ts), [runner protocol](RUNNER-PROTOCOL.md),
-[coding instructions](../harnesses/copilot-coding-agent/instructions.md).
+[coding instructions](../examples/customer-config/harnesses/copilot-coding-agent/instructions.md).
 
 ## 5. Can it version configurations, run comparisons, and store results?
 
@@ -726,6 +726,6 @@ stronger operational boundaries around it**, not replacing the Copilot SDK or re
 | Interactivity and public data | [API](../src/agent-api/src/server.ts), [job contract](../contracts/src/jobs.ts), [console](../src/agent-api/public/app.js), [RUNNER-PROTOCOL.md](RUNNER-PROTOCOL.md) |
 | Runner interoperability | [session options](../src/harness-hosting/src/session-config.ts), [Python runner](../execution-profiles/python-agent/runner.py), [profile contract](../contracts/src/profile.ts) |
 | Storage and measurement | [initial schema](../src/job-store/migrations/001_init.sql), [input requests](../src/job-store/migrations/002_input_requests.sql), [gateway](../src/inference-gateway/src/server.ts) |
-| Production boundaries and open gates | [SECURITY.md](SECURITY.md), [isolation probe](../src/agent-executor/src/isolation.ts), [policy](../policy/execution-policy.json), [implementation status](PLAN.md#24-implementation-status) |
+| Production boundaries and open gates | [SECURITY.md](SECURITY.md), [isolation probe](../src/agent-executor/src/isolation.ts), [example policy](../examples/customer-config/policy/execution-policy.json), [implementation status](PLAN.md#24-implementation-status) |
 
 When older plan language and implementation differ, use the current contracts and code for behavioral claims.

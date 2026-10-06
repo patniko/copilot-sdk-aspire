@@ -61,8 +61,9 @@ export function buildSessionOptions(
   definition: HarnessDefinition,
   customToolNames: string[],
   skillsDirectory: string,
+  interaction: "job" | "conversation" = "job",
 ): HarnessSessionOptions {
-  const content = definition.instructions + RESULT_CONTRACT;
+  const content = definition.instructions + (interaction === "job" ? RESULT_CONTRACT : "");
   const prompt = definition.prompt ?? { mode: "replace" as const };
   const systemMessage: HarnessSessionOptions["systemMessage"] =
     prompt.mode === "customize"

@@ -23,7 +23,7 @@ export interface AttemptContext {
   profile: ExecutionProfile;
   dispatcher: DispatcherClient;
   isolation: IsolationSettings;
-  configRoot: string;
+  platformRoot: string;
   workspaceRoot: string;
   gatewayBaseUrl: string;
   eventDetail: "sanitized" | "full";
@@ -390,7 +390,7 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
 
 function spawnRunner(ctx: AttemptContext, workspace: string): ChildProcessWithoutNullStreams {
   const { profile, isolation } = ctx;
-  const expand = (value: string) => value.replaceAll("{root}", ctx.configRoot);
+  const expand = (value: string) => value.replaceAll("{root}", ctx.platformRoot);
   const env: Record<string, string> = {
     PATH: process.platform === "win32" ? (process.env.PATH ?? "") : "/usr/local/bin:/usr/bin:/bin",
     HOME: join(workspace, "home"),
@@ -414,7 +414,7 @@ function spawnRunner(ctx: AttemptContext, workspace: string): ChildProcessWithou
     env[key] = expand(value);
   }
   return spawn(expand(profile.entrypoint.command), profile.entrypoint.args.map(expand), {
-    cwd: resolve(ctx.configRoot, profile.entrypoint.directory),
+    cwd: resolve(ctx.platformRoot, profile.entrypoint.directory),
     env,
     uid: isolation.processIsolation === "uid" ? isolation.uid : undefined,
     gid: isolation.processIsolation === "uid" ? isolation.gid : undefined,

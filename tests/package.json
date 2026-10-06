@@ -5,6 +5,9 @@
   "type": "module",
   "description": "Unit and integration tests. Kept separate because the AppHost root is installed without the workspace.",
   "devDependencies": {
+    "@microsoft/agent-host-protocol": "0.9.0",
+    "@types/libsodium-wrappers": "^0.7.14",
+    "@types/ws": "^8.18.1",
     "@copilot-agent/contracts": "workspace:*",
     "@copilot-agent/job-store": "workspace:*",
     "@copilot-agent/service-defaults": "workspace:*",
@@ -12,7 +15,9 @@
     "@types/pg": "^8.15.0",
     "fastify": "^5.4.0",
     "jose": "^6.0.11",
+    "libsodium-wrappers": "0.7.15",
     "pg": "^8.16.0",
-    "vitest": "^4.0.0"
+    "vitest": "^4.0.0",
+    "ws": "^8.18.1"
   }
 }

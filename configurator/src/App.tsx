@@ -6,7 +6,6 @@ import {
   Copilot,
   Download,
   FlaskConical,
-  GitBranch,
   GitHubMark,
   Laptop,
   LayoutDashboard,
@@ -119,9 +118,9 @@ export function App() {
           {workspace && (
             <div className="ml-2 hidden items-center gap-2 text-xs md:flex">
               <span className="flex items-center gap-1 fg-muted">
-                <GitBranch /> <span className="font-semibold text-[var(--fgColor-default)]">{workspace.git.branch}</span>
+                <Boxes /> <span className="font-semibold text-[var(--fgColor-default)]">customer workspace</span>
               </span>
-              {workspace.git.changedConfig.length > 0 && <Badge tone="amber">{workspace.git.changedConfig.length} uncommitted</Badge>}
+              {workspace.changes.items.length > 0 && <Badge tone="amber">{workspace.changes.items.length} workspace changes</Badge>}
             </div>
           )}
           <div className="ml-auto flex items-center gap-3">

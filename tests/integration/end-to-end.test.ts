@@ -109,9 +109,10 @@ async function execute(client: DispatcherClient, shutdown = new AbortController(
     profile,
     dispatcher: client,
     isolation: { processIsolation: "none", egress: "none" },
-    configRoot: root,
+    platformRoot: root,
     workspaceRoot: join(tmpdir(), "agent-e2e"),
     gatewayBaseUrl: `${gatewayUrl}/openai/v1/`,
+    eventDetail: "sanitized",
     logger: createLogger("e2e"),
     shutdown: shutdown.signal,
     draining,
@@ -128,7 +129,12 @@ beforeAll(async () => {
   listener = new JobEventListener(pool);
   await listener.start();
 
-  const [harnesses, profiles, basePolicy] = await Promise.all([loadHarnesses(root), loadProfiles(root), loadPolicy(root)]);
+  const customerConfigRoot = join(root, "examples", "customer-config");
+  const [harnesses, profiles, basePolicy] = await Promise.all([
+    loadHarnesses(customerConfigRoot),
+    loadProfiles(root),
+    loadPolicy(customerConfigRoot),
+  ]);
   harnesses.set("input-fixture", [inputHarness(5)]);
   // Host test runs cannot switch users, so this policy acknowledges both gaps explicitly.
   policy = { ...basePolicy, leaseSeconds: 10, acknowledgedGaps: ["egress-not-enforced", "process-isolation-not-enforced"] };

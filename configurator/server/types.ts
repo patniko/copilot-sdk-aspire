@@ -1,5 +1,5 @@
 // Types shared by the configurator server and UI. Type-only imports keep the UI bundle free of server code.
-import type { ExecutionPolicy, HarnessDefinition, SkillDefinition } from "@copilot-agent/contracts";
+import type { DemoHostSettings, ExecutionPolicy, HarnessDefinition, SkillDefinition } from "@copilot-agent/contracts";
 
 export type { ExecutionPolicy, SkillDefinition };
 
@@ -35,9 +35,9 @@ export interface HarnessSummary {
   version: string;
   description: string;
   latest: boolean;
-  /** Differs from the committed version in git. */
+  /** Differs from the platform example with the same folder name. */
   modified: boolean;
-  /** Not yet committed. */
+  /** Has no platform example with the same folder name. */
   untracked: boolean;
   errors: number;
   warnings: number;
@@ -64,13 +64,16 @@ export interface BindingInfo {
 }
 
 export interface WorkspaceInfo {
+  /** Customer-authored configuration root. */
   root: string;
+  /** Platform source repository used for builds and immutable profiles/tools. */
+  platformRoot: string;
   harnesses: HarnessSummary[];
   profiles: ProfileSummary[];
   bindings: BindingInfo[];
   policy: ExecutionPolicy;
   policyIssues: Issue[];
-  git: { branch: string; changedConfig: string[] };
+  changes: { items: string[] };
 }
 
 export interface EffectiveLimits {
@@ -151,6 +154,7 @@ export interface HarnessExport {
 }
 
 export interface LocalSettings {
+  demoHost?: DemoHostSettings;
   foundryEndpoint: string;
   foundryDeployments: string[];
   npmRegistry: string;
@@ -160,6 +164,7 @@ export interface LocalSettings {
 }
 
 export interface DeployTarget {
+  demoHost?: DemoHostSettings;
   name: string;
   tenantId: string;
   subscriptionId: string;

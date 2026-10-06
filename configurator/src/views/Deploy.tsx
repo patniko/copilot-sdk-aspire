@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { DeployTarget, Issue } from "../../server/types";
 import { api, errorMessage } from "../api";
 import { FoundryPicker } from "../components/FoundryPicker";
+import { DemoHostFields } from "../components/DemoHostFields";
 import { Badge, Card, ChipsInput, CopyButton, Empty, Field, HelpButton, Modal, PageHeader, Spinner, StatusLine, stateTone } from "../components/ui";
 import { useApp } from "../state";
 
@@ -157,6 +158,9 @@ export function DeployView() {
             </div>
             {target && (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                <div className="md:col-span-2 xl:col-span-3">
+                  <DemoHostFields value={target.demoHost} onChange={(demoHost) => update({ demoHost })} />
+                </div>
                 <Field label="Target name" error={fieldErrors.name}>
                   <input
                     className="input font-mono"

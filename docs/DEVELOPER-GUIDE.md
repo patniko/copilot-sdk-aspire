@@ -73,8 +73,12 @@ recorded in the change description. Documentation-only changes do not require ap
 
 ## Configuration publication
 
-The loader in [`registry.ts`](../src/service-defaults/src/registry.ts) reads harness manifests, instructions,
-skills, execution profiles, and policy from `CONFIG_ROOT`:
+The loader in [`registry.ts`](../src/service-defaults/src/registry.ts) uses two ownership roots:
+
+- `CONFIG_ROOT` contains customer-owned `harnesses/` and `policy/`. Locally this is
+  `.copilot-agent-workspace/`; deployed images copy the same workspace content into `/config`.
+- `PLATFORM_ROOT` contains platform-owned `execution-profiles/` and the runner/tool implementation paths used by
+  profile `{root}` placeholders. Locally this is the checkout; executor images use `/app`.
 
 - On disk, a harness uses `instructionsFile`; the published definition contains the resolved `instructions`.
 - Skill folder names resolve to `skills/<name>/SKILL.md` and are inlined into the snapshot.
@@ -84,7 +88,7 @@ skills, execution profiles, and policy from `CONFIG_ROOT`:
 
 | Change | Local activation | Azure activation |
 | --- | --- | --- |
-| Harness instructions, schema, or skills | Save/version, then reload or restart `agent-api` | Rebuild/redeploy the API image carrying the updated registry |
+| Harness instructions, schema, or skills | Save/version in the customer workspace, then reload or restart `agent-api` | Rebuild/redeploy the API image carrying the workspace registry |
 | Operator policy | Restart API and dispatcher so admission and claiming agree | Rebuild/redeploy affected control-plane images |
 | Profile manifest | Restart API and rebuild/restart executor; deploy aligned profile definitions | Rebuild/redeploy API and executor images |
 | Runner or packaged tool | Rebuild/restart executor image | Rebuild/redeploy executor image |
@@ -95,12 +99,13 @@ keeps its harness snapshot, but profiles/tool code are image-owned and the dispa
 do not describe the whole runtime environment as an immutable per-job snapshot.
 
 Increment a published harness version when instructions, schemas, skills, or behavior change. Add a versioned
-folder such as `harnesses/<name>@<version>` when retaining an older version; duplicate name/version pairs are
-rejected. Updating the version in the only folder removes that old version from *new admission*, not from
-already stored job snapshots.
+folder such as `.copilot-agent-workspace/harnesses/<name>@<version>` when retaining an older version; duplicate
+name/version pairs are rejected. Updating the version in the only folder removes that old version from *new
+admission*, not from already stored job snapshots.
 
-Versioning is a contributor convention, not an enforced immutable registry. The configurator warns when committed
-content changes without a version bump, but an operator can still publish changed content under that label.
+Versioning is an author convention, not an enforced immutable registry. The configurator warns when content
+differs from a matching platform example without a version bump, but an operator can still publish changed content
+under that label.
 Two jobs can therefore have the same name/version and different digests. Preserve candidate versions separately
 and verify the returned job digest when reproducibility matters.
 
