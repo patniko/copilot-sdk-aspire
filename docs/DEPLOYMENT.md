@@ -44,6 +44,7 @@ environment variables (or CI secrets):
 | `Parameters__foundry-deployments` | comma-separated deployment names, e.g. `grok-4.6` |
 | `Parameters__foundry-account` | existing Foundry account name |
 | `Parameters__foundry-resource-group` | resource group of that account |
+| `Parameters__job-event-detail` | optional `sanitized` (default) or `full`; full persists sensitive diagnostic SDK detail |
 | `Parameters__npm-registry`, `Parameters__pip-index-url` | optional package proxies for image builds |
 
 The dev API key, executor key, gateway key, and capability signing key are generated on first deploy and kept in the

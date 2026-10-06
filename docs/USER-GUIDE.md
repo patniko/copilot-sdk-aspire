@@ -58,6 +58,8 @@ az login --tenant "<tenant-id>"
 
 aspire secret set "Parameters:foundry-endpoint" "https://<resource>.openai.azure.com/openai/v1"
 aspire secret set "Parameters:foundry-deployments" "<deployment-name>"
+# Optional diagnostics: persists bounded prompts, responses, reasoning, and tool details in job events.
+aspire secret set "Parameters:job-event-detail" "full"
 # Optional package proxies for executor image builds:
 aspire secret set "Parameters:npm-registry" "https://<npm-proxy>/"
 aspire secret set "Parameters:pip-index-url" "https://<pypi-proxy>/simple/"
@@ -82,13 +84,21 @@ Open the `agent-api` URL in a browser and enter the caller API key, not a servic
 1. Choose **New session**, select a published harness/version and an allowed agent profile, and review the input.
 2. Submit. The console's "session" represents a durable job; it is not a resumable SDK chat session.
 3. Follow the live activity and check **Needs you** for approvals or questions.
-4. On success, inspect the structured result. API clients can also fetch `artifacts/result.json`.
+4. Expand **Event details** or **SDK details** on an activity row to inspect its persisted JSON.
+5. On success, inspect the structured result. API clients can also fetch `artifacts/result.json`.
 
 ![Job console showing sessions and requests needing the caller's attention](images/job-console-sessions.png)
 
 The **Sessions** view lists jobs belonging to your API-key principal. The inbox collects that principal's
 pending requests across jobs. The key stays in the page, or in `sessionStorage` if you select **Keep for this tab**.
 An operator can disable the console with `CONSOLE_ENABLED=false` on `agent-api`; the API remains available.
+
+Every activity row exposes the allowlisted event JSON. Full SDK detail is disabled by default. To enable it for
+new local attempts, set `Parameters:job-event-detail` to `full`, then rebuild/restart the executor. Full capture
+persists bounded job inputs, prompts, assistant and reasoning messages, tool arguments/results, usage, failures,
+and sub-agent events in PostgreSQL. The runners redact credential-shaped fields, but cannot identify every secret
+embedded in arbitrary text; use this mode only in an access-controlled diagnostic environment. Set the parameter
+back to `sanitized` and restart the executor to disable it.
 
 ### Choose a harness
 

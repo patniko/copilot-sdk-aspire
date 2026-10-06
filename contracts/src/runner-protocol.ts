@@ -34,6 +34,8 @@ export const RunnerStart = z
         model: z.string().min(1),
       })
       .strict(),
+    /** Controls whether the runner forwards bounded SDK event payloads with its normal progress events. */
+    eventDetail: z.enum(["sanitized", "full"]).optional(),
     workspace: z.string().min(1),
     traceparent: z.string().optional(),
   })
@@ -132,16 +134,36 @@ export const RunnerHello = z
   .strict();
 export type RunnerHello = z.infer<typeof RunnerHello>;
 
-/** Sanitized, allowlisted runner events. Raw SDK events are never forwarded. */
+/**
+ * Bounded SDK event detail. This can contain prompts, responses, tool arguments and tool output, so executors
+ * enable it only through explicit environment configuration. Credential-like fields are redacted by runners.
+ */
+export const RunnerEventDetail = z
+  .object({
+    eventType: z.string().min(1).max(200),
+    id: z.string().max(200).optional(),
+    parentId: z.string().max(200).nullable().optional(),
+    timestamp: z.string().max(100).optional(),
+    agentId: z.string().max(200).optional(),
+    ephemeral: z.boolean().optional(),
+    data: z.unknown(),
+  })
+  .strict();
+export type RunnerEventDetail = z.infer<typeof RunnerEventDetail>;
+
+const detail = { detail: RunnerEventDetail.optional() };
+
+/** Sanitized, allowlisted runner events, optionally carrying bounded SDK detail when explicitly enabled. */
 export const RunnerEventBody = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("agent.turn_started") }).strict(),
-  z.object({ kind: z.literal("agent.turn_completed") }).strict(),
-  z.object({ kind: z.literal("tool.started"), tool: z.string().max(100) }).strict(),
-  z.object({ kind: z.literal("tool.completed"), tool: z.string().max(100), ok: z.boolean() }).strict(),
-  z.object({ kind: z.literal("subagent.started"), agent: z.string().max(100) }).strict(),
-  z.object({ kind: z.literal("subagent.completed"), agent: z.string().max(100), ok: z.boolean() }).strict(),
-  z.object({ kind: z.literal("skill.used"), skill: z.string().max(100) }).strict(),
-  z.object({ kind: z.literal("progress"), message: z.string().max(500) }).strict(),
+  z.object({ kind: z.literal("agent.turn_started"), ...detail }).strict(),
+  z.object({ kind: z.literal("agent.turn_completed"), ...detail }).strict(),
+  z.object({ kind: z.literal("tool.started"), tool: z.string().max(100), ...detail }).strict(),
+  z.object({ kind: z.literal("tool.completed"), tool: z.string().max(100), ok: z.boolean(), ...detail }).strict(),
+  z.object({ kind: z.literal("subagent.started"), agent: z.string().max(100), ...detail }).strict(),
+  z.object({ kind: z.literal("subagent.completed"), agent: z.string().max(100), ok: z.boolean(), ...detail }).strict(),
+  z.object({ kind: z.literal("skill.used"), skill: z.string().max(100), ...detail }).strict(),
+  z.object({ kind: z.literal("progress"), message: z.string().max(500), ...detail }).strict(),
+  z.object({ kind: z.literal("sdk.event"), detail: RunnerEventDetail }).strict(),
 ]);
 export type RunnerEventBody = z.infer<typeof RunnerEventBody>;
 

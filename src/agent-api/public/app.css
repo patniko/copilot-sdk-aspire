@@ -414,6 +414,11 @@ summary { cursor: pointer; }
 .timeline li.success::before { border-color: var(--ok); }
 .timeline li.failure::before { border-color: var(--bad); }
 .timeline time { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+.event-content { min-width: 0; }
+.event-label { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.event-details { margin-top: 4px; }
+.event-details > summary { width: max-content; color: var(--accent); font-size: 12px; }
+.event-details > .code { margin: 6px 0 2px; max-height: 520px; }
 
 .result p.text { white-space: pre-wrap; margin: 4px 0; }
 .result table { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12px; }

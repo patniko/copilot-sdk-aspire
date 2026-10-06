@@ -147,8 +147,13 @@ Resume with `Last-Event-ID: <seq>` or `?after=<seq>`; the header takes precedenc
 comments and closes the stream after the job reaches a terminal state. A manually retried job needs a new stream.
 Browser clients must use a streaming client that can attach the caller key, not place credentials in the URL.
 
-Events are an allowlisted application contract, **not raw SDK events or a full chat transcript**. They cover
-queued/started/retried/terminal jobs, sanitized runner activity, and input requested/resolved notifications.
+Events are an allowlisted application contract. By default they cover queued/started/retried/terminal jobs,
+sanitized runner activity, and input requested/resolved notifications. If the executor is explicitly configured
+with `JOB_EVENT_DETAIL=full`, runner events can additionally carry bounded SDK detail containing transcript,
+reasoning, tool, usage, failure, and sub-agent payloads. Credential-shaped fields are redacted, but arbitrary
+prompt or tool text can still contain sensitive data. The API returns only the events persisted for that job and
+principal; changing the setting does not add detail to existing events.
+
 Use [`JobEventBody`](../contracts/src/jobs.ts) for the complete discriminated union and
 [runner events](RUNNER-PROTOCOL.md#lifecycle) for allowed activity payloads.
 

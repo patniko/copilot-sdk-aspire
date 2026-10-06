@@ -61,6 +61,7 @@ executor                         runner
      "input": { … },
      "deadline": "2026-10-02T05:33:50.000Z",
      "inference": {"baseUrl": "https://inference-gateway…/openai/v1/", "token": "<job capability>", "model": "grok-4.6"},
+     "eventDetail": "sanitized",
      "workspace": "/work/<attempt-id>"
    }
    ```
@@ -68,10 +69,19 @@ executor                         runner
    - `inference.token` is a job-scoped capability for the inference gateway. It is not a provider credential and
      is only valid for this attempt, its approved models, and its remaining token budget.
    - `workspace` is private to the attempt and deleted afterwards.
+   - `eventDetail` is `sanitized` by default. An executor configured with `JOB_EVENT_DETAIL=full` requests
+     bounded SDK event detail from the runner.
 
-3. **event** messages report sanitized progress. Only these kinds are accepted; raw SDK events are never forwarded:
+3. **event** messages report allowlisted progress. These kinds are accepted:
    `agent.turn_started`, `agent.turn_completed`, `tool.started {tool}`, `tool.completed {tool, ok}`,
-   `subagent.started {agent}`, `subagent.completed {agent, ok}`, `skill.used {skill}`, `progress {message}`.
+   `subagent.started {agent}`, `subagent.completed {agent, ok}`, `skill.used {skill}`, `progress {message}`, and
+   `sdk.event {detail}`.
+
+   When `eventDetail` is `full`, normal progress events may include `detail`, and SDK events without a matching
+   progress kind use `sdk.event`. Detail contains the SDK event type, correlation metadata, and a bounded `data`
+   payload. The reference runners redact credential-shaped fields, omit content beyond their size limits, and cap
+   each detail payload before writing the protocol line. This is diagnostic capture, not a lossless SDK event log.
+   It can still contain job inputs, prompts, assistant/reasoning text, tool arguments and tool output.
 
 4. **cancel** (`{"type":"cancel","reason":"…"}`) asks the runner to stop. The runner should abort its session and
    report `failure` with code `cancelled`. Runners that do not stop within 15 seconds are killed.

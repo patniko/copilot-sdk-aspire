@@ -26,6 +26,7 @@ export interface AttemptContext {
   configRoot: string;
   workspaceRoot: string;
   gatewayBaseUrl: string;
+  eventDetail: "sanitized" | "full";
   imageDigest?: string;
   logger: Logger;
   /** Aborted when the executor is shutting down. */
@@ -240,6 +241,7 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
               input: claim.job.input,
               deadline: claim.attempt.deadline,
               inference: { baseUrl: ctx.gatewayBaseUrl, token: claim.inference.token, model: claim.inference.model },
+              eventDetail: ctx.eventDetail,
               workspace,
             });
             break;

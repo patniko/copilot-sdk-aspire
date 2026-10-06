@@ -2,6 +2,7 @@ import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExecutorCapabilities } from "@copilot-agent/contracts";
 import {
+  ConfigError,
   configRoot,
   createLogger,
   intEnv,
@@ -29,6 +30,11 @@ const gatewayBaseUrl = `${serviceUrl("inference-gateway")}/openai/v1/`;
 const workspaceRoot = optionalEnv("WORKSPACE_ROOT", join(tmpdir(), "agent-work"));
 const parallelism = Math.min(Math.max(intEnv("EXECUTOR_PARALLELISM", 2), 1), 8);
 const imageDigest = process.env.IMAGE_DIGEST;
+const configuredEventDetail = optionalEnv("JOB_EVENT_DETAIL", "sanitized");
+if (configuredEventDetail !== "sanitized" && configuredEventDetail !== "full") {
+  throw new ConfigError("JOB_EVENT_DETAIL must be 'sanitized' or 'full'.");
+}
+const eventDetail: "sanitized" | "full" = configuredEventDetail;
 
 const capabilities: ExecutorCapabilities = {
   executorId: optionalEnv("EXECUTOR_ID", `${hostname()}-${process.pid}`),
@@ -40,7 +46,7 @@ const capabilities: ExecutorCapabilities = {
 };
 
 logger.info(
-  { capabilities, workspaceRoot, gateway: new URL(gatewayBaseUrl).host, parallelism },
+  { capabilities, workspaceRoot, gateway: new URL(gatewayBaseUrl).host, parallelism, eventDetail },
   "agent-executor starting",
 );
 
@@ -82,6 +88,7 @@ async function slot(index: number): Promise<void> {
         configRoot: root,
         workspaceRoot,
         gatewayBaseUrl,
+        eventDetail,
         imageDigest,
         logger,
         shutdown: shutdown.signal,

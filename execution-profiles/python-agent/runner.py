@@ -14,6 +14,7 @@ import os
 import sys
 import time
 from datetime import datetime
+from enum import Enum
 from importlib.metadata import version
 from typing import Any
 
@@ -50,6 +51,23 @@ BUILTIN_TOOL_GROUPS = {
 }
 PERMISSION_LIMITS = {"intention": 1000, "command": 8000, "path": 1000, "url": 2000, "diff": 20_000, "tool": 200, "warning": 1000}
 QUESTION_FALLBACK = "No answer was given in time. Continue with your best judgement and state your assumptions."
+MAX_DETAIL_JSON_BYTES = 200_000
+MAX_DETAIL_STRING_CHARS = 50_000
+MAX_DETAIL_COLLECTION_ITEMS = 100
+REDACTED_DETAIL_KEYS = {
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "token",
+    "access_token",
+    "access-token",
+    "apikey",
+    "api_key",
+    "api-key",
+    "password",
+    "secret",
+    "encryptedcontent",
+}
 
 _terminal = False
 
@@ -73,6 +91,62 @@ def parse_line(line: bytes) -> dict[str, Any] | None:
 def event(body: dict[str, Any]) -> None:
     if not _terminal:
         write({"type": "event", "event": body})
+
+
+def detail_value(value: Any, depth: int = 0) -> Any:
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return value if len(value) <= MAX_DETAIL_STRING_CHARS else value[:MAX_DETAIL_STRING_CHARS] + "\n[truncated]"
+    if isinstance(value, Enum):
+        return detail_value(value.value, depth)
+    if depth >= 12:
+        return "[maximum depth reached]"
+    if hasattr(value, "to_dict"):
+        return detail_value(value.to_dict(), depth + 1)
+    if hasattr(value, "model_dump"):
+        return detail_value(value.model_dump(mode="json"), depth + 1)
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        items = list(value.items())
+        for key, item in items[:MAX_DETAIL_COLLECTION_ITEMS]:
+            name = str(key)
+            result[name] = "[redacted]" if name.lower() in REDACTED_DETAIL_KEYS else detail_value(item, depth + 1)
+        if len(items) > MAX_DETAIL_COLLECTION_ITEMS:
+            result["__truncatedKeys"] = len(items) - MAX_DETAIL_COLLECTION_ITEMS
+        return result
+    if isinstance(value, (list, tuple, set)):
+        items = list(value)
+        kept = [detail_value(item, depth + 1) for item in items[:MAX_DETAIL_COLLECTION_ITEMS]]
+        if len(items) > len(kept):
+            kept.append(f"[{len(items) - len(kept)} more items]")
+        return kept
+    if hasattr(value, "__dict__"):
+        return detail_value(vars(value), depth + 1)
+    return str(value)
+
+
+def capture_event_detail(evt: Any) -> dict[str, Any]:
+    detail = {
+        "eventType": evt.type.value,
+        "id": str(evt.id) if getattr(evt, "id", None) is not None else None,
+        "parentId": str(evt.parent_id) if getattr(evt, "parent_id", None) is not None else None,
+        "timestamp": str(getattr(evt, "timestamp", "")) or None,
+        "agentId": getattr(evt, "agent_id", None),
+        "ephemeral": getattr(evt, "ephemeral", None),
+        "data": detail_value(evt.data),
+    }
+    encoded = json.dumps(detail, separators=(",", ":"), ensure_ascii=False)
+    if len(encoded.encode("utf-8")) <= MAX_DETAIL_JSON_BYTES:
+        return {key: value for key, value in detail.items() if value is not None}
+    return {
+        **{key: value for key, value in detail.items() if key != "data" and value is not None},
+        "data": {
+            "truncated": True,
+            "originalBytes": len(encoded.encode("utf-8")),
+            "preview": encoded[: MAX_DETAIL_JSON_BYTES - 1000],
+        },
+    }
 
 
 def result(output: Any) -> None:
@@ -418,27 +492,39 @@ async def run(start: dict[str, Any], cancelled: asyncio.Event, input_bridge: Inp
 
     tool_names: dict[str, str] = {}
     last_error: dict[str, Any] = {}
+    detailed_events = start.get("eventDetail") == "full"
 
     def on_event(evt: Any) -> None:
         kind = evt.type.value
+        detail = capture_event_detail(evt) if detailed_events else None
+
+        def emit(body: dict[str, Any]) -> None:
+            if detail is not None:
+                body["detail"] = detail
+            event(body)
+
         if kind == "assistant.turn_start":
-            event({"kind": "agent.turn_started"})
+            emit({"kind": "agent.turn_started"})
         elif kind == "assistant.turn_end":
-            event({"kind": "agent.turn_completed"})
+            emit({"kind": "agent.turn_completed"})
         elif kind == "tool.execution_start":
             tool_names[evt.data.tool_call_id] = evt.data.tool_name
-            event({"kind": "tool.started", "tool": evt.data.tool_name[:100]})
+            emit({"kind": "tool.started", "tool": evt.data.tool_name[:100]})
         elif kind == "tool.execution_complete":
             name = tool_names.get(evt.data.tool_call_id, "unknown")
-            event({"kind": "tool.completed", "tool": name[:100], "ok": bool(evt.data.success)})
+            emit({"kind": "tool.completed", "tool": name[:100], "ok": bool(evt.data.success)})
         elif kind == "subagent.started":
-            event({"kind": "subagent.started", "agent": str(evt.data.agent_name)[:100]})
+            emit({"kind": "subagent.started", "agent": str(evt.data.agent_name)[:100]})
         elif kind in ("subagent.completed", "subagent.failed"):
-            event({"kind": "subagent.completed", "agent": str(evt.data.agent_name)[:100], "ok": kind == "subagent.completed"})
+            emit({"kind": "subagent.completed", "agent": str(evt.data.agent_name)[:100], "ok": kind == "subagent.completed"})
         elif kind == "skill.invoked":
-            event({"kind": "skill.used", "skill": str(evt.data.name)[:100]})
+            emit({"kind": "skill.used", "skill": str(evt.data.name)[:100]})
         elif kind == "session.error":
             last_error["status"] = getattr(evt.data, "status_code", None)
+            if detail is not None:
+                event({"kind": "sdk.event", "detail": detail})
+        elif detail is not None:
+            event({"kind": "sdk.event", "detail": detail})
 
     runtime_env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "TMPDIR", "LANG", "COPILOT_CLI_EXTRACT_DIR", "COPILOT_SKIP_CLI_DOWNLOAD")}
     client = CopilotClient(

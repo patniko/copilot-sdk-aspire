@@ -866,6 +866,8 @@ function describeEvent(body) {
           return "Agent turn completed";
         case "progress":
           return e.message;
+        case "sdk.event":
+          return describeSdkEvent(e.detail);
         default:
           return e.message ?? e.kind;
       }
@@ -896,13 +898,49 @@ function describeEvent(body) {
   }
 }
 
+function describeSdkEvent(detail = {}) {
+  const data = detail.data ?? {};
+  switch (detail.eventType) {
+    case "assistant.message":
+      return data.content ? `Assistant: ${singleLine(data.content, 220)}` : "Assistant message";
+    case "assistant.reasoning":
+      return data.content ? `Reasoning: ${singleLine(data.content, 220)}` : "Assistant reasoning";
+    case "user.message":
+      return data.content ? `User: ${singleLine(data.content, 220)}` : "User message";
+    case "assistant.usage":
+      return `Model usage: ${data.model ?? "unknown model"} · ${data.inputTokens ?? 0} in · ${data.outputTokens ?? 0} out`;
+    case "model.call_failure":
+      return `Model call failed: ${data.errorCode ?? data.failureKind ?? data.errorMessage ?? "unknown error"}`;
+    case "tool.execution_progress":
+      return data.progressMessage ?? "Tool progress";
+    case "tool.execution_partial_result":
+      return `Tool output: ${singleLine(data.partialOutput ?? "", 220)}`;
+    default:
+      return String(detail.eventType ?? "SDK event").replaceAll(".", " ");
+  }
+}
+
+function singleLine(value, limit) {
+  const text = String(value).replace(/\s+/g, " ").trim();
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
 function stripQuestionPrefix(summary) {
   return String(summary ?? "").replace(/^Question:\s*/i, "");
 }
 
 function appendEvent(event) {
   const list = $("events");
-  list.append(el("li", { class: eventClass(event.body) }, el("time", { text: formatTime(event.at) }), el("span", { text: describeEvent(event.body) })));
+  const content = el("div", { class: "event-content" }, el("span", { class: "event-label", text: describeEvent(event.body) }));
+  content.append(
+    el(
+      "details",
+      { class: "event-details" },
+      el("summary", { text: event.body?.type === "job.runner_event" && event.body.event?.detail ? "SDK details" : "Event details" }),
+      el("pre", { class: "code", text: JSON.stringify(event.body, null, 2) }),
+    ),
+  );
+  list.append(el("li", { class: eventClass(event.body) }, el("time", { text: formatTime(event.at) }), content));
   list.scrollTop = list.scrollHeight;
 }
 

@@ -40,6 +40,10 @@ async function configured(key: string, fallback: string): Promise<string> {
 }
 const npmRegistry = await configured('Parameters:npm-registry', 'https://registry.npmjs.org/');
 const pipIndexUrl = await configured('Parameters:pip-index-url', 'https://pypi.org/simple');
+const jobEventDetail = await configured('Parameters:job-event-detail', 'sanitized');
+if (jobEventDetail !== 'sanitized' && jobEventDetail !== 'full') {
+  throw new Error("Parameters:job-event-detail must be 'sanitized' or 'full'.");
+}
 
 // ---------------------------------------------------------------------------
 // Infrastructure
@@ -126,6 +130,7 @@ builder
   .waitFor(gateway)
   .withEnvironment('EXECUTOR_KEY', executorKey)
   .withEnvironment('EXECUTOR_PARALLELISM', '2')
+  .withEnvironment('JOB_EVENT_DETAIL', jobEventDetail)
   .publishAsAzureContainerApp(async (_infra, app) => {
     await app.configureScale({ minReplicas: 1 });
   });

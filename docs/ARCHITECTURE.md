@@ -84,7 +84,7 @@ sequenceDiagram
     R-->>E: hello with protocol and capabilities
     E->>R: start after capability validation
     loop While the attempt runs
-        E->>D: Heartbeat and sanitized events
+        E->>D: Heartbeat and allowlisted events<br/>(optional bounded SDK detail)
         D->>DB: Renew lease and persist events
         R->>G: Chat completions with job capability
         G->>D: Check active capability and remaining budget

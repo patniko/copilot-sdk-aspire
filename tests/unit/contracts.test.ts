@@ -59,9 +59,15 @@ describe("JsonLineDecoder", () => {
 });
 
 describe("runner protocol", () => {
-  it("rejects unknown event kinds so raw SDK events cannot leak through", () => {
+  it("rejects unknown event kinds while allowing explicitly bounded SDK detail events", () => {
     const parsed = RunnerToExecutor.safeParse({ type: "event", event: { kind: "assistant.message", content: "x" } });
     expect(parsed.success).toBe(false);
+    expect(
+      RunnerToExecutor.safeParse({
+        type: "event",
+        event: { kind: "sdk.event", detail: { eventType: "assistant.message", data: { content: "x" } } },
+      }).success,
+    ).toBe(true);
   });
 
   it("accepts a well-formed failure", () => {

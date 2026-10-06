@@ -100,6 +100,13 @@ describe("harness features contract", () => {
     expect(RunnerEventBody.safeParse({ kind: "subagent.completed", agent: "reviewer", ok: false }).success).toBe(true);
     expect(RunnerEventBody.safeParse({ kind: "skill.used", skill: "insight-review" }).success).toBe(true);
     expect(RunnerEventBody.safeParse({ kind: "skill.used", skill: "x", content: "leak" }).success).toBe(false);
+    expect(
+      RunnerEventBody.safeParse({
+        kind: "tool.started",
+        tool: "bash",
+        detail: { eventType: "tool.execution_start", data: { arguments: { command: "echo ok" } } },
+      }).success,
+    ).toBe(true);
   });
 });
 

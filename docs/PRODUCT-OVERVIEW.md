@@ -505,7 +505,7 @@ include all runner/tool code, the execution image, the operator policy, or a pro
 | State, errors, attempts, effective duration limit | In jobs/attempts. | Job summary is exposed; not a full public attempt-history object. |
 | Job creation/update and attempt start/finish times | In jobs/attempts; events also have timestamps. | Creation/update and events are exposed; no computed latency metrics. |
 | Input/output token totals and usage-report count | Aggregated on the job. | Yes; includes usage across its attempts. |
-| Sanitized activity and human requests/responses | Events and input-request tables. | Yes through their endpoints and console views. |
+| Activity and human requests/responses | Events and input-request tables. Activity is sanitized by default; an explicit executor setting can retain bounded SDK detail. | Yes through their endpoints and console views. |
 | Runner name/version, SDK version, capabilities | Attempt provenance from the runner handshake. | Internal storage; no dedicated public provenance endpoint. |
 | Executor image digest | Optional metadata if `IMAGE_DIGEST` is supplied. | Not guaranteed; the shipped AppHost does not supply it. |
 | Policy snapshot/digest, complete tool/runtime/build identity | Not comprehensively captured. | No. |

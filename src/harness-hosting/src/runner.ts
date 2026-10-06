@@ -6,6 +6,7 @@ import {
   type InputRequestBody,
   type InputResponseBody,
   type RunnerEventBody,
+  type RunnerEventDetail,
   type RunnerFailureCode,
   type RunnerStart,
 } from "@copilot-agent/contracts";
@@ -114,41 +115,50 @@ export async function runHarness(options: RunOptions): Promise<void> {
 
   const toolNames = new Map<string, string>();
   let lastError: { message: string; statusCode?: number } | undefined;
+  const detailedEvents = start.eventDetail === "full";
+  const emit = (event: RunnerEventBody, detail?: RunnerEventDetail) =>
+    sink.event(detail && event.kind !== "sdk.event" ? { ...event, detail } : event);
   const onEvent = (event: SessionEvent) => {
+    const detail = detailedEvents ? captureSessionEvent(event) : undefined;
     switch (event.type) {
       case "assistant.turn_start":
-        sink.event({ kind: "agent.turn_started" });
+        emit({ kind: "agent.turn_started" }, detail);
         break;
       case "assistant.turn_end":
-        sink.event({ kind: "agent.turn_completed" });
+        emit({ kind: "agent.turn_completed" }, detail);
         break;
       case "tool.execution_start":
         toolNames.set(event.data.toolCallId, event.data.toolName);
-        sink.event({ kind: "tool.started", tool: event.data.toolName.slice(0, 100) });
+        emit({ kind: "tool.started", tool: event.data.toolName.slice(0, 100) }, detail);
         break;
       case "tool.execution_complete":
-        sink.event({
-          kind: "tool.completed",
-          tool: (toolNames.get(event.data.toolCallId) ?? "unknown").slice(0, 100),
-          ok: event.data.success,
-        });
+        emit(
+          {
+            kind: "tool.completed",
+            tool: (toolNames.get(event.data.toolCallId) ?? "unknown").slice(0, 100),
+            ok: event.data.success,
+          },
+          detail,
+        );
         break;
       case "subagent.started":
-        sink.event({ kind: "subagent.started", agent: event.data.agentName.slice(0, 100) });
+        emit({ kind: "subagent.started", agent: event.data.agentName.slice(0, 100) }, detail);
         break;
       case "subagent.completed":
-        sink.event({ kind: "subagent.completed", agent: event.data.agentName.slice(0, 100), ok: true });
+        emit({ kind: "subagent.completed", agent: event.data.agentName.slice(0, 100), ok: true }, detail);
         break;
       case "subagent.failed":
-        sink.event({ kind: "subagent.completed", agent: event.data.agentName.slice(0, 100), ok: false });
+        emit({ kind: "subagent.completed", agent: event.data.agentName.slice(0, 100), ok: false }, detail);
         break;
       case "skill.invoked":
-        sink.event({ kind: "skill.used", skill: event.data.name.slice(0, 100) });
+        emit({ kind: "skill.used", skill: event.data.name.slice(0, 100) }, detail);
         break;
       case "session.error":
         lastError = { message: event.data.message, statusCode: event.data.statusCode };
+        if (detail) sink.event({ kind: "sdk.event", detail });
         break;
       default:
+        if (detail) sink.event({ kind: "sdk.event", detail });
         break;
     }
   };
@@ -255,4 +265,62 @@ export async function runHarness(options: RunOptions): Promise<void> {
   } finally {
     await client.stop().catch(() => undefined);
   }
+}
+
+const MAX_DETAIL_JSON_BYTES = 200_000;
+const MAX_DETAIL_STRING_CHARS = 50_000;
+const MAX_DETAIL_COLLECTION_ITEMS = 100;
+const REDACTED_DETAIL_KEYS = /^(authorization|cookie|set-cookie|token|access[_-]?token|api[_-]?key|password|secret|encryptedContent)$/i;
+
+function captureSessionEvent(event: SessionEvent): RunnerEventDetail {
+  const detail = {
+    eventType: event.type,
+    id: event.id,
+    parentId: event.parentId,
+    timestamp: event.timestamp,
+    agentId: event.agentId,
+    ephemeral: event.ephemeral,
+    data: sanitizeDetailValue(event.data),
+  };
+  const json = JSON.stringify(detail);
+  if (Buffer.byteLength(json, "utf8") <= MAX_DETAIL_JSON_BYTES) {
+    return detail;
+  }
+  return {
+    eventType: event.type,
+    id: event.id,
+    parentId: event.parentId,
+    timestamp: event.timestamp,
+    agentId: event.agentId,
+    ephemeral: event.ephemeral,
+    data: {
+      truncated: true,
+      originalBytes: Buffer.byteLength(json, "utf8"),
+      preview: json.slice(0, MAX_DETAIL_JSON_BYTES - 1_000),
+    },
+  };
+}
+
+function sanitizeDetailValue(value: unknown, depth = 0): unknown {
+  if (value === null || value === undefined || typeof value === "number" || typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    return value.length > MAX_DETAIL_STRING_CHARS ? `${value.slice(0, MAX_DETAIL_STRING_CHARS)}\n[truncated]` : value;
+  }
+  if (depth >= 12) return "[maximum depth reached]";
+  if (Array.isArray(value)) {
+    const kept = value.slice(0, MAX_DETAIL_COLLECTION_ITEMS).map((item) => sanitizeDetailValue(item, depth + 1));
+    if (value.length > kept.length) kept.push(`[${value.length - kept.length} more items]`);
+    return kept;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).slice(0, MAX_DETAIL_COLLECTION_ITEMS);
+    const result: Record<string, unknown> = {};
+    for (const [key, item] of entries) {
+      result[key] = REDACTED_DETAIL_KEYS.test(key) ? "[redacted]" : sanitizeDetailValue(item, depth + 1);
+    }
+    const total = Object.keys(value as Record<string, unknown>).length;
+    if (total > entries.length) result.__truncatedKeys = total - entries.length;
+    return result;
+  }
+  return String(value);
 }

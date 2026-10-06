@@ -116,7 +116,7 @@ attempt deadline. Only the job's caller (its API key) can answer. The REST endpo
 | Harnesses | `harnesses/<name>/` and `harnesses/<name>@<version>/` (`harness.json`, instructions, `skills/<name>/SKILL.md`) | Yes |
 | Execution policy | `policy/execution-policy.json` | Yes |
 | Unsaved harness drafts | Browser local storage for the configurator origin | No |
-| Local run parameters (Foundry endpoint and deployments, package proxies) | The AppHost's Aspire user secrets | No (outside the repo) |
+| Local run parameters (Foundry endpoint and deployments, diagnostic event detail, package proxies) | The AppHost's Aspire user secrets | No (outside the repo) |
 | Deployment targets, NuGet override for the Aspire CLI | `.configurator/settings.json` | No (git-ignored; IDs and names only) |
 | Generated keys (dev API key, service keys, signing key) | Aspire user secrets and deployment state | Never shown, except on an explicit "Copy API key" |
 
