@@ -45,6 +45,7 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
     });
     app.get("/v1/host/sessions", async (request) => {
       authorizeHost(request);
+      if (host.transport === "github") throw new HttpError(409, "native_host", "Manage GitHub-native conversations in the connected Copilot CLI.");
       return { sessions: await host.store.list(host.owner) };
     });
     app.post("/v1/host/connection", async (request, reply) => {
@@ -63,6 +64,7 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
     });
     app.post("/v1/host/sessions/:id/close", async (request) => {
       authorizeHost(request);
+      if (host.transport === "github") throw new HttpError(409, "native_host", "Manage GitHub-native conversations in the connected Copilot CLI.");
       const id = (request.params as { id: string }).id;
       if (!UUID.test(id) || !(await host.store.close(host.owner, id))) throw new HttpError(404, "not_found", "Hosted session not found.");
       return { closed: true };

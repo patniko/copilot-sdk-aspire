@@ -107,29 +107,40 @@ An enabled demo host adds always-on compute and persistent storage even when no 
 ## Optional demo agent host
 
 Configure the host independently in **Local run** and each **Deploy** target. Enabling it locally does not
-silently enable Azure ingress. The same conversation harness and Foundry gateway are used for both transport
-experiences.
+silently enable Azure ingress. There are two deliberately different execution profiles:
+
+| Setting | Execution and model access | Hosting prerequisite |
+| --- | --- | --- |
+| `github` | GitHub-native Copilot sessions, permissions, models, and billing; no public host ingress | Released CLI server packaged in the image; a normally enabled relay client |
+| `direct` | App-managed conversation harness and Foundry gateway over direct WSS | Qualified runtime/client changes described below |
+| `both` | App-managed harness/Foundry sessions exposed through both transports | Same managed runtime/client changes; not the GitHub-native profile |
+
+GitHub-native mode does not use the configured harness, Foundry budgets, or managed factory callbacks.
+It uses the published `@github/copilot` CLI server pinned in `src/agent-host/package.json`, through the SDK's
+supported stdio connection. This avoids relying on the SDK's unqualified bundled wrapper for native inference.
 
 | Parameter | Meaning |
 | --- | --- |
 | `Parameters:demo-host-transport` | `disabled` (default), `direct`, `github`, or `both` |
 | `Parameters:demo-host-owner` | Expected GitHub login; resolved to a numeric account ID and pinned in durable host ownership |
-| `Parameters:demo-host-harness` | A conversation harness in the customer workspace; defaults to `interactive-demo` |
+| `Parameters:demo-host-harness` | Managed profiles only: a conversation harness; defaults to `interactive-demo` |
 | `Parameters:demo-host-github-token` | Owner credential for Mission Control; store only in Aspire secrets, never in the customer workspace or target JSON |
+| `Parameters:demo-host-runtime-dir` | Managed profiles only: optional relative build-context directory containing matching Linux x64 `copilot-runtime` and `runtime.node` artifacts |
 
 For production-mode deployment, the corresponding names are `Parameters__demo-host-*`. The configurator forwards
 the GitHub credential from the protected local Aspire secret only when the selected target explicitly enables
 `github` or `both`; task output redacts it. **Local run** provides a password input that stores this credential
 without returning it from the settings API or placing it in a command line.
 
-The `interactive-demo` example is seeded into new customer workspaces. Existing workspaces are not overwritten:
+For managed profiles, the `interactive-demo` example is seeded into new customer workspaces. Existing workspaces are not overwritten:
 copy/adapt the example explicitly if it is absent. Its model names still need to match the configured policy and
 Foundry deployments. A conversation harness cannot be submitted as a batch job.
 
 ### Demo host compatibility gate
 
-**Do not assume the bundled runtime makes both demos ready.** The installed SDK exposes AHP hosting, but the
-inspected runtime requires additional compatibility work for a managed host:
+**The managed profiles remain deferred to runtime engineers.** GitHub-native mode uses host-owned sessions and
+the existing Mission Control owner binding, so it does not need the custom managed-factory or direct-key changes.
+Managed hosting requires:
 
 - Direct non-loopback hosts require sealed authentication. The CLI must support independently provisioned
   `COPILOT_AHP_SERVER_KEY` pins, not silently send an unsealed credential.
@@ -137,18 +148,50 @@ inspected runtime requires additional compatibility work for a managed host:
   Older runtimes can ignore unknown environment variables, so configuration alone is not proof of enforcement.
 - Application factories must be able to preserve managed defaults such as disabled configuration discovery.
   The currently observed bundled runtime rejects the application's `enableConfigDiscovery: false` override.
-- Mission Control and CLI AHP access require the account's normal feature eligibility. `--experimental` is not
-  an entitlement or a reason to bypass a disabled feature.
 
 The corresponding prerequisite changes are in the adjacent `copilot-agent-runtime` checkout. A source patch is
 not a runnable artifact: qualify the matching launcher/provider and CLI before activation. Do not disable owner
 checks, sealed authentication, or managed session restrictions to make an older build work.
+The engineering handoff is `..\copilot-agent-runtime\docs\aspire-agent-host-handoff.md`; it records source commits,
+reproductions, remaining release work, and actual validation. Keep build artifacts out of Git; `.runtime-artifacts/`
+is ignored for that purpose.
+
+Managed startup performs a credential-free, empty-workspace negative probe before exposing the real host:
+the runtime must reject malformed expected-owner configuration with the documented error. An older runtime that
+ignores the setting is disposed and activation fails closed.
+
+### GitHub-native client eligibility
+
+Use a CLI in which `RELAY_CLIENT` is normally available. The launcher uses
+`copilot --experimental --relay --environment-id <id>` in an interactive terminal. Registration and model
+access do not imply that a particular CLI profile has relay enabled.
+
+A clean CLI 1.0.92 profile used during qualification returned `Error: --relay is not enabled.` That is a
+client feature eligibility/configuration prerequisite, not something the app enables by weakening authentication
+or forcing feature flags. Use the supported enabled client/build before presenting an interactive demo.
+
+### Native qualification evidence
+
+Local evidence collected on October 5, 2026:
+
+| Surface | Result and limit |
+| --- | --- |
+| Rebuilt Linux/amd64 host image, without source mounts | Registered with Mission Control, preserved the environment ID and workspace across container replacement, and denied the execution uid access to the supervisor environment |
+| Released CLI 1.0.92 used as the SDK server | Completed an authenticated Copilot inference request; this was separate from the relay client |
+| Interactive CLI 1.0.92 with a clean profile | Rejected `--relay` as not enabled; interactive end-to-end attachment still requires a normally enabled client |
+| Azure deployment and Azure Files | Not deployed or qualified by these local runs |
+
+The opt-in native test is `tests/integration/github-native-host.test.ts`. It creates and removes its own
+Mission Control environment; it does not authorize deleting an existing deployment's environment.
 
 ### Storage and revision requirements
 
 The AppHost mounts a named volume at `/data`; Azure publishing maps persistent volume storage through the
 Container Apps integration. Preserve both the volume and PostgreSQL. The database is not a backup of runtime
 history or the working tree.
+Native state lives under `/data/github-native`; managed state lives under `/data/execution`. Switching profiles
+does not convert or merge their conversations. Native conversations are managed through the connected CLI,
+not the managed-session budget/close endpoints.
 
 Review the generated storage resources and qualify the actual Azure mount's permissions, file/SQLite locking,
 atomic writes, and restart integrity. A working local Docker volume is not proof of Azure Files compatibility.

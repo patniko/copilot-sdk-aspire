@@ -79,4 +79,14 @@ describe("durable demo host control", () => {
     const next = await store.acquire("alice", 30, 1);
     expect(await store.consumeConnection(next.epoch, "alice", stale.token)).toBe(false);
   });
+
+  it("records native hosting without granting direct connection tickets", async () => {
+    const lease = await store.acquire("alice", 30, 1, "github-native");
+    await store.heartbeat(lease.epoch, 30, "native-environment");
+    expect(await store.status("alice")).toMatchObject({
+      online: true, execution: "github-native", environmentId: "native-environment",
+    });
+    await expect(store.issueConnection("alice")).rejects.toThrow(/not ready/);
+    expect(await store.list("alice")).toEqual([]);
+  });
 });

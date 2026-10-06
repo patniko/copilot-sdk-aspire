@@ -188,6 +188,7 @@ export class Settings {
         transport: text("Parameters:demo-host-transport") || "disabled",
         owner: text("Parameters:demo-host-owner"),
         harness: text("Parameters:demo-host-harness") || "interactive-demo",
+        runtimeDirectory: text("Parameters:demo-host-runtime-dir"),
       }),
       foundryEndpoint: text(SECRET_KEYS.foundryEndpoint),
       foundryDeployments: text(SECRET_KEYS.foundryDeployments)
@@ -223,6 +224,7 @@ export class Settings {
       "Parameters:demo-host-transport": local.demoHost?.transport === "disabled" ? undefined : local.demoHost?.transport,
       "Parameters:demo-host-owner": local.demoHost?.owner,
       "Parameters:demo-host-harness": local.demoHost?.transport && local.demoHost.transport !== "disabled" ? local.demoHost.harness : undefined,
+      "Parameters:demo-host-runtime-dir": local.demoHost?.runtimeDirectory || undefined,
     });
     const stored = await this.#readStored();
     await this.#writeStored({ ...stored, nugetServiceIndex: local.nugetServiceIndex });
@@ -297,6 +299,7 @@ export function deployEnvironment(target: DeployTarget, local: LocalSettings): R
   if (host && host.transport !== "disabled") {
     env["Parameters__demo-host-owner"] = host.owner;
     env["Parameters__demo-host-harness"] = host.harness;
+    if (host.runtimeDirectory) env["Parameters__demo-host-runtime-dir"] = host.runtimeDirectory;
   }
   if (local.npmRegistry) {
     env["Parameters__npm-registry"] = local.npmRegistry;

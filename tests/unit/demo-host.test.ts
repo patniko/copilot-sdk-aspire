@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { buildSessionOptions, RESULT_CONTRACT } from "../../src/harness-hosting/src/session-config.js";
 import { hostPermissionHandler, hostToolGuard } from "../../src/agent-host/src/policy.js";
 import { Admission } from "../../src/agent-api/src/admission.js";
+import { OwnerConfiguration } from "../../src/agent-host/src/protocol.js";
 
 const root = join(import.meta.dirname, "..", "..");
 const customerConfigRoot = join(root, "examples", "customer-config");
@@ -17,6 +18,16 @@ const [harnesses, policy, profiles] = await Promise.all([
 const harness = harnesses.get("interactive-demo")![0]!;
 
 describe("opt-in demo host", () => {
+  it("keeps GitHub-native execution independent of managed factory and provider settings", () => {
+    const native = {
+      execution: "github-native", transport: "github", owner: "alice", ownerUserId: 1,
+      computeId: randomUUID(), dataDirectory: "workspace", githubToken: "test-credential".repeat(3),
+    };
+    expect(OwnerConfiguration.safeParse(native).success).toBe(true);
+    expect(OwnerConfiguration.safeParse({ ...native, gatewayUrl: "https://gateway.example" }).success).toBe(false);
+    expect(OwnerConfiguration.safeParse({ ...native, transport: "both" }).success).toBe(false);
+    expect(OwnerConfiguration.safeParse({ ...native, githubToken: undefined }).success).toBe(false);
+  });
   it("requires an owner and never defaults to public hosting", () => {
     expect(DemoHostSettings.parse({}).transport).toBe("disabled");
     expect(DemoHostSettings.safeParse({ transport: "both" }).success).toBe(false);

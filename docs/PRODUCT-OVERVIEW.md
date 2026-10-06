@@ -14,6 +14,8 @@ integration adds separate retained conversation records and direct/GitHub transp
 runtime/client and Azure storage compatibility are still qualification gates, not evidence that batch
 attempts have become resumable. See [optional host architecture](ARCHITECTURE.md#optional-demo-agent-host)
 and [deployment prerequisites](DEPLOYMENT.md#demo-host-compatibility-gate).
+The GitHub-native profile uses Copilot inference and permissions; the separate managed profiles use the
+application's harness and Foundry gateway. They are not interchangeable billing or security models.
 
 This page owns the detailed capability assessment, comparison methodology, and proposed enterprise direction.
 [PRODUCT.md](PRODUCT.md) summarizes the product contract; the user, developer, API, architecture, and security

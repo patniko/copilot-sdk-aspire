@@ -12,7 +12,7 @@ belongs in the delivery plan, not in current feature claims.
 | Developer | [Developer guide](DEVELOPER-GUIDE.md) | [Architecture](ARCHITECTURE.md), [runner protocol](RUNNER-PROTOCOL.md), [contribution workflow](../CONTRIBUTING.md) |
 | Product contributor | [Product guide](PRODUCT.md) | [Detailed product assessment](PRODUCT-OVERVIEW.md), [security limitations](SECURITY.md#known-gaps), then [historical plan](PLAN.md) |
 | Deployment operator | [Deployment guide](DEPLOYMENT.md) | [Security model](SECURITY.md) and [local/Azure topology](ARCHITECTURE.md#local-and-azure-topology) |
-| Interactive demo operator | [Demo agent host](USER-GUIDE.md#demo-agent-host) | [Compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate) and [experimental host boundaries](SECURITY.md#experimental-host-boundaries) |
+| Interactive demo operator | [Demo agent host](USER-GUIDE.md#demo-agent-host) | [GitHub-native client eligibility](DEPLOYMENT.md#github-native-client-eligibility), [managed compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate), and [host boundaries](SECURITY.md#experimental-host-boundaries) |
 
 ## Canonical topic map
 

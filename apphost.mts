@@ -51,6 +51,11 @@ if (!['disabled', 'direct', 'github', 'both'].includes(demoHostTransport)) {
 }
 const demoHostOwner = await configured('Parameters:demo-host-owner', '');
 const demoHostHarness = await configured('Parameters:demo-host-harness', 'interactive-demo');
+const demoHostRuntimeDirectory = (await configured('Parameters:demo-host-runtime-dir', '')).replaceAll('\\', '/');
+if (demoHostRuntimeDirectory && (!/^[A-Za-z0-9._/-]+$/.test(demoHostRuntimeDirectory) ||
+  demoHostRuntimeDirectory.split('/').some((part) => part === '' || part === '..'))) {
+  throw new Error('demo-host-runtime-dir must be a relative directory inside the build context.');
+}
 if (demoHostTransport !== 'disabled' && (
   !/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(demoHostOwner) ||
   !/^[a-z][a-z0-9-]{1,62}$/.test(demoHostHarness)
@@ -134,32 +139,36 @@ const api = service('agent-api')
 
 if (demoHostTransport !== 'disabled') {
   const hostKey = await builder.addParameterWithGeneratedValue('demo-host-key', generated, { secret: true, persist: true });
-  const connectionToken = await builder.addParameterWithGeneratedValue('demo-host-connection-token', generated, { secret: true, persist: true });
   const direct = demoHostTransport === 'direct' || demoHostTransport === 'both';
+  const connectionToken = direct
+    ? await builder.addParameterWithGeneratedValue('demo-host-connection-token', generated, { secret: true, persist: true })
+    : undefined;
   dispatcher
     .withEnvironment('DEMO_HOST_KEY', hostKey)
     .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
+    .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport)
     .withEnvironment('DEMO_HOST_HARNESS', demoHostHarness);
   api
     .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
     .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport);
   const host = builder
-    .addDockerfile('agent-host', '.', { dockerfilePath: 'deploy/Dockerfile', stage: 'agent-host' })
+    .addDockerfile('agent-host', '.', {
+      dockerfilePath: 'deploy/Dockerfile',
+      stage: direct && demoHostRuntimeDirectory ? 'agent-host-runtime' : 'agent-host',
+    })
     .withBuildArg('CUSTOMER_CONFIG_DIR', CUSTOMER_WORKSPACE_DIR)
+    .withBuildArg('DEMO_RUNTIME_DIR', demoHostRuntimeDirectory || '.runtime-artifacts')
     .withBuildArg('NPM_REGISTRY', npmRegistry)
     .withBuildArg('PIP_INDEX_URL', pipIndexUrl)
     .withContainerBuildOptions(async (ctx) => {
-      if (isPublish) await ctx.targetPlatform.set(ContainerTargetPlatform.LinuxAmd64);
+      await ctx.targetPlatform.set(ContainerTargetPlatform.LinuxAmd64);
     })
     .withVolume('/data', { name: 'demo-host-data' })
     .withHttpEndpoint({ targetPort: 8080, env: 'PORT' })
     .withHttpHealthCheck({ path: '/health' })
     .withReference(dispatcherEndpoint)
-    .withReference(await gateway.getEndpoint('http'))
     .waitFor(dispatcher)
-    .waitFor(gateway)
     .withEnvironment('DEMO_HOST_KEY', hostKey)
-    .withEnvironment('DEMO_HOST_CONNECTION_TOKEN', connectionToken)
     .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
     .withEnvironment('DEMO_HOST_HARNESS', demoHostHarness)
     .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport)
@@ -167,6 +176,11 @@ if (demoHostTransport !== 'disabled') {
       await app.configureScale({ minReplicas: 1 });
     });
   if (direct) host.withExternalHttpEndpoints();
+  if (direct && connectionToken) {
+    host.withEnvironment('DEMO_HOST_CONNECTION_TOKEN', connectionToken)
+      .withReference(await gateway.getEndpoint('http'))
+      .waitFor(gateway);
+  }
   if (demoHostTransport === 'github' || demoHostTransport === 'both') {
     const githubToken = await builder.addParameter('demo-host-github-token', { secret: true });
     host.withEnvironment('DEMO_HOST_GITHUB_TOKEN', githubToken);

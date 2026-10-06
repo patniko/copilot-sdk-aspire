@@ -17,7 +17,7 @@
   </defs>
   <rect width="1280" height="900" fill="#ffffff"/>
   <text x="32" y="42" class="title">One application model, two placements</text>
-  <text x="32" y="70" class="body">The executor stays containerized locally; model credentials stay with the gateway.</text>
+  <text x="32" y="70" class="body">Batch and managed inference use the gateway. GitHub-native hosting uses the owner's Copilot identity.</text>
   <rect x="440" y="95" width="400" height="75" rx="12" fill="#f0eaff" stroke="#8250df"/>
   <text x="640" y="125" class="heading" text-anchor="middle">Aspire TypeScript AppHost</text>
   <text x="640" y="151" class="body" text-anchor="middle">apphost.mts: wiring, resources, identities</text>
@@ -65,10 +65,10 @@
   <text x="48" y="679" class="heading">Optional experimental agent host: separate from batch jobs</text>
   <rect x="48" y="696" width="552" height="80" rx="10" fill="#fff4df" stroke="#b7791f"/>
   <text x="324" y="723" class="node" text-anchor="middle">Local Linux agent-host + named volume</text>
-  <text x="324" y="749" class="body" text-anchor="middle">CLI connection with a provisioned key, or GitHub relay</text>
+  <text x="324" y="749" class="body" text-anchor="middle">GitHub-native relay; managed WSS requires runtime work</text>
   <rect x="678" y="696" width="552" height="80" rx="10" fill="#fff4df" stroke="#b7791f"/>
   <text x="954" y="723" class="node" text-anchor="middle">Azure agent-host + persistent volume</text>
-  <text x="954" y="749" class="body" text-anchor="middle">Direct WSS / GitHub relay; storage and runtime gates apply</text>
-  <text x="32" y="843" class="body">Both modes use the existing Foundry deployment. Deploying the service does not create or delete that account.</text>
+  <text x="954" y="749" class="body" text-anchor="middle">Native relay has no public ingress; storage gates apply</text>
+  <text x="32" y="843" class="body">Both placements preserve provider choice: batch/managed use Foundry; GitHub-native uses Copilot.</text>
   <text x="32" y="875" class="label">Placement parity is not production hardening. Network egress remains unenforced; see docs/SECURITY.md and docs/DEPLOYMENT.md.</text>
 </svg>

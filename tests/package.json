@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Unit and integration tests. Kept separate because the AppHost root is installed without the workspace.",
   "devDependencies": {
+    "@github/copilot-sdk": "1.0.16",
     "@microsoft/agent-host-protocol": "0.9.0",
     "@types/libsodium-wrappers": "^0.7.14",
     "@types/ws": "^8.18.1",

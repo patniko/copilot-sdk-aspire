@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
-import { CopilotClient, type AhpHost, type CopilotSession, type SessionConfig } from "@github/copilot-sdk";
+import { CopilotClient, RuntimeConnection, type AhpHost, type CopilotSession, type SessionConfig } from "@github/copilot-sdk";
 import { HostedSession, renderSkillMarkdown, type HostControlRequest } from "@copilot-agent/contracts";
 import { bindTools, buildSessionOptions } from "@copilot-agent/harness-hosting";
 import { SupervisorMessage, type OwnerConfiguration } from "./protocol.js";
 import { hostPermissionHandler, hostToolGuard } from "./policy.js";
+import { verifyOwnerGuard } from "./runtime-check.js";
 
 const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
 const sessions = new Map<string, CopilotSession>();
@@ -30,7 +31,7 @@ function control(request: HostControlRequest): Promise<unknown> {
 }
 
 async function start(config: OwnerConfiguration): Promise<void> {
-  secrets.add(config.connectionToken);
+  if (config.execution === "managed") secrets.add(config.connectionToken);
   if (config.githubToken) secrets.add(config.githubToken);
   const workspace = join(config.dataDirectory, "workspace");
   await mkdir(workspace, { recursive: true, mode: 0o700 });
@@ -39,8 +40,41 @@ async function start(config: OwnerConfiguration): Promise<void> {
   for (const key of ["PATH", "HOME", "LANG", "TMPDIR", "TMP", "TEMP"]) {
     if (process.env[key]) runtimeEnv[key] = process.env[key]!;
   }
+  if (config.execution === "github-native") {
+    client = new CopilotClient({
+      // The full CLI server initializes native inference TLS; the SDK wrapper is not qualified here.
+      connection: RuntimeConnection.forStdio({
+        path: join(import.meta.dirname, "..", "node_modules", "@github", "copilot", "npm-loader.js"),
+      }),
+      mode: "copilot-cli",
+      baseDirectory: join(config.dataDirectory, "copilot-home"),
+      workingDirectory: workspacePath,
+      env: runtimeEnv,
+      gitHubToken: config.githubToken,
+      useLoggedInUser: false,
+      logLevel: "error",
+    });
+    await client.start();
+    host = await client.startAhpHost({
+      githubEnvironment: { name: `GitHub Copilot demo (${config.owner})`, computeId: config.computeId },
+      onExit: () => { if (!stopping) fail("The GitHub hosting task stopped."); },
+    });
+    if (!host.environmentId) throw new Error("GitHub hosting did not return an environment identity.");
+    process.send!({ kind: "ready", environmentId: host.environmentId });
+    return;
+  }
+  const managedConfig = config;
+  if (config.runtimeProvider) runtimeEnv.COPILOT_RUNTIME_PROVIDER_LIB = config.runtimeProvider;
+  const connection = RuntimeConnection.forStdio(config.runtimePath ? { path: config.runtimePath } : {});
+  await verifyOwnerGuard(config.dataDirectory, (home) => new CopilotClient({
+    connection, mode: "empty", baseDirectory: home, workingDirectory: home,
+    useLoggedInUser: false, logLevel: "error",
+    env: { ...runtimeEnv, HOME: home, COPILOT_AHP_EXPECTED_OWNER: "not-json" },
+  }));
   runtimeEnv.COPILOT_AHP_EXPECTED_OWNER = JSON.stringify({ githubApiUrl: "https://api.github.com", userId: config.ownerUserId });
+  runtimeEnv.COPILOT_AHP_FACTORY_PROFILE = "managed";
   client = new CopilotClient({
+    connection,
     mode: "empty",
     baseDirectory: join(config.dataDirectory, "copilot-home"),
     workingDirectory: workspacePath,
@@ -89,7 +123,7 @@ async function start(config: OwnerConfiguration): Promise<void> {
         activeSession = id;
         turnTimer = setTimeout(() => {
           void sessions.get(id)?.abort().catch(() => fail("Could not abort the expired turn."));
-        }, Math.min(config.maxTurnSeconds, definition.limits.maxDurationSeconds) * 1000);
+        }, Math.min(managedConfig.maxTurnSeconds, definition.limits.maxDurationSeconds) * 1000);
       }
       return response.token;
     };
@@ -100,7 +134,7 @@ async function start(config: OwnerConfiguration): Promise<void> {
       tools,
       enableConfigDiscovery: false,
       skipCustomInstructions: true,
-      provider: { type: "openai", baseUrl: config.gatewayUrl, wireApi: "completions", bearerTokenProvider: token },
+      provider: { type: "openai", baseUrl: managedConfig.gatewayUrl, wireApi: "completions", bearerTokenProvider: token },
       onPermissionRequest: hostPermissionHandler(definition),
       hooks: {
         onPreToolUse: async (input) => {
@@ -129,10 +163,8 @@ async function start(config: OwnerConfiguration): Promise<void> {
   }
 
   host = await owner.startAhpHost({
-    ...(config.transport === "direct" || config.transport === "both" ? {
-      localServer: { hostname: "0.0.0.0", port: config.port, token: config.connectionToken },
-    } : {}),
-    ...(config.transport === "github" || config.transport === "both" ? {
+    localServer: { hostname: "0.0.0.0", port: config.port, token: config.connectionToken },
+    ...(config.transport === "both" ? {
       githubEnvironment: { name: `Aspire demo (${config.owner})`, computeId: config.computeId },
     } : {}),
     createSession: async ({ config: selected, signal }) => {
@@ -185,7 +217,11 @@ async function stop(): Promise<void> {
   pending.clear();
   await close([...sessions.keys()]);
   await host?.dispose();
-  await client?.stop();
+  const errors = await client?.stop();
+  if (errors?.length) {
+    process.exitCode = 1;
+    if (process.connected) process.send!({ kind: "failed", message: "The Copilot runtime reported shutdown errors." });
+  }
   process.disconnect?.();
 }
 

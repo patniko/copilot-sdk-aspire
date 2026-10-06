@@ -15,3 +15,6 @@ __pycache__/
 
 # User-authored harnesses and policy. Seeded from examples/customer-config on first run.
 .copilot-agent-workspace/
+
+# Qualified local runtime build artifacts; never source-control native binaries.
+.runtime-artifacts/

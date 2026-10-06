@@ -118,10 +118,15 @@ before treating stored jobs as a complete experiment record.
 
 ## Hosted conversations
 
-The optional demo path requires `interaction: "conversation"`; ordinary batch admission rejects these
+The managed demo path requires `interaction: "conversation"`; ordinary batch admission rejects these
 harnesses. `buildSessionOptions(..., "conversation")` omits the terminal result contract while the default
 three-argument mapping remains unchanged for batch runners. The hosted implementation is TypeScript only;
 Python/TypeScript batch parity remains required.
+
+GitHub-native mode instead starts host-owned sessions through the released CLI server pinned in the host
+package. It supplies no app factories or custom provider and uses the standard Mission Control owner binding.
+Keep it independent of the deferred managed-runtime flags. Its Copilot models, permissions, and billing are
+not aliases for the app's Foundry settings.
 
 Host control uses separate PostgreSQL records and versioned session inference claims. Never synthesize a job
 or extend an attempt token indefinitely to represent a conversation. Session grant renewal must retain usage,
@@ -146,6 +151,12 @@ JavaScript; it does not qualify a production image or change runtime authenticat
 A Docker/store test does not prove Azure Files behavior, direct CLI compatibility, or Mission Control
 attachment. Collect those results separately and keep the [known compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate)
 explicit until the matching runtime/client artifact is qualified.
+
+The separate `tests/integration/github-native-host.test.ts` opt-in uses `DEMO_GITHUB_HOST_TESTS=1`,
+the same explicit GitHub credential variables, and `copilot-aspire-agent-host:native-demo` (or
+`DEMO_GITHUB_HOST_TEST_IMAGE`). It exercises the actual native container, Mission Control registration,
+replacement with the same environment identity, and retained workspace. It does not claim CLI feature
+eligibility or send model prompts. Temporary environment IDs created by the test are removed after shutdown.
 
 ## Add a harness or tool
 

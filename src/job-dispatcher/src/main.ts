@@ -18,9 +18,10 @@ await migrate(pool);
 const store = new JobStore(pool);
 const hostStore = new HostStore(pool);
 const hostOwner = optionalEnv("DEMO_HOST_OWNER", "").toLowerCase();
-const hostRegistry = hostOwner ? await loadHarnesses() : undefined;
+const hostExecution = optionalEnv("DEMO_HOST_TRANSPORT", "direct") === "github" ? "github-native" : "managed";
+const hostRegistry = hostOwner && hostExecution === "managed" ? await loadHarnesses() : undefined;
 const hostHarness = hostRegistry?.get(optionalEnv("DEMO_HOST_HARNESS", "interactive-demo"))?.[0];
-if (hostOwner && !hostHarness) throw new Error("The configured demo host harness is not published.");
+if (hostOwner && hostExecution === "managed" && !hostHarness) throw new Error("The configured demo host harness is not published.");
 
 const app = buildDispatcher({
   store,
@@ -29,10 +30,10 @@ const app = buildDispatcher({
   gatewayKey: requireEnv("GATEWAY_KEY"),
   signingKey: requireEnv("CAPABILITY_SIGNING_KEY"),
   hostStore,
-  ...(hostOwner && hostHarness ? {
+  ...(hostOwner ? {
     host: {
       store: hostStore, key: requireEnv("DEMO_HOST_KEY"), owner: hostOwner,
-      harness: hostHarness, profiles: await loadProfiles(), policy,
+      execution: hostExecution, harness: hostHarness, profiles: hostExecution === "managed" ? await loadProfiles() : undefined, policy,
       signingKey: requireEnv("CAPABILITY_SIGNING_KEY"),
     },
   } : {}),

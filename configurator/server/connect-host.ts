@@ -43,8 +43,12 @@ async function main(): Promise<void> {
     if (values.resume) args.push("--resume", values.resume);
     console.log("Connecting to the demo host with a provisioned key and one-time ticket.");
   } else {
-    if (values.resume) throw new Error("Use the remote host session picker after connecting through Mission Control.");
-    console.log(`In the eligible CLI, connect using: /ahp cloud ${info.environmentId}`);
+    delete env.COPILOT_AHP_SERVER_KEY;
+    args.push("--relay", "--environment-id", info.environmentId!);
+    if (values.resume) args.push("--resume", values.resume);
+    console.log(info.execution === "github-native"
+      ? "Connecting through Mission Control using Copilot's models, permissions, and billing."
+      : "Connecting through Mission Control to the managed host.");
   }
   await new Promise<void>((resolveExit, reject) => {
     const script = /\.(?:cjs|mjs|js)$/i.test(values.cli);

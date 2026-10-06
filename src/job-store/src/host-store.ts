@@ -17,16 +17,16 @@ interface SessionRow {
 export class HostStore {
   constructor(private readonly pool: pg.Pool) {}
 
-  async acquire(owner: string, seconds: number, ownerUserId: number): Promise<HostLease> {
+  async acquire(owner: string, seconds: number, ownerUserId: number, execution: "managed" | "github-native" = "managed"): Promise<HostLease> {
     const result = await this.pool.query<{ epoch: string; compute_id: string; lease_until: Date }>(
-      `INSERT INTO demo_host (id, compute_id, owner, epoch, lease_until, owner_user_id)
-       VALUES (1, $1, $2, $3, now() + $4 * interval '1 second', $5)
+      `INSERT INTO demo_host (id, compute_id, owner, epoch, lease_until, owner_user_id, execution)
+       VALUES (1, $1, $2, $3, now() + $4 * interval '1 second', $5, $6)
        ON CONFLICT (id) DO UPDATE SET epoch = EXCLUDED.epoch, lease_until = EXCLUDED.lease_until,
-         server_key = NULL, environment_id = NULL
+         server_key = NULL, environment_id = NULL, execution = EXCLUDED.execution
        WHERE demo_host.lease_until < now() AND demo_host.owner = EXCLUDED.owner
          AND demo_host.owner_user_id = EXCLUDED.owner_user_id
        RETURNING epoch, compute_id, lease_until`,
-      [randomUUID(), owner.toLowerCase(), randomUUID(), seconds, ownerUserId],
+      [randomUUID(), owner.toLowerCase(), randomUUID(), seconds, ownerUserId, execution],
     );
     const row = result.rows[0];
     if (!row) throw new StoreError("invalid_state", "Another host owns the lease, or the configured owner differs from the durable host.");
@@ -137,12 +137,12 @@ export class HostStore {
     return result.rows.map(toSession);
   }
 
-  async status(owner: string): Promise<{ online: boolean; environmentId?: string; serverKey?: { keyId: string; algorithm: string; publicKey: string } }> {
-    const result = await this.pool.query<{ online: boolean; environment_id: string | null; server_key: { keyId: string; algorithm: string; publicKey: string } | null }>(
-      "SELECT lease_until > now() AS online, environment_id, server_key FROM demo_host WHERE id = 1 AND owner = $1", [owner],
+  async status(owner: string): Promise<{ online: boolean; execution?: "managed" | "github-native"; environmentId?: string; serverKey?: { keyId: string; algorithm: string; publicKey: string } }> {
+    const result = await this.pool.query<{ online: boolean; execution: "managed" | "github-native"; environment_id: string | null; server_key: { keyId: string; algorithm: string; publicKey: string } | null }>(
+      "SELECT lease_until > now() AS online, execution, environment_id, server_key FROM demo_host WHERE id = 1 AND owner = $1", [owner],
     );
     const row = result.rows[0];
-    return { online: row?.online ?? false, ...(row?.environment_id ? { environmentId: row.environment_id } : {}),
+    return { online: row?.online ?? false, ...(row ? { execution: row.execution } : {}), ...(row?.environment_id ? { environmentId: row.environment_id } : {}),
       ...(row?.server_key ? { serverKey: row.server_key } : {}) };
   }
 
@@ -153,7 +153,7 @@ export class HostStore {
     const result = await this.pool.query<{ expires_at: Date }>(
       `INSERT INTO hosted_connection_tickets (digest, owner, epoch, expires_at)
        SELECT $1, owner, epoch, now() + interval '60 seconds' FROM demo_host
-       WHERE id = 1 AND owner = $2 AND lease_until > now() AND server_key IS NOT NULL
+       WHERE id = 1 AND owner = $2 AND lease_until > now() AND execution = 'managed' AND server_key IS NOT NULL
        RETURNING expires_at`, [digest, owner],
     );
     if (!result.rows[0]) throw new StoreError("invalid_state", "The direct host is not ready for connections.");

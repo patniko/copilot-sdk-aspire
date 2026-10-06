@@ -216,19 +216,25 @@ resumable conversations, and `/v1/harnesses` continues to list batch harnesses o
 
 | Method | Path | Behavior |
 | --- | --- | --- |
-| `GET` | `/v1/host` | Transport, active ownership lease (`online`), optional Mission Control environment ID and public server key |
-| `GET` | `/v1/host/sessions` | Retained session IDs, harness snapshots, models, budgets, cumulative reported usage, and closed state |
+| `GET` | `/v1/host` | Transport, execution kind, active ownership lease (`online`), optional Mission Control environment ID and public server key |
+| `GET` | `/v1/host/sessions` | Managed sessions: IDs, harness snapshots, models, budgets, usage, and closed state; `409 native_host` for GitHub-native mode |
 | `POST` | `/v1/host/connection` | Explicit connection-material retrieval; `Cache-Control: no-store`; issues a 60-second, single-use direct connection ticket when enabled |
-| `POST` | `/v1/host/sessions/{id}/close` | Mark a session closed and revoke future inference authorization; no request body |
+| `POST` | `/v1/host/sessions/{id}/close` | Close a managed session and revoke future inference; `409 native_host` for GitHub-native mode |
 
 `online` means the control-plane ownership lease is active, not that a CLI handshake has succeeded.
-Use the host's `/health` for readiness. Connection material is sensitive: do not log the response or
+Use the host's `/health` for owner-process and initial hosting readiness; it is not a live Mission Control
+connectivity probe. Connection material is sensitive: do not log the response or
 include token-bearing URLs in recordings. The public server key can be provisioned to a compatible
 CLI through this authenticated API; it is not a secret, but its integrity is security-critical.
 
-The host retains at most ten open sessions. Closing frees a slot but does not delete retained files,
+Managed hosting retains at most ten open sessions. Closing frees a slot but does not delete retained files,
 runtime history, or backups. The host observes closed sessions on its next heartbeat. Closing is not
 instantaneous cancellation of an already forwarded request or rollback of external effects.
+
+Those session limits, snapshots, and inference grants apply only to `execution: "managed"`. With
+`execution: "github-native"`, connection provisioning returns the Mission Control environment ID without a
+direct ticket. Copilot owns conversation lifecycle, models, permissions, and billing; the app does not
+fabricate managed-session records or Foundry usage for that path.
 
 Hosted-session inference grants are explicitly distinguished from job-attempt grants. They bind the
 session, owner, host ownership epoch, models, and expiry. Renewal and host restart preserve the

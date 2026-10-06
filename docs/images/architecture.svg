@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1100" viewBox="0 0 1280 1100" role="img" aria-labelledby="title description">
   <title id="title">Copilot SDK and Aspire service architecture</title>
-  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The executor polls the dispatcher and runs an unprivileged SDK runner. The optional experimental agent host adds CLI conversations over direct WSS or GitHub Mission Control, a retained volume, and session-scoped inference capabilities. Both execution paths use the gateway's Entra identity for Foundry. Runtime compatibility and persistent storage require qualification; outbound network isolation is not enforced.</desc>
+  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The executor runs an unprivileged SDK runner using the inference gateway. The optional host retains conversations and a workspace. Its GitHub-native profile uses Mission Control and GitHub Copilot inference. Its managed profile uses a harness and session-scoped Foundry capabilities and awaits runtime qualification. Outbound network isolation is not enforced.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#576574"/>
@@ -46,6 +46,10 @@
   <text x="782" y="347" class="body" text-anchor="middle">Capabilities and attempt reports</text>
   <path d="M 285 317 H 345" class="edge"/>
   <path d="M 645 317 H 580" class="edge"/>
+  <rect x="985" y="265" width="270" height="105" rx="12" fill="#e6f6ed" stroke="#22863a"/>
+  <text x="1120" y="295" class="heading" text-anchor="middle">GitHub Copilot</text>
+  <text x="1120" y="321" class="body" text-anchor="middle">Native demo model access</text>
+  <text x="1120" y="347" class="body" text-anchor="middle">Owner's GitHub credential</text>
   <text x="462" y="391" class="small" text-anchor="middle">Both services use the shared job-store library.</text>
 
   <rect x="595" y="450" width="325" height="205" rx="14" fill="#fff4df" stroke="#b7791f"/>
@@ -78,17 +82,17 @@
   <text x="660" y="678" class="label" text-anchor="middle">Entra-authenticated inference: gateway identity only</text>
 
   <rect x="24" y="754" width="1231" height="178" rx="12" fill="#f6f8fa" stroke="#8250df"/>
-  <text x="44" y="782" class="heading">Optional demo path: disabled by default, compatibility-gated</text>
+  <text x="44" y="782" class="heading">Optional demo profiles: GitHub-native or managed</text>
   <rect x="44" y="803" width="190" height="88" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
   <text x="139" y="834" class="heading" text-anchor="middle">Copilot CLI</text>
   <text x="139" y="860" class="body" text-anchor="middle">Eligible, qualified client</text>
   <rect x="285" y="803" width="250" height="88" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
   <text x="410" y="829" class="heading" text-anchor="middle">Connection paths</text>
-  <text x="410" y="853" class="body" text-anchor="middle">Direct WSS: ticket + key pin</text>
-  <text x="410" y="878" class="body" text-anchor="middle">Or GitHub Mission Control/WPS</text>
+  <text x="410" y="853" class="body" text-anchor="middle">Managed WSS: ticket + key pin</text>
+  <text x="410" y="878" class="body" text-anchor="middle">GitHub: Mission Control/WPS</text>
   <rect x="590" y="803" width="280" height="88" rx="10" fill="#fff4df" stroke="#b7791f"/>
   <text x="730" y="829" class="heading" text-anchor="middle">agent-host</text>
-  <text x="730" y="853" class="body" text-anchor="middle">Supervisor + isolated SDK owner</text>
+  <text x="730" y="853" class="body" text-anchor="middle">Supervisor + isolated runtime</text>
   <text x="730" y="878" class="body" text-anchor="middle">Leased through the dispatcher</text>
   <rect x="930" y="803" width="300" height="88" rx="10" fill="#f0eaff" stroke="#8250df"/>
   <text x="1080" y="829" class="heading" text-anchor="middle">Persistent volume</text>
@@ -98,8 +102,10 @@
   <path d="M 535 846 H 590" class="edge"/>
   <path d="M 870 846 H 930" class="edge"/>
   <path d="M 730 803 V 737 H 45 V 578 H 65" class="edge"/>
-  <text x="395" y="731" class="label" text-anchor="middle">session capability to the same inference gateway</text>
-  <text x="44" y="919" class="small">GitHub identity is handled by the host. This is not per-customer isolation or attachment to an existing batch job.</text>
+  <text x="395" y="731" class="label" text-anchor="middle">managed: session capability to the gateway</text>
+  <path d="M 845 803 V 743 H 1266 V 317 H 1255" class="edge"/>
+  <text x="1060" y="733" class="label" text-anchor="middle">native: Copilot inference</text>
+  <text x="44" y="919" class="small">Native mode uses Copilot billing/permissions. Managed mode needs runtime qualification. Neither is per-customer isolation.</text>
 
   <rect x="24" y="960" width="1231" height="115" rx="12" fill="#fff4df" stroke="#b7791f"/>
   <text x="44" y="991" class="heading">Boundary limitation: outbound network access is not enforced.</text>

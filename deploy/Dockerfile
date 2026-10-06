@@ -103,3 +103,12 @@ ENV CONFIG_ROOT=/config \
 WORKDIR /app/src/agent-host
 EXPOSE 8080
 ENTRYPOINT ["node", "dist/main.js"]
+
+FROM agent-host AS agent-host-runtime
+ARG DEMO_RUNTIME_DIR=.runtime-artifacts
+COPY ${DEMO_RUNTIME_DIR}/copilot-runtime /opt/demo-runtime/copilot-runtime
+COPY ${DEMO_RUNTIME_DIR}/runtime.node /opt/demo-runtime/runtime.node
+RUN chmod 0555 /opt/demo-runtime/copilot-runtime \
+ && chmod 0444 /opt/demo-runtime/runtime.node
+ENV DEMO_HOST_RUNTIME_PATH=/opt/demo-runtime/copilot-runtime \
+    DEMO_HOST_RUNTIME_PROVIDER=/opt/demo-runtime/runtime.node

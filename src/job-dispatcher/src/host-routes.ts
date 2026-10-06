@@ -8,8 +8,9 @@ export interface HostDependencies {
   store: HostStore;
   key: string;
   owner: string;
-  harness: HarnessSnapshot;
-  profiles: Map<string, ExecutionProfile>;
+  execution?: "managed" | "github-native";
+  harness?: HarnessSnapshot;
+  profiles?: Map<string, ExecutionProfile>;
   policy: ExecutionPolicy;
   signingKey: string;
 }
@@ -17,6 +18,13 @@ export interface HostDependencies {
 export function registerHostRoutes(app: FastifyInstance, deps: HostDependencies): void {
   const owner = deps.owner.toLowerCase();
   const leaseSeconds = 30;
+  const execution = deps.execution ?? "managed";
+  const managed = () => {
+    if (execution !== "managed" || !deps.harness || !deps.profiles) {
+      throw new HttpError(409, "native_host", "GitHub-native sessions use Copilot inference and lifecycle, not managed session grants.");
+    }
+    return { harness: deps.harness, profiles: deps.profiles, ...admitHostedHarness(deps.harness, deps.profiles, deps.policy) };
+  };
   const epochSchema = z.object({ epoch: z.string().uuid() }).strict();
   const sessionSchema = epochSchema.extend({ sessionId: z.string().uuid(), resume: z.boolean() });
   const tokenSchema = epochSchema.extend({ sessionId: z.string().uuid() });
@@ -40,8 +48,8 @@ export function registerHostRoutes(app: FastifyInstance, deps: HostDependencies)
   app.post("/internal/host/acquire", async (request) => {
     requireInternalKey(request, deps.key);
     const body = parse(z.object({ ownerUserId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).strict(), request.body);
-    admitHostedHarness(deps.harness, deps.profiles, deps.policy);
-    return perform(() => deps.store.acquire(owner, leaseSeconds, body.ownerUserId));
+    if (execution === "managed") managed();
+    return perform(() => deps.store.acquire(owner, leaseSeconds, body.ownerUserId, execution));
   });
   app.post("/internal/host/connection", async (request) => {
     requireInternalKey(request, deps.key);
@@ -58,7 +66,9 @@ export function registerHostRoutes(app: FastifyInstance, deps: HostDependencies)
       }).strict().optional(),
     }), request.body);
     await perform(() => deps.store.heartbeat(body.epoch, leaseSeconds, body.environmentId, body.serverKey));
-    return { closedSessions: (await deps.store.list(owner)).filter((session) => session.closed).map((session) => session.id) };
+    return { closedSessions: execution === "managed"
+      ? (await deps.store.list(owner)).filter((session) => session.closed).map((session) => session.id)
+      : [] };
   });
   app.post("/internal/host/release", async (request) => {
     requireInternalKey(request, deps.key);
@@ -69,19 +79,20 @@ export function registerHostRoutes(app: FastifyInstance, deps: HostDependencies)
   app.post("/internal/host/session", async (request) => {
     requireInternalKey(request, deps.key);
     const body = parse(sessionSchema, request.body);
-    const defaults = admitHostedHarness(deps.harness, deps.profiles, deps.policy);
+    const defaults = managed();
     const session = await perform(() => deps.store.session(body.epoch, owner, body.sessionId, body.resume, {
-      harness: deps.harness, ...defaults,
+      harness: defaults.harness, model: defaults.model, tokenBudget: defaults.tokenBudget,
     }));
-    const current = admitHostedHarness(session.harness, deps.profiles, deps.policy);
+    const current = admitHostedHarness(session.harness, defaults.profiles, deps.policy);
     if (current.model !== session.model) throw new HttpError(403, "host_policy_rejected", "The retained session model is no longer approved.");
     return session;
   });
   app.post("/internal/host/token", async (request) => {
     requireInternalKey(request, deps.key);
     const body = parse(tokenSchema, request.body);
+    const defaults = managed();
     const grant = await perform(() => deps.store.grant(body.epoch, owner, body.sessionId));
-    const current = admitHostedHarness(grant.session.harness, deps.profiles, deps.policy);
+    const current = admitHostedHarness(grant.session.harness, defaults.profiles, deps.policy);
     if (current.model !== grant.session.model || current.tokenBudget < grant.session.tokenBudget) {
       throw new HttpError(403, "host_policy_rejected", "The retained session requires limits no longer approved by policy.");
     }

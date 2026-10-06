@@ -52,7 +52,9 @@ Store no credentials there, protect its delivery like application configuration,
 
 The optional `agent-host` is a single-trusted-owner demo integration. The table above primarily describes
 batch execution; its guarantees must not be transferred automatically to AHP or retained workspaces.
-Activation requires the [runtime compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate).
+Managed profiles require the [runtime compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate).
+GitHub-native mode uses the released CLI server, host-owned sessions, and existing Mission Control owner binding;
+it does not disable a managed-path check to run an unqualified managed session.
 
 Direct connections use an application-API-issued, 60-second, single-use ticket at the public proxy. The
 dispatcher atomically checks its digest, owner, host epoch, expiry, and unused state. The separate private
@@ -64,9 +66,11 @@ endpoint. Public-key integrity, required sealed authentication, and runtime enfo
 account are independent requirements. A token in a URL is not sufficient account authorization. Treat tickets
 as secrets despite their short lifetime; do not capture them in command recordings or logs.
 
-Mission Control registers an environment using the configured owner's GitHub credential. Registration and
+Mission Control registers an environment using the configured owner's GitHub credential, after the app verifies
+that the credential's numeric GitHub identity matches its pinned owner. Registration and
 traffic use GitHub/WPS infrastructure outside the customer Azure deployment. It is a deliberate GitHub-centric
-path, not a claim that every byte remains inside an Azure subscription. Environment registration alone is not
+path, not a claim that every byte remains inside an Azure subscription. Native inference goes to GitHub Copilot,
+not the Foundry gateway, and uses Copilot permissions and billing. Environment registration alone is not
 proof that a particular CLI/account can discover or attach.
 
 The supervisor owns a narrowly scoped dispatcher key; uid-isolated execution receives session capabilities,
@@ -74,7 +78,8 @@ not database, signing, or Foundry credentials. The runtime necessarily handles G
 Mission Control hosting supplies an owner credential. Protect runtime history, configuration, and backups
 accordingly; these are not the ephemeral, credential-minimized batch workspaces.
 
-Harness restrictions apply to agent tool execution and model use. The AHP protocol also exposes owner-operated
+In managed mode, harness restrictions apply to agent tool execution and model use. Native GitHub mode intentionally
+does not apply those harness restrictions or Foundry budgets. The AHP protocol also exposes owner-operated
 runtime functionality; this demo is not a hostile-caller sandbox or a substitute for a complete authorization
 layer. Do not enable arbitrary native SDK TCP access. Egress remains unenforced and the executor's root-launcher,
 shared-infrastructure, asynchronous-usage, and in-flight revocation limitations still matter.

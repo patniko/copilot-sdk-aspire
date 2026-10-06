@@ -48,11 +48,11 @@ and approver currently share one API-key principal.
 
 ## Supported today
 
-The experimental demo host has control-plane persistence, harness mapping, transport configuration, and
-connection-provisioning code. It is not yet a blanket claim of ready-to-demo CLI or Azure compatibility.
-It requires a qualified AHP client/runtime pair, expected-owner enforcement, and verified storage behavior.
-The [deployment guide](DEPLOYMENT.md#demo-host-compatibility-gate) records the current blockers; the table below
-describes the established batch product.
+The experimental demo host offers a GitHub-native Mission Control profile using Copilot's own inference,
+permissions, and billing. It requires a normally enabled relay client and suitable persistent storage.
+Managed direct/both profiles have separate runtime prerequisites and remain deferred to the engineering
+handoff. The [deployment guide](DEPLOYMENT.md#demo-host-compatibility-gate) distinguishes these paths; the
+table below describes the established batch product.
 
 | Capability | Current scope | Evidence / detail |
 | --- | --- | --- |

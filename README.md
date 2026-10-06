@@ -12,9 +12,10 @@ original delivery plan; the [product guide](docs/PRODUCT.md) distinguishes shipp
 For a source-based explanation of the product, local/cloud topology, sessions, authoring, supervision, and harness
 comparison support, see the [detailed product overview](docs/PRODUCT-OVERVIEW.md).
 
-An opt-in experimental host integration targets CLI demos through direct Azure WSS or GitHub Mission Control,
-with retained conversations and the same Foundry gateway. It requires a qualified CLI/runtime pair; review the
-[compatibility gate](docs/DEPLOYMENT.md#demo-host-compatibility-gate) before enabling it.
+An opt-in GitHub-native host supports Mission Control demos with retained state and Copilot's own inference,
+permissions, and billing. Managed harness/Foundry hosting over direct WSS remains a separate, gated integration.
+See [demo setup](docs/USER-GUIDE.md#demo-agent-host) and the
+[managed runtime handoff](docs/DEPLOYMENT.md#demo-host-compatibility-gate).
 
 ## Quick start
 

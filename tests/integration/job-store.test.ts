@@ -42,7 +42,7 @@ beforeAll(async () => {
   await migrate(pool);
   await migrate(pool); // idempotent
   store = new JobStore(pool);
-  harness = (await loadHarnesses(join(import.meta.dirname, "..", ".."))).get("dataset-analyst")![0]!;
+  harness = (await loadHarnesses(join(import.meta.dirname, "..", "..", "examples", "customer-config"))).get("dataset-analyst")![0]!;
 });
 
 afterAll(async () => {

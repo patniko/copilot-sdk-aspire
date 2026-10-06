@@ -50,9 +50,10 @@ repository if it must be shared or audited.
 ## Experimental demo host
 
 Local run and each deployment target have independent **Demo agent host** settings: disabled, direct,
-GitHub Mission Control, or both. These select a separate long-lived host, not a batch runner profile.
-The host requires an explicitly opted-in conversation harness and qualified CLI/runtime artifacts;
-see the [deployment compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate).
+GitHub-native Mission Control, or managed hosting through both transports. These select a separate long-lived
+host, not a batch runner profile. GitHub-native mode uses Copilot inference and disables the irrelevant harness
+and custom-runtime fields. Direct/both modes require a conversation harness and the
+[managed runtime work](DEPLOYMENT.md#demo-host-compatibility-gate).
 
 The Local run password field saves a Mission Control owner credential only in Aspire secrets. Settings reads
 and deployment-target JSON never return or store it. Deployment forwards it only for a target that explicitly
@@ -61,6 +62,8 @@ enables GitHub hosting. Connection buttons copy non-secret `pnpm host:connect` l
 Customer-workspace changes do not hot-reconfigure retained sessions. Restarting only the job API does not
 reload the demo host. Existing conversations keep their admitted snapshot; tighter current policy can prevent
 them from resuming or acquiring another inference grant.
+That snapshot/budget behavior is specific to managed hosting. Native GitHub conversations use Copilot's
+own lifecycle and a separate retained runtime home. They are not governed by the app's Foundry budget.
 
 ## Editing harnesses
 

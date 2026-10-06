@@ -18,19 +18,24 @@ const settings = DemoHostSettings.parse({
 });
 if (settings.transport === "disabled") throw new Error("Do not start the demo host when disabled.");
 const transport = settings.transport;
-const ownerUserId = await resolveGitHubOwner(settings.owner);
-const token = requireEnv("DEMO_HOST_CONNECTION_TOKEN");
-if (token.length < 32) throw new Error("The demo host connection token must contain at least 32 characters.");
+const token = optionalEnv("DEMO_HOST_CONNECTION_TOKEN", "");
+if (transport !== "github" && token.length < 32) throw new Error("The demo host connection token must contain at least 32 characters.");
 const serviceKey = requireEnv("DEMO_HOST_KEY");
 const githubToken = process.env.DEMO_HOST_GITHUB_TOKEN;
 const needsGitHub = transport === "github" || transport === "both";
-if (needsGitHub && (!githubToken || !(await verifyGitHubOwner(githubToken, settings.owner)))) {
+const ownerUserId = needsGitHub
+  ? (githubToken ? await verifyGitHubOwner(githubToken, settings.owner) : undefined)
+  : await resolveGitHubOwner(settings.owner);
+if (!ownerUserId) {
   throw new Error("Mission Control requires a valid GitHub credential for the configured demo owner.");
 }
-const [harnesses, profiles, policy] = await Promise.all([loadHarnesses(), loadProfiles(), loadPolicy()]);
-const harness = harnesses.get(settings.harness)?.[0];
-if (!harness) throw new Error("The demo host harness is not published.");
-const admitted = admitHostedHarness(harness, profiles, policy);
+const policy = await loadPolicy();
+const managed = transport === "github" ? undefined : await (async () => {
+  const [harnesses, profiles] = await Promise.all([loadHarnesses(), loadProfiles()]);
+  const harness = harnesses.get(settings.harness)?.[0];
+  if (!harness) throw new Error("The demo host harness is not published.");
+  return { ...admitHostedHarness(harness, profiles, policy), maxTurnSeconds: Math.min(policy.maxDurationSeconds, harness.definition.limits.maxDurationSeconds) };
+})();
 if (policy.requirements.egress === "gateway-only" && !policy.acknowledgedGaps.includes("egress-not-enforced")) {
   throw new Error("Demo host egress is not enforced; the operator policy has not acknowledged this gap.");
 }
@@ -48,7 +53,7 @@ async function post(operation: string, body: unknown): Promise<unknown> {
 }
 
 const data = optionalEnv("DEMO_HOST_DATA", "/data");
-const execution = join(data, "execution");
+const execution = join(data, transport === "github" ? "github-native" : "execution");
 await mkdir(data, { recursive: true, mode: 0o711 });
 await mkdir(execution, { recursive: true, mode: 0o700 });
 await chown(execution, 10001, 10001);
@@ -71,14 +76,14 @@ if (transport === "direct" || transport === "both") {
     },
   });
 }
-app.get("/", async () => ({ service: "agent-host", transport, ready, environmentId }));
+app.get("/", async () => ({ service: "agent-host", transport, execution: transport === "github" ? "github-native" : "managed", ready, environmentId }));
 
 async function shutdown(): Promise<void> {
   if (stopping) return;
   stopping = true;
   ready = false;
   clearInterval(heartbeat);
-  child?.send({ kind: "stop" });
+  if (child?.connected) child.send({ kind: "stop" });
   if (child && child.exitCode === null) {
     const processToStop = child;
     await new Promise<void>((resolve) => {
@@ -96,17 +101,32 @@ async function shutdown(): Promise<void> {
       processToStop.once("exit", () => { clearTimeout(timer); resolve(); });
     });
   }
+  if (child?.pid) {
+    try { process.kill(-child.pid, "SIGKILL"); }
+    catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error;
+    }
+  }
   await post("release", { epoch: lease.epoch });
 }
 
 app.addHook("onClose", shutdown);
-const childConfig: OwnerConfiguration = {
-  transport, owner: settings.owner, ownerUserId, computeId: lease.computeId,
-  connectionToken: token, ...(needsGitHub ? { githubToken } : {}),
-  dataDirectory: execution, gatewayUrl: `${serviceUrl("inference-gateway")}/openai/v1/`,
-  model: admitted.model, maxTurnSeconds: Math.min(policy.maxDurationSeconds, harness.definition.limits.maxDurationSeconds),
-  port: 8765,
-};
+const common = { owner: settings.owner, ownerUserId, computeId: lease.computeId, dataDirectory: execution };
+let childConfig: OwnerConfiguration;
+if (transport === "github") {
+  if (!githubToken) throw new Error("GitHub-native hosting requires the owner's credential.");
+  childConfig = { ...common, execution: "github-native", transport, githubToken };
+} else {
+  if (!managed) throw new Error("Managed hosting configuration is unavailable.");
+  childConfig = {
+    ...common, execution: "managed", transport,
+    connectionToken: token, ...(needsGitHub ? { githubToken } : {}),
+    runtimePath: process.env.DEMO_HOST_RUNTIME_PATH,
+    runtimeProvider: process.env.DEMO_HOST_RUNTIME_PROVIDER,
+    gatewayUrl: `${serviceUrl("inference-gateway")}/openai/v1/`,
+    model: managed.model, maxTurnSeconds: managed.maxTurnSeconds, port: 8765,
+  };
+}
 child = fork(fileURLToPath(new URL("./owner.js", import.meta.url)), [], {
   uid: 10001, gid: 10001, cwd: execution,
   detached: true,
@@ -128,6 +148,7 @@ child.on("message", (value: unknown) => {
     const provision = async () => {
       if (transport === "direct" || transport === "both") serverKey = await readServerKey(8765, token);
       await post("heartbeat", { epoch: lease.epoch, environmentId, serverKey });
+      if (stopping) return;
       ready = true;
       app.log.info({ transport, environmentId }, "Demo agent host ready.");
     };
@@ -150,10 +171,10 @@ child.on("message", (value: unknown) => {
       return;
     }
     void post(request.operation, { epoch: lease.epoch, sessionId: request.sessionId, ...(request.operation === "session" ? { resume: request.resume } : {}) })
-      .then((result) => { child?.send({ kind: "response", id: message.id, result }); })
+      .then((result) => { if (!stopping && child?.connected) child.send({ kind: "response", id: message.id, result }); })
       .catch((error: unknown) => {
         app.log.error({ operation: request.operation }, "Host session control failed.");
-        child?.send({ kind: "response", id: message.id, error: error instanceof Error ? error.message : "Host control failed." });
+        if (!stopping && child?.connected) child.send({ kind: "response", id: message.id, error: error instanceof Error ? error.message : "Host control failed." });
       });
   }
 });
@@ -165,6 +186,7 @@ const heartbeat = setInterval(() => {
   if (heartbeating || stopping) return;
   heartbeating = true;
   void post("heartbeat", { epoch: lease.epoch, environmentId, serverKey }).then((result) => {
+    if (stopping) return;
     if (result && typeof result === "object" && "closedSessions" in result) {
       child?.send({ kind: "close", sessionIds: result.closedSessions });
     }

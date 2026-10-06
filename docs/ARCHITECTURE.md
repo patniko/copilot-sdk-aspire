@@ -65,10 +65,11 @@ product layers, not properties of the current lease mechanism.
 
 ## Optional demo agent host
 
-This is a separate, disabled-by-default integration, not attachment to a batch attempt. It requires
-an explicitly marked `interaction: "conversation"` harness. The TypeScript host reuses the shared
-tool/skill/prompt mapping without the batch `submit_result` contract. Python batch behavior is unchanged.
-Read the [compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate) before enabling it.
+This is a separate, disabled-by-default integration, not attachment to a batch attempt. `github` selects
+GitHub-native sessions through Mission Control, using the released CLI server and Copilot inference.
+`direct` and `both` select managed hosting and require an `interaction: "conversation"` harness plus the
+[runtime prerequisites](DEPLOYMENT.md#demo-host-compatibility-gate). Managed hosting reuses the shared
+tool/skill/prompt mapping without `submit_result`. Python batch behavior is unchanged.
 
 ```mermaid
 flowchart LR
@@ -79,34 +80,39 @@ flowchart LR
     Host["agent-host<br/>Supervisor + isolated SDK owner"]
     State[("Named volume / Azure Files<br/>Runtime history and workspace")]
     Dispatch["job-dispatcher<br/>Host lease and session grants"]
-    Ledger[("PostgreSQL<br/>Owner, snapshots, usage")]
+    Ledger[("PostgreSQL<br/>Owner; managed snapshots/usage")]
     Gateway["inference-gateway"]
     Foundry["Existing Foundry deployment"]
+    Copilot["GitHub Copilot inference"]
     CLI --> Provision
     CLI --> Direct --> Host
     CLI --> MC --> Host
     Host --> State
     Host --> Dispatch --> Ledger
     Provision --> Ledger
-    Host -->|session-scoped capability| Gateway --> Foundry
+    Host -->|managed: session capability| Gateway --> Foundry
+    Host -->|native: GitHub identity| Copilot
 ```
 
 The supervisor keeps its service credential outside the execution uid and passes bounded control messages
 to an unprivileged SDK owner process. The owner keeps one runtime alive, exposes its in-process AHP server,
-and renews session capabilities through the supervisor. It does not hold a Foundry or database credential.
+and, for managed sessions, renews capabilities through the supervisor. It does not hold a Foundry or database credential.
 GitHub hosting introduces a GitHub identity credential; that is a different boundary from the credential-free
 batch runners.
 
 The PostgreSQL host lease fences grant issuance and binds the durable host to an immutable GitHub user ID.
-The runtime catalog also permits only one writer. The host permits at most ten open retained conversations and
+The runtime catalog also permits only one writer. Managed hosting permits at most ten open retained conversations and
 one active inference session; additional sessions must wait or the active turn must be aborted. Usage survives
 grant renewal and host restart. These are operational bounds, not exact billing reservations.
 
-AHP-created sessions use application creation/resume factories. Runtime history and workspace are retained on
+Managed sessions use application creation/resume factories. GitHub-native sessions are host-owned and do not
+invoke those factories or consume app-managed inference grants. Native state lives under `/data/github-native`;
+managed state under `/data/execution`. Runtime history and workspace are retained on
 the host volume; PostgreSQL stores admitted snapshots and cumulative usage, not a replacement AHP transcript.
 Client disconnection is distinct from stopping the owner. Restart recovery must re-register application tools and
 callbacks, and interrupted side effects must not be retried automatically. Closing through the API revokes future
-inference and signals the owner on its next heartbeat; it does not delete retained data.
+inference and signals the owner on its next heartbeat; it does not delete retained data. Native lifecycle
+operations belong to the connected Copilot client rather than the managed-session API.
 
 Runtime catalog locking, Azure storage semantics, revision drain/replacement, and actual CLI/runtime compatibility
 remain deployment qualification gates. This implementation is not a multi-customer host or a general runtime

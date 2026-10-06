@@ -7,6 +7,7 @@ import type { TryTarget } from "./types.js";
 export const HostConnectionInfo = z.object({
   transport: z.enum(["direct", "github", "both"]),
   online: z.boolean(),
+  execution: z.enum(["managed", "github-native"]).optional(),
   environmentId: z.string().max(200).optional(),
   token: z.string().min(32).max(200).optional(),
   expiresAt: z.string().datetime().optional(),
