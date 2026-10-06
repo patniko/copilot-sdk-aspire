@@ -16,12 +16,13 @@ and model setup; this guide owns the implementation workflow.
 | [`src/job-dispatcher/src`](../src/job-dispatcher/src) | Executor claims, eligibility, leases, capability minting, attempt reports |
 | [`src/job-store/src`](../src/job-store/src) | Shared transactional PostgreSQL ledger, migrations, event notifications |
 | [`src/agent-executor/src`](../src/agent-executor/src) | Executor slots, uid isolation, runner lifecycle, protocol and result validation |
+| [`src/agent-host/src`](../src/agent-host/src) | Experimental long-lived SDK owner, AHP ingress, connection provisioning, and host supervision |
 | [`src/inference-gateway/src`](../src/inference-gateway/src) | Model route checks, capability authorization, upstream identity, usage reporting |
 | [`src/harness-hosting/src`](../src/harness-hosting/src) | TypeScript Copilot SDK runner, session mapping, permission handlers, tool bindings |
 | [`src/service-defaults/src`](../src/service-defaults/src) | Shared HTTP, auth, logging, Postgres, configuration, and registry helpers |
 | [`execution-profiles`](../execution-profiles) | Approved profile manifests and Python SDK sample implementation |
 | [`tools/python`](../tools/python) | Packaged Python tool implementations |
-| [`harnesses`](../harnesses), [`policy`](../policy) | File-published behavior and operator ceilings |
+| [`examples/customer-config`](../examples/customer-config) | Committed seed harnesses and policy; editable copies live in the ignored customer workspace |
 | [`configurator`](../configurator) | Local React/Vite UI and companion server for authoring and operations |
 | [`deploy/Dockerfile`](../deploy/Dockerfile) | Control-plane images and executor toolchain |
 | [`tests`](../tests), [`configurator/test`](../configurator/test) | Unit and integration coverage |
@@ -114,6 +115,37 @@ Attempt provenance is only partially captured and has no public export endpoint.
 the original input and trial-to-job mapping externally, and record the environment/scorer identity separately.
 See the [evidence inventory and comparison design](PRODUCT-OVERVIEW.md#5-can-it-version-configurations-run-comparisons-and-store-results)
 before treating stored jobs as a complete experiment record.
+
+## Hosted conversations
+
+The optional demo path requires `interaction: "conversation"`; ordinary batch admission rejects these
+harnesses. `buildSessionOptions(..., "conversation")` omits the terminal result contract while the default
+three-argument mapping remains unchanged for batch runners. The hosted implementation is TypeScript only;
+Python/TypeScript batch parity remains required.
+
+Host control uses separate PostgreSQL records and versioned session inference claims. Never synthesize a job
+or extend an attempt token indefinitely to represent a conversation. Session grant renewal must retain usage,
+respect current policy, and be fenced by the active host epoch. The connection proxy uses one-time tickets,
+not the private listener token.
+
+Run the focused host unit/store tests after building. The opt-in real-runtime test uses a real GitHub
+authentication exchange, a Linux host image and persistent Docker volume, but a fake model upstream:
+
+```powershell
+pnpm exec vitest run --project unit tests\unit\demo-host.test.ts tests\unit\session-capability.test.ts
+pnpm exec vitest run --project integration tests\integration\host-store.test.ts
+```
+
+`tests/integration/host-runtime.test.ts` additionally requires `DEMO_HOST_RUNTIME_TESTS=1`,
+`DEMO_TEST_GITHUB_TOKEN`, `DEMO_TEST_GITHUB_OWNER`, and a qualified image named
+`copilot-aspire-agent-host:demo` (or `DEMO_HOST_TEST_IMAGE`). Supply credentials through your normal protected
+environment, never in test source or recordings. Build that test image from `examples/customer-config`,
+not private customer data. `DEMO_HOST_TEST_SOURCE=1` is a local debugging mode that mounts the built host
+JavaScript; it does not qualify a production image or change runtime authentication requirements.
+
+A Docker/store test does not prove Azure Files behavior, direct CLI compatibility, or Mission Control
+attachment. Collect those results separately and keep the [known compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate)
+explicit until the matching runtime/client artifact is qualified.
 
 ## Add a harness or tool
 

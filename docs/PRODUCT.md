@@ -12,7 +12,8 @@ Turn a customer-defined Copilot SDK harness into a durable job service that its 
 run locally, and deploy into their own Azure subscription. The application does not depend on a project-operated
 control plane.
 
-The unit of work is a **job with a structured result**, not a hosted general-purpose chat conversation.
+The default unit of work is a **job with a structured result**. A separate opt-in demo-host integration
+adds a conversation path, subject to the runtime and deployment qualification gates below.
 The local configurator helps author and operate the repository; the deployed console helps callers use jobs.
 
 **Job durability is not SDK-session durability; configuration versioning is not evaluation; credential separation
@@ -46,6 +47,12 @@ and approver currently share one API-key principal.
 | Input request | A bounded permission prompt or question answered by the job's caller |
 
 ## Supported today
+
+The experimental demo host has control-plane persistence, harness mapping, transport configuration, and
+connection-provisioning code. It is not yet a blanket claim of ready-to-demo CLI or Azure compatibility.
+It requires a qualified AHP client/runtime pair, expected-owner enforcement, and verified storage behavior.
+The [deployment guide](DEPLOYMENT.md#demo-host-compatibility-gate) records the current blockers; the table below
+describes the established batch product.
 
 | Capability | Current scope | Evidence / detail |
 | --- | --- | --- |
@@ -89,7 +96,7 @@ isolation or compliance claims. Historical live-run evidence is recorded in
 | MCP integrations | A schema term or planned placement is not a working local/remote MCP connector |
 | Copilot-authenticated inference route | The implemented production route is Foundry with gateway-owned Entra identity |
 | General artifact/file persistence or repository automation | Attempt files are temporary; coding jobs do not automatically check out, commit, or push a repository |
-| Resumable chat/session history | Retrying a job starts a fresh attempt, not an SDK conversation resume |
+| Resuming batch jobs as chat | Retrying a job starts a fresh attempt; the separate experimental demo host has its own retained-session lifecycle and qualification gates |
 | Proactive steering, suspended waits, or continuous multi-hour attempts | Interaction is agent-requested; waiting uses an executor slot and attempt time; the current attempt maximum is one hour |
 | Cross-job workflows, triggers, and completion webhooks | Sub-agents run within one attempt; an external workflow engine or client must coordinate jobs |
 | Integrated experiments and scoring | Version labels, digests, raw results, and partial provenance do not provide datasets, trials, scorers, or regression comparisons |

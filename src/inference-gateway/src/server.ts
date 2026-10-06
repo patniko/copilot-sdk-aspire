@@ -42,13 +42,13 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
   async function authorize(request: FastifyRequest, reply: FastifyReply): Promise<InferenceCapabilityClaims | undefined> {
     const presented = bearerToken(request) ?? (request.headers["api-key"] as string | undefined);
     if (!presented) {
-      openAiError(reply, 401, "missing_capability", "A job capability is required.");
+      openAiError(reply, 401, "missing_capability", "An inference capability is required.");
       return undefined;
     }
     try {
       return await verifyInferenceCapability(deps.signingKey, presented);
     } catch {
-      openAiError(reply, 401, "invalid_capability", "The job capability is invalid or expired.");
+      openAiError(reply, 401, "invalid_capability", "The inference capability is invalid or expired.");
       return undefined;
     }
   }
@@ -78,7 +78,7 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
     }
     const route = deps.routes.routes.get(body.model);
     if (!route || !claims.mdl.includes(body.model)) {
-      return openAiError(reply, 403, "model_not_allowed", "The model is not approved for this job.");
+      return openAiError(reply, 403, "model_not_allowed", "The model is not approved for this execution.");
     }
 
     let status: CapabilityIntrospection;
@@ -89,7 +89,7 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
       return openAiError(reply, 503, "authorization_unavailable", "Authorization service unavailable.");
     }
     if (!status.active) {
-      return openAiError(reply, 403, `capability_${status.reason ?? "inactive"}`, "The job capability is not active.");
+      return openAiError(reply, 403, `capability_${status.reason ?? "inactive"}`, "The inference capability is not active.");
     }
 
     const current = inFlight.get(claims.jti) ?? 0;

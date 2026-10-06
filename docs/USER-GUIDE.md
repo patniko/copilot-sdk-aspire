@@ -77,6 +77,62 @@ aspire secret get "Parameters:dev-api-key"
 
 Treat the output as a secret. Do not put it in documentation, screenshots, or committed configuration.
 
+## Demo agent host
+
+The experimental host is separate from the job console. It lets an eligible Copilot CLI use an
+application-managed conversation and retained remote workspace. **Complete the
+[compatibility and deployment gates](DEPLOYMENT.md#demo-host-compatibility-gate) first.** The presence
+of configuration controls does not mean the currently bundled CLI/runtime supports the required path.
+
+In the configurator, choose **Demo agent host** in Local run or in an Azure deployment target:
+
+| Choice | Experience |
+| --- | --- |
+| Direct | CLI to local host, or CLI to customer-owned Azure WSS ingress |
+| GitHub | CLI through the account's Mission Control environment |
+| Both | Both transports on the same host and retained conversations |
+
+Set the expected GitHub owner and a conversation harness such as `interactive-demo`. For GitHub hosting,
+save the owner's credential using the password field in Local run; the credential is kept in Aspire secrets.
+Keep it out of the workspace, target JSON, logs, and demo recordings.
+
+After the qualified host is ready, use the repository launcher:
+
+```powershell
+pnpm host:connect --target local --transport direct
+pnpm host:connect --target azure --transport direct
+pnpm host:connect --target azure --transport github
+```
+
+`azure` uses the selected deployment target. The launcher reuses the configurator's API-key resolution,
+retrieves a new connection ticket, and provisions the exact endpoint's public key to the direct CLI.
+It does not print the ticket or caller API key. The CLI's token-bearing URL still appears in its process
+arguments; do not record process listings or copy that URL into documentation.
+
+The GitHub launcher prints the environment-specific `/ahp cloud <environment-id>` command and opens the CLI.
+Run that command in the eligible client. Registration and attachment eligibility are separate checks.
+Use `--cli <qualified-executable-or-built-JavaScript-entrypoint>` when testing a source-built client.
+
+Use the remote session picker or `/ahp sessions` and `/ahp attach <id>` to select conversations. For a direct
+reconnection after leaving the CLI, request a fresh ticket and select the retained conversation:
+
+```powershell
+pnpm host:connect --target azure --transport direct --resume <AHP-session-id>
+```
+
+Direct tickets expire after 60 seconds and are single-use. Automatic transport reconnection cannot reuse a
+spent ticket; rerun the launcher. Closing the CLI does not shut down the server, roll back tool effects, or
+erase completed history. An interrupted turn is not automatically safe to repeat.
+
+All tools operate in the remote host's workspace, not your workstation directory. Retained conversations
+belong to one owner and share that workspace; they are not per-customer sandboxes. No automatic checkout,
+upload, commit, or push is performed.
+
+The [host control API](API.md#experimental-demo-host-control) lists retained control-plane session IDs and
+can close them. Use those IDs for API close operations, and the AHP picker IDs for CLI attachment. Closing
+revokes future inference but does not delete retained files or history. Preserve the volume and database
+across restarts; Azure storage correctness must be qualified separately from local Docker persistence.
+
 ## Run a job in the console
 
 Open the `agent-api` URL in a browser and enter the caller API key, not a service key or a Foundry credential.

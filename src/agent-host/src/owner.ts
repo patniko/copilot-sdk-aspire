@@ -115,7 +115,9 @@ async function start(config: OwnerConfiguration): Promise<void> {
         },
       },
     };
-    const session = resume ? await owner.resumeSession(id, options) : await owner.createSession({ ...options, sessionId: id });
+    const session = resume
+      ? await owner.resumeSession(id, { ...options, continuePendingWork: false })
+      : await owner.createSession({ ...options, sessionId: id });
     sessions.set(id, session);
     session.on((event) => {
       if (event.type === "session.idle" && activeSession === id && !event.agentId) {
@@ -145,6 +147,7 @@ async function start(config: OwnerConfiguration): Promise<void> {
     },
     resumeSession: async ({ sessionId, config: selected, signal }) => {
       signal.throwIfAborted();
+      if (selected.continuePendingWork) throw new Error("The demo host does not automatically replay interrupted work.");
       try {
         return await materialize(sessionId, selected, true);
       } catch (error) {

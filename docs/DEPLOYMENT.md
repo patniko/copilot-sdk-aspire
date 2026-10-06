@@ -21,6 +21,7 @@ In the target resource group:
 | `agent-api` container app | The only external ingress (HTTPS) |
 | `job-dispatcher`, `inference-gateway` container apps | Internal ingress only |
 | `agent-executor` container app | No ingress; polls the dispatcher |
+| Optional `agent-host` container app and persistent volume | Experimental retained conversations; direct WSS, GitHub relay, or both; disabled by default |
 | Azure Database for PostgreSQL flexible server (Burstable B1ms, 32 GB) | Job ledger; Microsoft Entra authentication only |
 | User-assigned identities for API, dispatcher, gateway | Database admin (API, dispatcher); model access (gateway) |
 
@@ -101,6 +102,69 @@ az containerapp logs show -g $rg -n agent-executor --tail 20
 Fixed costs accrue even when idle: the PostgreSQL server, the container registry, Log Analytics ingestion, and one
 always-on replica of each container app (minimum replicas are 1 so the executor can poll and leases stay
 renewed). Model usage is billed by the Foundry deployment. More executor replicas do not increase model quota.
+An enabled demo host adds always-on compute and persistent storage even when no CLI is connected.
+
+## Optional demo agent host
+
+Configure the host independently in **Local run** and each **Deploy** target. Enabling it locally does not
+silently enable Azure ingress. The same conversation harness and Foundry gateway are used for both transport
+experiences.
+
+| Parameter | Meaning |
+| --- | --- |
+| `Parameters:demo-host-transport` | `disabled` (default), `direct`, `github`, or `both` |
+| `Parameters:demo-host-owner` | Expected GitHub login; resolved to a numeric account ID and pinned in durable host ownership |
+| `Parameters:demo-host-harness` | A conversation harness in the customer workspace; defaults to `interactive-demo` |
+| `Parameters:demo-host-github-token` | Owner credential for Mission Control; store only in Aspire secrets, never in the customer workspace or target JSON |
+
+For production-mode deployment, the corresponding names are `Parameters__demo-host-*`. The configurator forwards
+the GitHub credential from the protected local Aspire secret only when the selected target explicitly enables
+`github` or `both`; task output redacts it. **Local run** provides a password input that stores this credential
+without returning it from the settings API or placing it in a command line.
+
+The `interactive-demo` example is seeded into new customer workspaces. Existing workspaces are not overwritten:
+copy/adapt the example explicitly if it is absent. Its model names still need to match the configured policy and
+Foundry deployments. A conversation harness cannot be submitted as a batch job.
+
+### Demo host compatibility gate
+
+**Do not assume the bundled runtime makes both demos ready.** The installed SDK exposes AHP hosting, but the
+inspected runtime requires additional compatibility work for a managed host:
+
+- Direct non-loopback hosts require sealed authentication. The CLI must support independently provisioned
+  `COPILOT_AHP_SERVER_KEY` pins, not silently send an unsealed credential.
+- The hosting runtime must enforce `COPILOT_AHP_EXPECTED_OWNER` before serving authenticated session operations.
+  Older runtimes can ignore unknown environment variables, so configuration alone is not proof of enforcement.
+- Application factories must be able to preserve managed defaults such as disabled configuration discovery.
+  The currently observed bundled runtime rejects the application's `enableConfigDiscovery: false` override.
+- Mission Control and CLI AHP access require the account's normal feature eligibility. `--experimental` is not
+  an entitlement or a reason to bypass a disabled feature.
+
+The corresponding prerequisite changes are in the adjacent `copilot-agent-runtime` checkout. A source patch is
+not a runnable artifact: qualify the matching launcher/provider and CLI before activation. Do not disable owner
+checks, sealed authentication, or managed session restrictions to make an older build work.
+
+### Storage and revision requirements
+
+The AppHost mounts a named volume at `/data`; Azure publishing maps persistent volume storage through the
+Container Apps integration. Preserve both the volume and PostgreSQL. The database is not a backup of runtime
+history or the working tree.
+
+Review the generated storage resources and qualify the actual Azure mount's permissions, file/SQLite locking,
+atomic writes, and restart integrity. A working local Docker volume is not proof of Azure Files compatibility.
+If that storage cannot satisfy the runtime's requirements, do not claim durable Azure support.
+
+The current TypeScript Aspire scale API exposes `minReplicas`, not `maxReplicas`. The host lease and catalog
+reject concurrent owners; they are not an autoscaling strategy. Set the Azure host's maximum replicas to one
+in the reviewed deployment configuration. Do not use normal rolling traffic splitting against one catalog:
+deactivate/drain the previous host revision before starting its replacement. Reconnect clients afterward.
+Do not delete the host volume during an upgrade.
+
+Changing the expected account is not a supported in-place ownership reassignment. A different numeric account
+ID cannot acquire the existing host, including when a login name is reused. A legacy prototype host without a
+pinned numeric identity requires an explicit operator-reviewed migration rather than automatic adoption.
+
+For operator and client steps, see [Demo agent host](USER-GUIDE.md#demo-agent-host).
 
 ## Tear down
 

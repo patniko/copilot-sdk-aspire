@@ -101,6 +101,10 @@ export function LocalRunView() {
                 </a>
               )}
               <CopyButton label="Copy API key" text={async () => (await api<{ key: string }>("/api/try/local/key", { method: "POST" })).key} />
+              {(settings?.local.demoHost?.transport === "direct" || settings?.local.demoHost?.transport === "both") &&
+                <CopyButton label="Copy direct CLI launcher" text="pnpm host:connect --target local --transport direct" />}
+              {(settings?.local.demoHost?.transport === "github" || settings?.local.demoHost?.transport === "both") &&
+                <CopyButton label="Copy GitHub CLI launcher" text="pnpm host:connect --target local --transport github" />}
               <button type="button" className="btn-secondary btn-sm" onClick={() => setView("try")}>
                 <FlaskConical className="h-3.5 w-3.5" /> Try a job
               </button>

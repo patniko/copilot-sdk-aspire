@@ -9,6 +9,12 @@ This document answers the six product questions against the current source, not 
 running deployment is current, that capacity has been measured, or that all production-readiness gates are closed.
 Recommendations are explicitly identified as future work.
 
+**Scope note:** the assessment below describes the batch service. A new, disabled-by-default demo-host
+integration adds separate retained conversation records and direct/GitHub transport configuration. Its
+runtime/client and Azure storage compatibility are still qualification gates, not evidence that batch
+attempts have become resumable. See [optional host architecture](ARCHITECTURE.md#optional-demo-agent-host)
+and [deployment prerequisites](DEPLOYMENT.md#demo-host-compatibility-gate).
+
 This page owns the detailed capability assessment, comparison methodology, and proposed enterprise direction.
 [PRODUCT.md](PRODUCT.md) summarizes the product contract; the user, developer, API, architecture, and security
 guides own their operational reference details. Use the [documentation maintenance map](MAINTAINING-DOCS.md#change-to-document-map)

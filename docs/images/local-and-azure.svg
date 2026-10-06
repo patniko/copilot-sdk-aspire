@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="710" viewBox="0 0 1280 710" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="900" viewBox="0 0 1280 900" role="img" aria-labelledby="title description">
   <title id="title">Local and Azure deployment topology</title>
-  <desc id="description">One Aspire AppHost places the API, dispatcher, and gateway in local Node processes or Azure Container Apps. PostgreSQL is a local container or an Azure managed server. The executor is a Linux container in both modes. Local inference uses developer Azure CLI identity and deployed inference uses gateway managed identity. The Foundry account already exists.</desc>
+  <desc id="description">One Aspire AppHost places the API, dispatcher, and gateway in local Node processes or Azure Container Apps. PostgreSQL is a local container or managed Azure server. The executor is containerized in both modes. An optional experimental host adds a persistent volume and direct CLI or GitHub relay connections; direct Azure hosting adds WSS ingress. Runtime and Azure storage compatibility require qualification. Model credentials remain with the gateway and Foundry already exists.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#576574"/>
@@ -15,7 +15,7 @@
       .edge { fill: none; stroke: #576574; stroke-width: 2; marker-end: url(#arrow); }
     </style>
   </defs>
-  <rect width="1280" height="710" fill="#ffffff"/>
+  <rect width="1280" height="900" fill="#ffffff"/>
   <text x="32" y="42" class="title">One application model, two placements</text>
   <text x="32" y="70" class="body">The executor stays containerized locally; model credentials stay with the gateway.</text>
   <rect x="440" y="95" width="400" height="75" rx="12" fill="#f0eaff" stroke="#8250df"/>
@@ -53,7 +53,7 @@
   <text x="810" y="435" class="body" text-anchor="middle">Entra-authenticated ledger</text>
   <rect x="965" y="375" width="265" height="90" rx="10" fill="#fff4df" stroke="#b7791f"/>
   <text x="1097" y="405" class="node" text-anchor="middle">Ingress boundaries</text>
-  <text x="1097" y="429" class="body" text-anchor="middle">Only agent-api is external</text>
+  <text x="1097" y="429" class="body" text-anchor="middle">agent-api external by default</text>
   <text x="1097" y="451" class="body" text-anchor="middle">Executor has no ingress</text>
   <rect x="678" y="485" width="552" height="64" rx="10" fill="#e6f6ed" stroke="#22863a"/>
   <text x="954" y="512" class="node" text-anchor="middle">Gateway uses its managed identity</text>
@@ -61,6 +61,14 @@
   <text x="678" y="581" class="body">Registry and pull identity: service images.</text>
   <text x="678" y="606" class="body">Container Apps environment and Log Analytics: hosting/logs.</text>
 
-  <text x="32" y="670" class="body">Both modes use the existing Foundry deployment. Deploying the service does not create or delete that account.</text>
-  <text x="32" y="697" class="label">Placement parity is not production hardening. Network egress remains unenforced; see docs/SECURITY.md and docs/DEPLOYMENT.md.</text>
+  <rect x="24" y="652" width="1230" height="145" rx="12" fill="#f6f8fa" stroke="#8250df"/>
+  <text x="48" y="679" class="heading">Optional experimental agent host: separate from batch jobs</text>
+  <rect x="48" y="696" width="552" height="80" rx="10" fill="#fff4df" stroke="#b7791f"/>
+  <text x="324" y="723" class="node" text-anchor="middle">Local Linux agent-host + named volume</text>
+  <text x="324" y="749" class="body" text-anchor="middle">CLI connection with a provisioned key, or GitHub relay</text>
+  <rect x="678" y="696" width="552" height="80" rx="10" fill="#fff4df" stroke="#b7791f"/>
+  <text x="954" y="723" class="node" text-anchor="middle">Azure agent-host + persistent volume</text>
+  <text x="954" y="749" class="body" text-anchor="middle">Direct WSS / GitHub relay; storage and runtime gates apply</text>
+  <text x="32" y="843" class="body">Both modes use the existing Foundry deployment. Deploying the service does not create or delete that account.</text>
+  <text x="32" y="875" class="label">Placement parity is not production hardening. Network egress remains unenforced; see docs/SECURITY.md and docs/DEPLOYMENT.md.</text>
 </svg>

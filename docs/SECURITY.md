@@ -47,3 +47,38 @@ Store no credentials there, protect its delivery like application configuration,
 | API keys for callers | Suitable for development and service-to-service use. | Microsoft Entra ID authentication with application authorization. |
 | MCP not implemented | Local and remote MCP placements from the plan are not yet available. | Implement with the same capability and gateway model. |
 | Single trust boundary per deployment | Principals are isolated in the API and ledger, but share execution infrastructure. | Do not market as cross-customer isolation. |
+
+## Experimental host boundaries
+
+The optional `agent-host` is a single-trusted-owner demo integration. The table above primarily describes
+batch execution; its guarantees must not be transferred automatically to AHP or retained workspaces.
+Activation requires the [runtime compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate).
+
+Direct connections use an application-API-issued, 60-second, single-use ticket at the public proxy. The
+dispatcher atomically checks its digest, owner, host epoch, expiry, and unused state. The separate private
+listener credential never leaves the host. This protects discovery too: the underlying AHP host can expose
+catalog metadata before GitHub resource authentication. A reconnect needs a new ticket.
+
+The CLI must obtain the server's authentication public key through trusted provisioning and pin the exact
+endpoint. Public-key integrity, required sealed authentication, and runtime enforcement of the expected GitHub
+account are independent requirements. A token in a URL is not sufficient account authorization. Treat tickets
+as secrets despite their short lifetime; do not capture them in command recordings or logs.
+
+Mission Control registers an environment using the configured owner's GitHub credential. Registration and
+traffic use GitHub/WPS infrastructure outside the customer Azure deployment. It is a deliberate GitHub-centric
+path, not a claim that every byte remains inside an Azure subscription. Environment registration alone is not
+proof that a particular CLI/account can discover or attach.
+
+The supervisor owns a narrowly scoped dispatcher key; uid-isolated execution receives session capabilities,
+not database, signing, or Foundry credentials. The runtime necessarily handles GitHub authentication, and
+Mission Control hosting supplies an owner credential. Protect runtime history, configuration, and backups
+accordingly; these are not the ephemeral, credential-minimized batch workspaces.
+
+Harness restrictions apply to agent tool execution and model use. The AHP protocol also exposes owner-operated
+runtime functionality; this demo is not a hostile-caller sandbox or a substitute for a complete authorization
+layer. Do not enable arbitrary native SDK TCP access. Egress remains unenforced and the executor's root-launcher,
+shared-infrastructure, asynchronous-usage, and in-flight revocation limitations still matter.
+
+Durable storage correctness, single-writer revision handling, account binding, permission arbitration, and
+real deployed transport behavior require explicit qualification. No production-hardening, multi-customer
+isolation, automatic retention/deletion, or uninterrupted failover is claimed.

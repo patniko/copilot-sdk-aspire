@@ -16,6 +16,7 @@
     "test:integration": "vitest run --project integration",
     "typecheck:tests": "tsc -p tests/tsconfig.json",
     "configure": "pnpm -r --filter ./contracts --filter ./src/service-defaults run build && pnpm --filter @copilot-agent/configurator start",
+    "host:connect": "tsx configurator/server/connect-host.ts",
     "aspire:run": "aspire run --apphost ./apphost.mts"
   },
   "dependencies": {

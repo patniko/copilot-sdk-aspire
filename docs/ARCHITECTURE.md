@@ -16,6 +16,7 @@ network isolation than the implementation provides.
 | `job-dispatcher` | Executor eligibility, attempt claims/heartbeats/completion, capability minting/introspection/usage, lease recovery | [Dispatcher](../src/job-dispatcher/src/server.ts), [startup/reaper](../src/job-dispatcher/src/main.ts) |
 | PostgreSQL + `job-store` | Durable jobs, attempts, events, input requests, capability state, transactional transitions | [Store](../src/job-store/src/store.ts), [migrations](../src/job-store/src/migrate.ts) |
 | `agent-executor` | Polling slots, runner uid/workspace isolation, protocol validation, deadlines/cancellation, result validation | [Main](../src/agent-executor/src/main.ts), [attempt](../src/agent-executor/src/attempt.ts), [isolation](../src/agent-executor/src/isolation.ts) |
+| `agent-host` (opt-in, experimental) | Long-lived SDK owner, AHP transports, retained conversations/workspace, execution-grant renewal | [Supervisor](../src/agent-host/src/main.ts), [owner](../src/agent-host/src/owner.ts) |
 | Runner | One SDK attempt with harness tools, skills, sub-agents, and permission handlers | [TypeScript](../src/harness-hosting/src/runner.ts), [Python](../execution-profiles/python-agent/runner.py) |
 | `inference-gateway` | Approved chat-completions route, capability checks, upstream identity, token-usage reporting | [Gateway](../src/inference-gateway/src/server.ts), [routes](../src/inference-gateway/src/routes.ts) |
 | Configurator | Customer-workspace authoring plus platform build/run/deploy controls; not part of the deployed request path | [Companion server](../configurator/server/app.ts) |
@@ -37,7 +38,9 @@ workspace; they do not silently deploy the shipped examples.
 
 Locally, the gateway uses the developer's Azure CLI identity. In Azure, its managed identity receives model
 access on an existing Foundry account. The deployed API and dispatcher use Entra-authenticated PostgreSQL access.
-Only `agent-api` has external service ingress in the deployment; the executor has no ingress.
+By default, only `agent-api` has external service ingress; the executor always has no ingress.
+Enabling the experimental host's direct transport adds an authenticated WebSocket ingress.
+GitHub-only hosting uses outbound Mission Control/WPS connections, not public host ingress.
 
 The executor is always a Linux container, including during local development. It launches each concurrent slot's
 runner under a separate unprivileged uid, with a private workspace and minimal environment. It is **not** one
@@ -59,6 +62,55 @@ are ephemeral: reconnecting to a job view does not restore an ended conversation
 one hour by the contracts; queueing and retries can extend total job lifetime without providing continuous
 multi-hour execution. Checkpointed sessions, suspended waits, retained files, and cross-job workflows are proposed
 product layers, not properties of the current lease mechanism.
+
+## Optional demo agent host
+
+This is a separate, disabled-by-default integration, not attachment to a batch attempt. It requires
+an explicitly marked `interaction: "conversation"` harness. The TypeScript host reuses the shared
+tool/skill/prompt mapping without the batch `submit_result` contract. Python batch behavior is unchanged.
+Read the [compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate) before enabling it.
+
+```mermaid
+flowchart LR
+    CLI["Eligible Copilot CLI"]
+    Provision["agent-api<br/>Caller-authenticated provisioning"]
+    Direct["Direct WSS ingress<br/>One-time ticket"]
+    MC["GitHub Mission Control / WPS"]
+    Host["agent-host<br/>Supervisor + isolated SDK owner"]
+    State[("Named volume / Azure Files<br/>Runtime history and workspace")]
+    Dispatch["job-dispatcher<br/>Host lease and session grants"]
+    Ledger[("PostgreSQL<br/>Owner, snapshots, usage")]
+    Gateway["inference-gateway"]
+    Foundry["Existing Foundry deployment"]
+    CLI --> Provision
+    CLI --> Direct --> Host
+    CLI --> MC --> Host
+    Host --> State
+    Host --> Dispatch --> Ledger
+    Provision --> Ledger
+    Host -->|session-scoped capability| Gateway --> Foundry
+```
+
+The supervisor keeps its service credential outside the execution uid and passes bounded control messages
+to an unprivileged SDK owner process. The owner keeps one runtime alive, exposes its in-process AHP server,
+and renews session capabilities through the supervisor. It does not hold a Foundry or database credential.
+GitHub hosting introduces a GitHub identity credential; that is a different boundary from the credential-free
+batch runners.
+
+The PostgreSQL host lease fences grant issuance and binds the durable host to an immutable GitHub user ID.
+The runtime catalog also permits only one writer. The host permits at most ten open retained conversations and
+one active inference session; additional sessions must wait or the active turn must be aborted. Usage survives
+grant renewal and host restart. These are operational bounds, not exact billing reservations.
+
+AHP-created sessions use application creation/resume factories. Runtime history and workspace are retained on
+the host volume; PostgreSQL stores admitted snapshots and cumulative usage, not a replacement AHP transcript.
+Client disconnection is distinct from stopping the owner. Restart recovery must re-register application tools and
+callbacks, and interrupted side effects must not be retried automatically. Closing through the API revokes future
+inference and signals the owner on its next heartbeat; it does not delete retained data.
+
+Runtime catalog locking, Azure storage semantics, revision drain/replacement, and actual CLI/runtime compatibility
+remain deployment qualification gates. This implementation is not a multi-customer host or a general runtime
+administration authorization layer. [Security](SECURITY.md#experimental-host-boundaries) owns those limits.
 
 ## Job execution
 
