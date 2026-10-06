@@ -48,6 +48,9 @@ export class Admission {
       throw new HttpError(404, "harness_not_found", "The requested harness version is not published.");
     }
     const definition = harness.definition;
+    if (definition.interaction === "conversation") {
+      throw new HttpError(422, "policy_rejected", "Conversation harnesses run on the demo host, not as batch jobs.");
+    }
 
     const profileId = submission.profile ?? definition.runners.defaultProfile;
     const profile = profiles.get(profileId);

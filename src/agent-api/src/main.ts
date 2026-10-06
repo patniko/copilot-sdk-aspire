@@ -1,4 +1,4 @@
-import { JobEventListener, JobStore, migrate } from "@copilot-agent/job-store";
+import { HostStore, JobEventListener, JobStore, migrate } from "@copilot-agent/job-store";
 import {
   ApiKeyAuthenticator,
   createPostgresPool,
@@ -19,6 +19,7 @@ const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);
 
 const store = new JobStore(pool);
+const hostOwner = optionalEnv("DEMO_HOST_OWNER", "").toLowerCase();
 const listener = new JobEventListener(pool);
 await listener.start();
 
@@ -30,6 +31,13 @@ const app = buildApi({
   harnesses,
   maxOpenJobsPerPrincipal: policy.maxQueuedJobsPerPrincipal,
   console: optionalEnv("CONSOLE_ENABLED", "true") !== "false",
+  ...(hostOwner ? {
+    host: {
+      store: new HostStore(pool), owner: hostOwner, principal: "dev",
+      transport: requireEnv("DEMO_HOST_TRANSPORT"),
+      connectionToken: process.env.DEMO_HOST_CONNECTION_TOKEN,
+    },
+  } : {}),
 });
 
 await listen(app, listenPort(8080));

@@ -1,5 +1,6 @@
-import type { CapabilityClaims, CapabilityIntrospection, UsageReport } from "@copilot-agent/contracts";
-import { bearerToken, createService, verifyCapability } from "@copilot-agent/service-defaults";
+import type { InferenceCapabilityClaims, CapabilityIntrospection, UsageReport } from "@copilot-agent/contracts";
+import { bearerToken, createService, verifyInferenceCapability } from "@copilot-agent/service-defaults";
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { RouteTable } from "./routes.js";
 
@@ -38,14 +39,14 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
   const inFlight = new Map<string, number>();
   let totalInFlight = 0;
 
-  async function authorize(request: FastifyRequest, reply: FastifyReply): Promise<CapabilityClaims | undefined> {
+  async function authorize(request: FastifyRequest, reply: FastifyReply): Promise<InferenceCapabilityClaims | undefined> {
     const presented = bearerToken(request) ?? (request.headers["api-key"] as string | undefined);
     if (!presented) {
       openAiError(reply, 401, "missing_capability", "A job capability is required.");
       return undefined;
     }
     try {
-      return await verifyCapability(deps.signingKey, presented);
+      return await verifyInferenceCapability(deps.signingKey, presented);
     } catch {
       openAiError(reply, 401, "invalid_capability", "The job capability is invalid or expired.");
       return undefined;
@@ -71,6 +72,7 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
       return reply;
     }
     const body = request.body as ChatBody | undefined;
+    const correlation = "job" in claims ? { job: claims.job, attempt: claims.att } : { session: claims.session };
     if (!body || typeof body !== "object" || typeof body.model !== "string") {
       return openAiError(reply, 400, "invalid_request", "A model is required.");
     }
@@ -83,7 +85,7 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
     try {
       status = await deps.introspect(claims.jti);
     } catch (error) {
-      request.log.error({ err: error, job: claims.job }, "capability introspection unavailable");
+      request.log.error({ err: error, ...correlation }, "capability introspection unavailable");
       return openAiError(reply, 503, "authorization_unavailable", "Authorization service unavailable.");
     }
     if (!status.active) {
@@ -185,8 +187,7 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
       reply.raw.end();
       request.log.info(
         {
-          job: claims.job,
-          attempt: claims.att,
+          ...correlation,
           model: body.model,
           status: upstream.status,
           streaming,
@@ -201,7 +202,7 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
       return reply;
     } catch (error) {
       const aborted = abort.signal.aborted;
-      request.log.warn({ err: error, job: claims.job, aborted }, "inference request failed");
+      request.log.warn({ err: error, ...correlation, aborted }, "inference request failed");
       if (!reply.sent && !reply.raw.headersSent) {
         return openAiError(reply, aborted ? 504 : 502, "upstream_unavailable", "The model provider request failed.");
       }
@@ -219,8 +220,8 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
       }
       if (usage.input > 0 || usage.output > 0) {
         deps
-          .reportUsage({ jti: claims.jti, model: body.model, inputTokens: usage.input, outputTokens: usage.output })
-          .catch((error) => request.log.error({ err: error, job: claims.job }, "usage report lost"));
+          .reportUsage({ requestId: randomUUID(), jti: claims.jti, model: body.model, inputTokens: usage.input, outputTokens: usage.output })
+          .catch((error) => request.log.error({ err: error, ...correlation }, "usage report lost"));
       }
     }
   });

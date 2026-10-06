@@ -7,10 +7,11 @@ import {
   securityGaps,
   type ExecutionPolicy,
 } from "@copilot-agent/contracts";
-import type { AttemptOutcome, JobStore } from "@copilot-agent/job-store";
+import type { AttemptOutcome, JobStore, HostStore } from "@copilot-agent/job-store";
 import { createService, HttpError, requireInternalKey, signCapability } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
+import { registerHostRoutes, type HostDependencies } from "./host-routes.js";
 
 export interface DispatcherDependencies {
   store: JobStore;
@@ -18,6 +19,8 @@ export interface DispatcherDependencies {
   executorKey: string;
   gatewayKey: string;
   signingKey: string;
+  hostStore?: HostStore;
+  host?: HostDependencies;
 }
 
 const LeaseBody = z.object({ leaseToken: z.string().min(16).max(200) }).strict();
@@ -70,6 +73,7 @@ const CompleteBody = z
 const IntrospectBody = z.object({ jti: z.string().uuid() }).strict();
 const UsageBody = z
   .object({
+    requestId: z.string().uuid().optional(),
     jti: z.string().uuid(),
     model: z.string().max(200),
     inputTokens: z.number().int().min(0).max(10_000_000),
@@ -90,6 +94,7 @@ function parse<T>(schema: z.ZodType<T>, body: unknown): T {
 export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   const app = createService({ name: "job-dispatcher", bodyLimit: 4 * 1024 * 1024, ready: () => deps.store.ping() });
   const { policy } = deps;
+  if (deps.host) registerHostRoutes(app, deps.host);
   const heartbeatSeconds = Math.max(3, Math.floor(policy.leaseSeconds / 3));
 
   const executorOnly = (request: FastifyRequest) => requireInternalKey(request, deps.executorKey);
@@ -241,12 +246,17 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   app.post("/internal/capabilities/introspect", async (request) => {
     gatewayOnly(request);
     const { jti } = parse(IntrospectBody, request.body);
-    return deps.store.introspectCapability(jti);
+    const result = await deps.store.introspectCapability(jti);
+    return result.reason === "unknown" && deps.hostStore ? deps.hostStore.introspect(jti) : result;
   });
 
   app.post("/internal/capabilities/usage", async (request) => {
     gatewayOnly(request);
     const usage = parse(UsageBody, request.body);
+    if (deps.hostStore && usage.requestId) {
+      const recorded = await deps.hostStore.recordUsage(usage.jti, usage.requestId, usage.inputTokens, usage.outputTokens);
+      if (recorded) return { recorded };
+    }
     return { recorded: await deps.store.recordUsage(usage.jti, usage.inputTokens, usage.outputTokens) };
   });
 

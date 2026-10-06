@@ -2,6 +2,8 @@ import {
   CAPABILITY_AUDIENCE_INFERENCE,
   CAPABILITY_ISSUER,
   CapabilityClaims,
+  InferenceCapabilityClaims,
+  type SessionCapabilityClaims,
 } from "@copilot-agent/contracts";
 import { jwtVerify, SignJWT } from "jose";
 
@@ -52,4 +54,28 @@ export async function verifyCapability(secret: string, token: string): Promise<C
     clockTolerance: 5,
   });
   return CapabilityClaims.parse(payload);
+}
+
+export async function signSessionCapability(
+  secret: string,
+  grant: Omit<SessionCapabilityClaims, "iss" | "aud" | "iat" | "exp" | "kind"> & { expiresAt: Date },
+): Promise<string> {
+  const { expiresAt, ...claims } = grant;
+  return new SignJWT({ ...claims, kind: "hosted-session" })
+    .setProtectedHeader({ alg: ALGORITHM, typ: "JWT" })
+    .setIssuer(CAPABILITY_ISSUER)
+    .setAudience(CAPABILITY_AUDIENCE_INFERENCE)
+    .setIssuedAt()
+    .setExpirationTime(Math.floor(expiresAt.getTime() / 1000))
+    .sign(keyBytes(secret));
+}
+
+export async function verifyInferenceCapability(secret: string, token: string): Promise<InferenceCapabilityClaims> {
+  const { payload } = await jwtVerify(token, keyBytes(secret), {
+    algorithms: [ALGORITHM],
+    issuer: CAPABILITY_ISSUER,
+    audience: CAPABILITY_AUDIENCE_INFERENCE,
+    clockTolerance: 5,
+  });
+  return InferenceCapabilityClaims.parse(payload);
 }

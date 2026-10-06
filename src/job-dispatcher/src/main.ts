@@ -1,9 +1,12 @@
-import { JobStore, migrate } from "@copilot-agent/job-store";
+import { HostStore, JobStore, migrate } from "@copilot-agent/job-store";
 import {
   createPostgresPool,
   listen,
   listenPort,
   loadPolicy,
+  loadHarnesses,
+  loadProfiles,
+  optionalEnv,
   readPostgresConnection,
   requireEnv,
 } from "@copilot-agent/service-defaults";
@@ -13,6 +16,11 @@ const policy = await loadPolicy();
 const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);
 const store = new JobStore(pool);
+const hostStore = new HostStore(pool);
+const hostOwner = optionalEnv("DEMO_HOST_OWNER", "").toLowerCase();
+const hostRegistry = hostOwner ? await loadHarnesses() : undefined;
+const hostHarness = hostRegistry?.get(optionalEnv("DEMO_HOST_HARNESS", "interactive-demo"))?.[0];
+if (hostOwner && !hostHarness) throw new Error("The configured demo host harness is not published.");
 
 const app = buildDispatcher({
   store,
@@ -20,6 +28,14 @@ const app = buildDispatcher({
   executorKey: requireEnv("EXECUTOR_KEY"),
   gatewayKey: requireEnv("GATEWAY_KEY"),
   signingKey: requireEnv("CAPABILITY_SIGNING_KEY"),
+  hostStore,
+  ...(hostOwner && hostHarness ? {
+    host: {
+      store: hostStore, key: requireEnv("DEMO_HOST_KEY"), owner: hostOwner,
+      harness: hostHarness, profiles: await loadProfiles(), policy,
+      signingKey: requireEnv("CAPABILITY_SIGNING_KEY"),
+    },
+  } : {}),
 });
 
 await listen(app, listenPort(8081));

@@ -22,6 +22,15 @@ export const CapabilityClaims = z.object({
 });
 export type CapabilityClaims = z.infer<typeof CapabilityClaims>;
 
+export const SessionCapabilityClaims = CapabilityClaims.omit({ job: true, att: true }).extend({
+  kind: z.literal("hosted-session"),
+  session: z.string().uuid(),
+  epoch: z.string().uuid(),
+});
+export type SessionCapabilityClaims = z.infer<typeof SessionCapabilityClaims>;
+export const InferenceCapabilityClaims = z.union([CapabilityClaims, SessionCapabilityClaims]);
+export type InferenceCapabilityClaims = z.infer<typeof InferenceCapabilityClaims>;
+
 export interface CapabilityIntrospection {
   active: boolean;
   reason?: "revoked" | "attempt_inactive" | "budget_exhausted" | "unknown";
@@ -29,6 +38,7 @@ export interface CapabilityIntrospection {
 }
 
 export interface UsageReport {
+  requestId?: string;
   jti: string;
   model: string;
   inputTokens: number;

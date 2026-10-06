@@ -184,6 +184,8 @@ export const HarnessDefinition = z
     name: z.string().regex(SLUG),
     version: z.string().regex(SEMVER),
     description: z.string().min(1).max(2000),
+    /** Explicit opt-in to the hosted conversation path; not a batch result contract. */
+    interaction: z.literal("conversation").optional(),
     instructions: z.string().min(1).max(100_000),
     prompt: PromptConfig.optional(),
     model: z

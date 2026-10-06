@@ -5,7 +5,7 @@ import {
   type HarnessSnapshot,
   type JobEventView,
 } from "@copilot-agent/contracts";
-import { JobEventListener, JobStore, StoreError } from "@copilot-agent/job-store";
+import { HostStore, JobEventListener, JobStore, StoreError } from "@copilot-agent/job-store";
 import { ApiKeyAuthenticator, createService, HttpError } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Admission } from "./admission.js";
@@ -20,6 +20,7 @@ export interface ApiDependencies {
   maxOpenJobsPerPrincipal: number;
   /** Serve the browser job console at `/`. Defaults to true. */
   console?: boolean;
+  host?: { store: HostStore; owner: string; principal: string; transport: string; connectionToken?: string };
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -33,6 +34,31 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
   }
 
   const principalOf = (request: FastifyRequest) => deps.authenticator.authenticate(request).id;
+  if (deps.host) {
+    const host = deps.host;
+    const authorizeHost = (request: FastifyRequest) => {
+      if (principalOf(request) !== host.principal) throw new HttpError(404, "not_found", "Demo host not found.");
+    };
+    app.get("/v1/host", async (request) => {
+      authorizeHost(request);
+      return { transport: host.transport, ...(await host.store.status(host.owner)) };
+    });
+    app.get("/v1/host/sessions", async (request) => {
+      authorizeHost(request);
+      return { sessions: await host.store.list(host.owner) };
+    });
+    app.post("/v1/host/connection", async (request, reply) => {
+      authorizeHost(request);
+      reply.header("cache-control", "no-store");
+      return { transport: host.transport, token: host.connectionToken, ...(await host.store.status(host.owner)) };
+    });
+    app.post("/v1/host/sessions/:id/close", async (request) => {
+      authorizeHost(request);
+      const id = (request.params as { id: string }).id;
+      if (!UUID.test(id) || !(await host.store.close(host.owner, id))) throw new HttpError(404, "not_found", "Hosted session not found.");
+      return { closed: true };
+    });
+  }
   const jobIdOf = (request: FastifyRequest) => {
     const id = (request.params as { id: string }).id;
     if (!UUID.test(id)) {
@@ -51,7 +77,10 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
   app.get("/v1/harnesses", async (request) => {
     principalOf(request);
     return {
-      harnesses: [...deps.harnesses.values()].map((versions) => ({
+      harnesses: [...deps.harnesses.values()]
+        .map((versions) => versions.filter((version) => version.definition.interaction !== "conversation"))
+        .filter((versions) => versions.length > 0)
+        .map((versions) => ({
         name: versions[0]!.definition.name,
         description: versions[0]!.definition.description,
         versions: versions.map((v) => ({

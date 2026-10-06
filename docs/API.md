@@ -206,3 +206,31 @@ accumulated token usage. Automatic retries require remaining attempts, a retryab
 `safeToRetry` or a failure without uncertain effects.
 
 Runnable examples, including negative cases, are in [`http/agent-api.http`](../http/agent-api.http).
+
+## Experimental demo host control
+
+The optional conversation host has a separate control API. These routes are registered only when
+`DEMO_HOST_OWNER` is configured on the API. They require the configured demo principal's caller key
+(`dev` in the AppHost); other authenticated principals receive `404`. They do not turn jobs into
+resumable conversations, and `/v1/harnesses` continues to list batch harnesses only.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/v1/host` | Transport, active ownership lease (`online`), optional Mission Control environment ID and public server key |
+| `GET` | `/v1/host/sessions` | Retained session IDs, harness snapshots, models, budgets, cumulative reported usage, and closed state |
+| `POST` | `/v1/host/connection` | Explicit connection-material retrieval; `Cache-Control: no-store`; includes the direct listener token when enabled |
+| `POST` | `/v1/host/sessions/{id}/close` | Mark a session closed and revoke future inference authorization; no request body |
+
+`online` means the control-plane ownership lease is active, not that a CLI handshake has succeeded.
+Use the host's `/health` for readiness. Connection material is sensitive: do not log the response or
+include token-bearing URLs in recordings. The public server key can be provisioned to a compatible
+CLI through this authenticated API; it is not a secret, but its integrity is security-critical.
+
+The host retains at most ten open sessions. Closing frees a slot but does not delete retained files,
+runtime history, or backups. The host observes closed sessions on its next heartbeat. Closing is not
+instantaneous cancellation of an already forwarded request or rollback of external effects.
+
+Hosted-session inference grants are explicitly distinguished from job-attempt grants. They bind the
+session, owner, host ownership epoch, models, and expiry. Renewal and host restart preserve the
+session's cumulative budget. The gateway still owns Foundry authentication; an inference capability
+cannot authenticate a caller to either API.
