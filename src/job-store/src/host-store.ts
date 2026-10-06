@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type pg from "pg";
 import { HostedSession, type CapabilityIntrospection, type HarnessSnapshot, type HostLease } from "@copilot-agent/contracts";
 import { StoreError } from "./store.js";
@@ -17,14 +17,16 @@ interface SessionRow {
 export class HostStore {
   constructor(private readonly pool: pg.Pool) {}
 
-  async acquire(owner: string, seconds: number): Promise<HostLease> {
+  async acquire(owner: string, seconds: number, ownerUserId: number): Promise<HostLease> {
     const result = await this.pool.query<{ epoch: string; compute_id: string; lease_until: Date }>(
-      `INSERT INTO demo_host (id, compute_id, owner, epoch, lease_until)
-       VALUES (1, $1, $2, $3, now() + $4 * interval '1 second')
-       ON CONFLICT (id) DO UPDATE SET epoch = EXCLUDED.epoch, lease_until = EXCLUDED.lease_until
+      `INSERT INTO demo_host (id, compute_id, owner, epoch, lease_until, owner_user_id)
+       VALUES (1, $1, $2, $3, now() + $4 * interval '1 second', $5)
+       ON CONFLICT (id) DO UPDATE SET epoch = EXCLUDED.epoch, lease_until = EXCLUDED.lease_until,
+         server_key = NULL, environment_id = NULL
        WHERE demo_host.lease_until < now() AND demo_host.owner = EXCLUDED.owner
+         AND demo_host.owner_user_id = EXCLUDED.owner_user_id
        RETURNING epoch, compute_id, lease_until`,
-      [randomUUID(), owner.toLowerCase(), randomUUID(), seconds],
+      [randomUUID(), owner.toLowerCase(), randomUUID(), seconds, ownerUserId],
     );
     const row = result.rows[0];
     if (!row) throw new StoreError("invalid_state", "Another host owns the lease, or the configured owner differs from the durable host.");
@@ -142,6 +144,32 @@ export class HostStore {
     const row = result.rows[0];
     return { online: row?.online ?? false, ...(row?.environment_id ? { environmentId: row.environment_id } : {}),
       ...(row?.server_key ? { serverKey: row.server_key } : {}) };
+  }
+
+  async issueConnection(owner: string): Promise<{ token: string; expiresAt: string }> {
+    const token = randomBytes(32).toString("base64url");
+    const digest = createHash("sha256").update(token).digest("hex");
+    await this.pool.query("DELETE FROM hosted_connection_tickets WHERE expires_at < now()");
+    const result = await this.pool.query<{ expires_at: Date }>(
+      `INSERT INTO hosted_connection_tickets (digest, owner, epoch, expires_at)
+       SELECT $1, owner, epoch, now() + interval '60 seconds' FROM demo_host
+       WHERE id = 1 AND owner = $2 AND lease_until > now() AND server_key IS NOT NULL
+       RETURNING expires_at`, [digest, owner],
+    );
+    if (!result.rows[0]) throw new StoreError("invalid_state", "The direct host is not ready for connections.");
+    return { token, expiresAt: result.rows[0].expires_at.toISOString() };
+  }
+
+  async consumeConnection(epoch: string, owner: string, token: string): Promise<boolean> {
+    const digest = createHash("sha256").update(token).digest("hex");
+    const result = await this.pool.query(
+      `UPDATE hosted_connection_tickets t SET used_at = now() FROM demo_host h
+       WHERE h.id = 1 AND h.epoch = $1 AND h.owner = $2 AND h.lease_until > now()
+         AND t.epoch = h.epoch AND t.owner = h.owner AND t.digest = $3
+         AND t.expires_at > now() AND t.used_at IS NULL RETURNING t.digest`,
+      [epoch, owner, digest],
+    );
+    return result.rowCount === 1;
   }
 
   async #lease(client: pg.PoolClient, epoch: string, owner: string): Promise<void> {

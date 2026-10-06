@@ -39,8 +39,14 @@ export function registerHostRoutes(app: FastifyInstance, deps: HostDependencies)
 
   app.post("/internal/host/acquire", async (request) => {
     requireInternalKey(request, deps.key);
+    const body = parse(z.object({ ownerUserId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER) }).strict(), request.body);
     admitHostedHarness(deps.harness, deps.profiles, deps.policy);
-    return perform(() => deps.store.acquire(owner, leaseSeconds));
+    return perform(() => deps.store.acquire(owner, leaseSeconds, body.ownerUserId));
+  });
+  app.post("/internal/host/connection", async (request) => {
+    requireInternalKey(request, deps.key);
+    const body = parse(epochSchema.extend({ token: z.string().min(32).max(200) }), request.body);
+    return { authorized: await deps.store.consumeConnection(body.epoch, owner, body.token) };
   });
   app.post("/internal/host/heartbeat", async (request) => {
     requireInternalKey(request, deps.key);

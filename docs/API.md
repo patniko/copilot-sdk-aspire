@@ -218,7 +218,7 @@ resumable conversations, and `/v1/harnesses` continues to list batch harnesses o
 | --- | --- | --- |
 | `GET` | `/v1/host` | Transport, active ownership lease (`online`), optional Mission Control environment ID and public server key |
 | `GET` | `/v1/host/sessions` | Retained session IDs, harness snapshots, models, budgets, cumulative reported usage, and closed state |
-| `POST` | `/v1/host/connection` | Explicit connection-material retrieval; `Cache-Control: no-store`; includes the direct listener token when enabled |
+| `POST` | `/v1/host/connection` | Explicit connection-material retrieval; `Cache-Control: no-store`; issues a 60-second, single-use direct connection ticket when enabled |
 | `POST` | `/v1/host/sessions/{id}/close` | Mark a session closed and revoke future inference authorization; no request body |
 
 `online` means the control-plane ownership lease is active, not that a CLI handshake has succeeded.

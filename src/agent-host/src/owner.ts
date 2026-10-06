@@ -39,6 +39,7 @@ async function start(config: OwnerConfiguration): Promise<void> {
   for (const key of ["PATH", "HOME", "LANG", "TMPDIR", "TMP", "TEMP"]) {
     if (process.env[key]) runtimeEnv[key] = process.env[key]!;
   }
+  runtimeEnv.COPILOT_AHP_EXPECTED_OWNER = JSON.stringify({ githubApiUrl: "https://api.github.com", userId: config.ownerUserId });
   client = new CopilotClient({
     mode: "empty",
     baseDirectory: join(config.dataDirectory, "copilot-home"),

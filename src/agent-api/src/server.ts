@@ -20,7 +20,7 @@ export interface ApiDependencies {
   maxOpenJobsPerPrincipal: number;
   /** Serve the browser job console at `/`. Defaults to true. */
   console?: boolean;
-  host?: { store: HostStore; owner: string; principal: string; transport: string; connectionToken?: string };
+  host?: { store: HostStore; owner: string; principal: string; transport: string };
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -50,7 +50,16 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
     app.post("/v1/host/connection", async (request, reply) => {
       authorizeHost(request);
       reply.header("cache-control", "no-store");
-      return { transport: host.transport, token: host.connectionToken, ...(await host.store.status(host.owner)) };
+      const status = await host.store.status(host.owner);
+      let connection: { token: string; expiresAt: string } | undefined;
+      if (host.transport === "direct" || host.transport === "both") {
+        try {
+          connection = await host.store.issueConnection(host.owner);
+        } catch (error) {
+          throw mapStoreError(error);
+        }
+      }
+      return { transport: host.transport, ...connection, ...status };
     });
     app.post("/v1/host/sessions/:id/close", async (request) => {
       authorizeHost(request);

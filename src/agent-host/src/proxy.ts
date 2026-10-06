@@ -1,7 +1,22 @@
 import { request as httpRequest, type IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
 import type { FastifyInstance } from "fastify";
-import { secretsEqual } from "@copilot-agent/service-defaults";
+
+export async function resolveGitHubOwner(login: string): Promise<number> {
+  const response = await fetch(`https://api.github.com/users/${encodeURIComponent(login)}`, {
+    headers: { accept: "application/vnd.github+json", "user-agent": "copilot-aspire-demo-host" },
+    redirect: "error",
+    signal: AbortSignal.timeout(8_000),
+  });
+  if (!response.ok) throw new Error("The configured GitHub owner could not be resolved.");
+  const user: unknown = await response.json();
+  if (!user || typeof user !== "object" || !("id" in user) || !("login" in user)
+    || typeof user.id !== "number" || !Number.isSafeInteger(user.id) || user.id <= 0
+    || typeof user.login !== "string" || user.login.toLowerCase() !== login.toLowerCase()) {
+    throw new Error("The configured GitHub owner returned an invalid identity.");
+  }
+  return user.id;
+}
 
 export async function verifyGitHubOwner(token: string, expected: string): Promise<boolean> {
   const response = await fetch("https://api.github.com/user", {
@@ -19,10 +34,9 @@ export async function verifyGitHubOwner(token: string, expected: string): Promis
 /** Authenticates upgrades, then proxies bytes; it does not reinterpret AHP messages. */
 export function registerAhpProxy(app: FastifyInstance, options: {
   token: string;
-  owner: string;
   targetPort: number;
   ready: () => boolean;
-  verifyOwner?: typeof verifyGitHubOwner;
+  authorize: (ticket: string) => Promise<boolean>;
 }): void {
   const connections = new Set<Duplex>();
   const reject = (socket: Duplex, code: number) => {
@@ -32,9 +46,9 @@ export function registerAhpProxy(app: FastifyInstance, options: {
     const url = new URL(request.url ?? "", "http://localhost");
     if (request.method !== "GET" || url.pathname !== "/" || request.headers.upgrade?.toLowerCase() !== "websocket") return reject(socket, 404);
     if (!options.ready()) return reject(socket, 503);
-    if (!secretsEqual(url.searchParams.get("tkn") ?? "", options.token)) return reject(socket, 401);
-    const bearer = /^Bearer\s+(.+)$/i.exec(request.headers.authorization ?? "")?.[1];
-    if (!bearer || !(await (options.verifyOwner ?? verifyGitHubOwner)(bearer, options.owner))) return reject(socket, 403);
+    const tickets = url.searchParams.getAll("tkn");
+    if (tickets.length !== 1 || tickets[0]!.length < 32 || tickets[0]!.length > 200) return reject(socket, 401);
+    if (!(await options.authorize(tickets[0]!))) return reject(socket, 401);
     if (socket.destroyed) return;
     const upstream = httpRequest({
       host: "127.0.0.1", port: options.targetPort, method: "GET",

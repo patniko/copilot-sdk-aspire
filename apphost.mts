@@ -143,7 +143,6 @@ if (demoHostTransport !== 'disabled') {
   api
     .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
     .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport);
-  if (direct) api.withEnvironment('DEMO_HOST_CONNECTION_TOKEN', connectionToken);
   const host = builder
     .addDockerfile('agent-host', '.', { dockerfilePath: 'deploy/Dockerfile', stage: 'agent-host' })
     .withBuildArg('CUSTOMER_CONFIG_DIR', CUSTOMER_WORKSPACE_DIR)

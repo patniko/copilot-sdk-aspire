@@ -4,6 +4,7 @@ import { HostControlRequest } from "@copilot-agent/contracts";
 export const OwnerConfiguration = z.object({
   transport: z.enum(["direct", "github", "both"]),
   owner: z.string().min(1),
+  ownerUserId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
   computeId: z.string().uuid(),
   connectionToken: z.string().min(32),
   githubToken: z.string().optional(),

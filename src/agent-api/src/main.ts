@@ -35,7 +35,6 @@ const app = buildApi({
     host: {
       store: new HostStore(pool), owner: hostOwner, principal: "dev",
       transport: requireEnv("DEMO_HOST_TRANSPORT"),
-      connectionToken: process.env.DEMO_HOST_CONNECTION_TOKEN,
     },
   } : {}),
 });

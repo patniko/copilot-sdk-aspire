@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { DemoHostSettings, HostLease } from "@copilot-agent/contracts";
 import { createService, loadHarnesses, loadPolicy, loadProfiles, admitHostedHarness, optionalEnv, requireEnv, serviceUrl, listenPort } from "@copilot-agent/service-defaults";
 import { OwnerMessage, type OwnerConfiguration } from "./protocol.js";
-import { registerAhpProxy, verifyGitHubOwner } from "./proxy.js";
+import { registerAhpProxy, resolveGitHubOwner, verifyGitHubOwner } from "./proxy.js";
 import { readServerKey, type ServerKey } from "./server-key.js";
 
 if (process.platform !== "linux" || process.getuid?.() !== 0) {
@@ -18,6 +18,7 @@ const settings = DemoHostSettings.parse({
 });
 if (settings.transport === "disabled") throw new Error("Do not start the demo host when disabled.");
 const transport = settings.transport;
+const ownerUserId = await resolveGitHubOwner(settings.owner);
 const token = requireEnv("DEMO_HOST_CONNECTION_TOKEN");
 if (token.length < 32) throw new Error("The demo host connection token must contain at least 32 characters.");
 const serviceKey = requireEnv("DEMO_HOST_KEY");
@@ -52,7 +53,7 @@ await mkdir(data, { recursive: true, mode: 0o711 });
 await mkdir(execution, { recursive: true, mode: 0o700 });
 await chown(execution, 10001, 10001);
 await chmod(execution, 0o700);
-const lease = HostLease.parse(await post("acquire", {}));
+const lease = HostLease.parse(await post("acquire", { ownerUserId }));
 let ready = false;
 let stopping = false;
 let child: ChildProcess | undefined;
@@ -62,7 +63,13 @@ const app = createService({ name: "agent-host", ready: async () => {
   if (!ready) throw new Error("The demo host is not ready.");
 } });
 if (transport === "direct" || transport === "both") {
-  registerAhpProxy(app, { token, owner: settings.owner, targetPort: 8765, ready: () => ready });
+  registerAhpProxy(app, {
+    token, targetPort: 8765, ready: () => ready,
+    authorize: async (ticket) => {
+      const response = await post("connection", { epoch: lease.epoch, token: ticket });
+      return !!response && typeof response === "object" && "authorized" in response && response.authorized === true;
+    },
+  });
 }
 app.get("/", async () => ({ service: "agent-host", transport, ready, environmentId }));
 
@@ -94,7 +101,7 @@ async function shutdown(): Promise<void> {
 
 app.addHook("onClose", shutdown);
 const childConfig: OwnerConfiguration = {
-  transport, owner: settings.owner, computeId: lease.computeId,
+  transport, owner: settings.owner, ownerUserId, computeId: lease.computeId,
   connectionToken: token, ...(needsGitHub ? { githubToken } : {}),
   dataDirectory: execution, gatewayUrl: `${serviceUrl("inference-gateway")}/openai/v1/`,
   model: admitted.model, maxTurnSeconds: Math.min(policy.maxDurationSeconds, harness.definition.limits.maxDurationSeconds),

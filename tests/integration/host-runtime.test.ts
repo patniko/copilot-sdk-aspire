@@ -99,9 +99,8 @@ describe.skipIf(!enabled)("real managed AHP host in Docker", () => {
       return endpoint;
     }
     async function connect(endpoint: string) {
-      const socket = new WebSocket(`${endpoint.replace(/^http/, "ws")}/?tkn=${encodeURIComponent(connectionToken)}`, {
-        headers: { authorization: `Bearer ${githubToken}` },
-      });
+      const ticket = await store.issueConnection(owner!);
+      const socket = new WebSocket(`${endpoint.replace(/^http/, "ws")}/?tkn=${encodeURIComponent(ticket.token)}`);
       await once(socket, "open");
       // The AHP adapter uses the browser socket subset that ws implements.
       const transport = WebSocketTransport.fromSocket(socket as unknown as Parameters<typeof WebSocketTransport.fromSocket>[0]);
