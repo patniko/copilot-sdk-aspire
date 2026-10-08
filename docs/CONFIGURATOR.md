@@ -67,7 +67,11 @@ own lifecycle and a separate retained runtime home. They are not governed by the
 
 ## Editing harnesses
 
-The editor has one tab per part of the harness contract:
+Select a harness by clicking its name in the left-hand list. Each entry shows a short description and its
+selected version; harnesses with multiple versions have a version selector. Clicking an inactive harness name
+opens its latest version. Editor sections wrap onto additional rows instead of scrolling horizontally.
+
+The editor has one section per part of the harness contract:
 
 | Tab | What you set |
 | --- | --- |
@@ -84,6 +88,14 @@ The editor has one tab per part of the harness contract:
 
 Other aids:
 
+- **Save changes** writes the current edits to disk. If you changed the version number, the save dialog offers
+  **Save as new version** (keep the original unchanged and save all current edits in a separate version folder)
+  or **Update existing** (replace the selected folder's content and version number without retaining a separate
+  copy of the old version). Cancelling leaves your draft intact. Header Save, Ctrl/Cmd+S, and **Save & reload
+  local API** use the same choice; reload runs only after a successful save. Invalid or duplicate versions are
+  rejected without overwriting an existing version.
+- **Discard changes** asks for confirmation, then restores the last saved content and clears the browser draft
+  and undo history. It does not change files on disk.
 - **Help**: every setting has a **?** popover explaining what it does in this service, what each choice changes,
   and where the platform enforces limits regardless of the harness.
 - **Decisions**: the Live plan (and the Overview tab on narrower screens) lists what the platform implements or

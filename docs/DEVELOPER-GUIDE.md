@@ -104,6 +104,10 @@ folder such as `.copilot-agent-workspace/harnesses/<name>@<version>` when retain
 name/version pairs are rejected. Updating the version in the only folder removes that old version from *new
 admission*, not from already stored job snapshots.
 
+In the configurator, saving an edited version number asks whether to **Save as new version** (preserve the
+original folder and save the complete draft separately) or **Update existing** (replace the selected folder,
+including its version number). See the [editor workflow](CONFIGURATOR.md#editing-harnesses).
+
 Versioning is an author convention, not an enforced immutable registry. The configurator warns when content
 differs from a matching platform example without a version bump, but an operator can still publish changed content
 under that label.

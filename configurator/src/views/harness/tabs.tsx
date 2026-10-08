@@ -93,7 +93,7 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
             <Field label="Name" help="harness.name" hint="Create a new harness to use a different name.">
               <input className="input" value={m.name} disabled />
             </Field>
-            <Field label="Version" help="harness.version" error={errorAt("version")}>
+            <Field label="Version" help="harness.version" error={errorAt("version")} hint="Change the version, then save to keep both versions or replace the selected one.">
               <input className="input font-mono" value={m.version} onChange={(e) => set((x) => void (x.version = e.target.value), "version")} />
             </Field>
             <Field label="Description" help="harness.description" className="md:col-span-2" error={errorAt("description")}>

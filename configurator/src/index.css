@@ -315,6 +315,55 @@
   }
 
   /* NavList */
+  .harness-entry {
+    border: 1px solid var(--borderColor-muted);
+    border-radius: 6px;
+    background: var(--bgColor-default);
+  }
+  .harness-entry-active {
+    border-color: var(--borderColor-accent-emphasis);
+    background: var(--bgColor-accent-muted);
+    box-shadow: inset 3px 0 var(--borderColor-accent-emphasis);
+  }
+  .harness-entry-name {
+    display: block;
+    width: 100%;
+    padding: 12px;
+    text-align: left;
+    border-radius: 6px;
+  }
+  .harness-entry-name:hover:not(:disabled) {
+    background: var(--control-transparent-bgColor-hover);
+  }
+  .harness-entry-name:disabled {
+    cursor: wait;
+  }
+  .harness-sections {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--borderColor-muted);
+  }
+  .harness-section {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 32px;
+    padding: 4px 10px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    font-size: 14px;
+  }
+  .harness-section:hover {
+    background: var(--control-transparent-bgColor-hover);
+  }
+  .harness-section[aria-current="page"] {
+    color: var(--fgColor-accent);
+    background: var(--bgColor-accent-muted);
+    border-color: var(--borderColor-accent-muted);
+    font-weight: 600;
+  }
   .navlist-item {
     position: relative;
     display: flex;

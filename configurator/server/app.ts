@@ -326,7 +326,13 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       if (!body.from) {
         throw new RepoError(400, "Choose a harness to copy.");
       }
-      const source = await repo.readHarness(body.from);
+      const original = await repo.readHarness(body.from);
+      const source = body.mode === "version" && body.document !== undefined
+        ? DocumentBody.parse({ document: body.document }).document as unknown as HarnessDocument
+        : original;
+      if (source.manifest.name !== original.manifest.name || source.folder !== original.folder) {
+        throw new RepoError(400, "The version draft must belong to the selected harness.");
+      }
       const sameName = documents.filter((d) => d.manifest.name === source.manifest.name);
       const highest = sameName.map((d) => d.manifest.version).sort(compareVersions).at(-1) ?? source.manifest.version;
       const name = body.mode === "duplicate" ? body.name : source.manifest.name;
@@ -349,6 +355,13 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       throw new RepoError(409, `harnesses/${folder} already exists.`);
     }
     document.folder = folder;
+    if (body.mode === "version") {
+      const result = await detail(document);
+      const errors = result.issues.filter((issue) => issue.level === "error");
+      if (errors.length > 0) {
+        throw new RepoError(422, `Fix ${errors.length} error(s) before creating a version: ${errors[0]!.path} — ${errors[0]!.message}`);
+      }
+    }
     await repo.writeHarness(document);
     return detail(await repo.readHarness(folder));
   });
