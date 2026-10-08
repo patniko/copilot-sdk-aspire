@@ -3,7 +3,6 @@ import { useEffect, useState, type ReactNode } from "react";
 import { hasToken } from "./api";
 import {
   Boxes,
-  Copilot,
   Download,
   FlaskConical,
   GitHubMark,
@@ -107,20 +106,12 @@ export function App() {
       <header className="sticky top-0 z-30 border-b border-default bg-gh-header">
         <div className="flex h-14 items-center gap-3 px-4 lg:px-6">
           <GitHubMark size={32} aria-label="GitHub" />
-          <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1.5 text-sm">
-            <span className="flex items-center gap-1.5 font-semibold">
-              <Copilot className="fg-done" /> GitHub Copilot SDK
-            </span>
-            <span className="fg-muted">/</span>
-            <span className="truncate font-semibold">Agent Service Configurator</span>
-            <Badge tone="done">Aspire</Badge>
-          </nav>
-          {workspace && (
-            <div className="ml-2 hidden items-center gap-2 text-xs md:flex">
-              <span className="flex items-center gap-1 fg-muted">
-                <Boxes /> <span className="font-semibold text-[var(--fgColor-default)]">customer workspace</span>
-              </span>
-              {workspace.changes.items.length > 0 && <Badge tone="amber">{workspace.changes.items.length} workspace changes</Badge>}
+          <div className="flex min-w-0 items-center gap-1.5 text-sm">
+            <span className="truncate font-semibold">GitHub Copilot - Self-Serve Agents</span>
+          </div>
+          {workspace && workspace.changes.items.length > 0 && (
+            <div className="ml-2 hidden md:block">
+              <Badge tone="amber">{workspace.changes.items.length} workspace changes</Badge>
             </div>
           )}
           <div className="ml-auto flex items-center gap-3">
