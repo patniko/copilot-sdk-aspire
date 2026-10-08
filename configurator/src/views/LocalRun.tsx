@@ -14,6 +14,36 @@ export function LocalRunView() {
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [hostCredential, setHostCredential] = useState("");
   const [savingCredential, setSavingCredential] = useState(false);
+  const [githubOAuthConfigured, setGitHubOAuthConfigured] = useState(false);
+  const [githubAuth, setGitHubAuth] = useState<{
+    flowId: string;
+    userCode: string;
+    verificationUri: string;
+    intervalSeconds: number;
+    status: "pending" | "failed";
+    error?: string;
+  }>();
+
+  async function startGitHubAuth() {
+    const authWindow = window.open("about:blank", "_blank");
+    if (authWindow) authWindow.opener = null;
+    setSavingCredential(true);
+    try {
+      const flow = await api<{
+        flowId: string;
+        userCode: string;
+        verificationUri: string;
+        intervalSeconds: number;
+      }>("/api/settings/demo-host-oauth", { method: "POST" });
+      setGitHubAuth({ ...flow, status: "pending" });
+      if (authWindow) authWindow.location.href = flow.verificationUri;
+    } catch (error) {
+      authWindow?.close();
+      toast(errorMessage(error), "error");
+    } finally {
+      setSavingCredential(false);
+    }
+  }
 
   async function saveHostCredential() {
     setSavingCredential(true);
@@ -31,6 +61,37 @@ export function LocalRunView() {
   useEffect(() => {
     if (settings && !draft) setDraft(structuredClone(settings.local));
   }, [settings, draft]);
+
+  useEffect(() => {
+    void api<{ configured: boolean }>("/api/settings/demo-host-oauth")
+      .then(({ configured }) => setGitHubOAuthConfigured(configured))
+      .catch(() => setGitHubOAuthConfigured(false));
+  }, []);
+
+  useEffect(() => {
+    if (!githubAuth || githubAuth.status !== "pending") return;
+    const timer = window.setTimeout(() => {
+      void api<
+        { status: "pending"; intervalSeconds: number }
+        | { status: "complete"; login: string }
+        | { status: "failed"; error: string }
+      >(`/api/settings/demo-host-oauth/${githubAuth.flowId}/poll`, { method: "POST" })
+        .then(async (result) => {
+          if (result.status === "complete") {
+            setGitHubAuth(undefined);
+            setDraft(undefined);
+            await refreshSettings();
+            toast(`Signed in to GitHub as ${result.login}`, "success");
+          } else if (result.status === "failed") {
+            setGitHubAuth({ ...githubAuth, status: "failed", error: result.error });
+          } else {
+            setGitHubAuth({ ...githubAuth, intervalSeconds: result.intervalSeconds });
+          }
+        })
+        .catch((error) => setGitHubAuth({ ...githubAuth, status: "failed", error: errorMessage(error) }));
+    }, githubAuth.intervalSeconds * 1_000);
+    return () => window.clearTimeout(timer);
+  }, [githubAuth, refreshSettings, toast]);
 
   const localBusy = tasks.some((t) => t.status === "running" && t.kind.startsWith("local"));
   const checkBusy = tasks.some((t) => t.status === "running" && ["test-unit", "test-all", "build"].includes(t.kind));
@@ -178,6 +239,32 @@ export function LocalRunView() {
           <div className="grid gap-4 md:grid-cols-2">
             <div className="md:col-span-2">
               <DemoHostFields value={draft.demoHost} onChange={(demoHost) => setDraft({ ...draft, demoHost })} />
+            </div>
+            <div className="md:col-span-2">
+              <Field label="Demo host GitHub account"
+                hint={githubOAuthConfigured
+                  ? "Signs in through the configured GitHub OAuth App, saves the token only to Aspire secrets, and fills GitHub owner automatically."
+                  : "Set CONFIGURATOR_GITHUB_CLIENT_ID before starting the configurator to enable GitHub device sign-in."}>
+                <div className="flex flex-wrap items-center gap-3">
+                  <button type="button" className="btn-secondary" disabled={!githubOAuthConfigured || savingCredential || githubAuth?.status === "pending"}
+                    onClick={() => void startGitHubAuth()}>
+                    {savingCredential || githubAuth?.status === "pending" ? <Spinner /> : <ExternalLink className="h-4 w-4" />}
+                    Sign in with GitHub
+                  </button>
+                  {githubAuth && (
+                    <div className="text-xs">
+                      {githubAuth.status === "pending" ? (
+                        <>
+                          Enter code <code className="font-semibold">{githubAuth.userCode}</code> at{" "}
+                          <a className="link" href={githubAuth.verificationUri} target="_blank" rel="noreferrer">GitHub device activation</a>.
+                        </>
+                      ) : (
+                        <span className="text-red-600 dark:text-red-400">{githubAuth.error}</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </Field>
             </div>
             <div className="md:col-span-2 flex items-end gap-3">
               <Field label="Demo host GitHub credential" className="flex-1" hint="For Mission Control. Saved only to Aspire secrets, never returned or stored in a deployment target.">

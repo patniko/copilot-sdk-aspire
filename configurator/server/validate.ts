@@ -1,8 +1,11 @@
 import {
+  applyPolicyOverride,
   type BuiltinToolGroup,
   DEFAULT_INPUT_TIMEOUT_SECONDS,
   ExecutionPolicy,
+  HARNESS_OVERRIDABLE_POLICY_FIELDS,
   HarnessDefinition,
+  HarnessPolicyOverride,
   isInteractive,
   modelOptionViolations,
   permissionModeFor,
@@ -18,7 +21,10 @@ import { canonicalJson, createAjv, sha256Hex } from "@copilot-agent/service-defa
 import type { Decision, EffectiveLimits, HarnessDocument, Issue, ProfileSummary } from "./types.js";
 
 export interface ValidationContext {
+  /** The effective policy for this harness: the base policy plus any override for its name. */
   policy: ExecutionPolicy;
+  /** Fields replaced by an operator override for this harness, if one exists. */
+  policyOverride?: string[];
   profiles: ProfileSummary[];
   /** All harness documents in the repository, for duplicate detection. */
   all: HarnessDocument[];
@@ -314,6 +320,21 @@ export function decisions(document: HarnessDocument, context: ValidationContext)
     detail: `The gateway uses ${effective.model ?? "an operator-approved model"} and holds the Foundry credential; the runner only gets a job-scoped token.`,
     path: "model",
   });
+  if (context.policyOverride) {
+    result.push({
+      kind: "info",
+      title: "Operator policy override for this harness",
+      detail: `policy/harnesses/${manifest.name}.json replaces: ${context.policyOverride.join(", ") || "nothing"}. Other policy settings come from the base policy.`,
+    });
+  }
+  if (manifest.interaction !== "conversation") {
+    result.push({
+      kind: "host",
+      title: "Managed job configuration, not native Copilot defaults",
+      detail: "The batch runner uses empty mode, an explicit tool allowlist, no ambient configuration or custom-instruction discovery, and a required submit_result output. Enabling the foundation prompt and built-ins does not switch to the native CLI configuration.",
+      path: "runners",
+    });
+  }
 
   tools.forEach((tool, index) => {
     const users = agents
@@ -406,6 +427,14 @@ export function decisions(document: HarnessDocument, context: ValidationContext)
 
   const builtin = Array.isArray(manifest.builtinTools) ? manifest.builtinTools : [];
   const permissions = manifest.permissions;
+  if (builtin.includes("agents")) {
+    result.push({
+      kind: "host",
+      title: "Copilot built-in sub-agents are enabled",
+      detail: "Runtime-provided agents do not need entries in agents[]. That list adds custom specialists; it does not enumerate the built-ins. Availability depends on the installed runtime, and managed job permissions, approved models and limits still apply.",
+      path: "builtinTools",
+    });
+  }
   if (builtin.length > 0) {
     const labels: Record<string, string> = { files: "file view and edit", shell: "shell commands", web: "web fetch", agents: "built-in sub-agents" };
     result.push({
@@ -440,8 +469,12 @@ export function decisions(document: HarnessDocument, context: ValidationContext)
       const wait = Math.min(permissions.timeoutSeconds ?? DEFAULT_INPUT_TIMEOUT_SECONDS, effective.maxDurationSeconds);
       result.push({
         kind: "info",
-        title: [asked.length ? `Asks you before: ${asked.join(", ")}` : "", permissions.questions ? "Can ask you questions" : ""].filter(Boolean).join(" · "),
-        detail: `Answer in the job console's Sessions view or in Try it. Each request waits up to ${wait}s, then it is denied; waiting counts toward the ${effective.maxDurationSeconds}s attempt deadline.`,
+        title: [asked.length ? `Copilot CLI approvals for: ${asked.join(", ")}` : "", permissions.questions ? "Can ask you questions" : ""].filter(Boolean).join(" · "),
+        detail:
+          (asked.length
+            ? "As in the Copilot CLI, workspace reads, read-only commands that stay in the workspace and read-only MCP tools run without asking; other actions wait for you. "
+            : "") +
+          `Answer in the job console's Sessions view or in Try it. Each request waits up to ${wait}s, then it is denied; waiting counts toward the ${effective.maxDurationSeconds}s attempt deadline.`,
         path: "permissions",
       });
     }
@@ -536,7 +569,7 @@ export function validatePolicy(raw: unknown, profiles: ProfileSummary[]): { poli
         issue(
           "warning",
           "acknowledgedGaps",
-          `The shipped executor cannot enforce '${gap.replace("-not-enforced", "")}'; executors will refuse to claim work until it is enforced or acknowledged.`,
+          `The shipped executor cannot enforce '${gap.replace("-not-enforced", "")}'; jobs under this policy stay queued until it is enforced or acknowledged.`,
         ),
       );
     }
@@ -548,4 +581,36 @@ export function validatePolicy(raw: unknown, profiles: ProfileSummary[]): { poli
     issues.push(issue("warning", "leaseSeconds", "Short leases can expire during slow network calls and cause duplicate attempts."));
   }
   return { policy, issues };
+}
+
+/**
+ * Validates `policy/harnesses/<harness>.json`: the override schema, that it names a known harness (the API refuses
+ * to start otherwise), and the resulting effective policy. Issues about global-only fields are left to the base policy.
+ */
+export function validatePolicyOverride(
+  raw: unknown,
+  context: { base: ExecutionPolicy; profiles: ProfileSummary[]; harnessNames: string[]; fileHarness?: string },
+): { override?: HarnessPolicyOverride; effective?: ExecutionPolicy; issues: Issue[] } {
+  const parsed = HarnessPolicyOverride.safeParse(raw);
+  if (!parsed.success) {
+    return { issues: parsed.error.issues.map((i) => issue("error", i.path.join(".") || "(root)", i.message)) };
+  }
+  const override = parsed.data;
+  const issues: Issue[] = [];
+  if (context.fileHarness !== undefined && context.fileHarness !== override.harness) {
+    issues.push(issue("error", "harness", `The file is named for '${context.fileHarness}' but overrides '${override.harness}'.`));
+  }
+  if (!context.harnessNames.includes(override.harness)) {
+    issues.push(issue("error", "harness", `No harness named '${override.harness}' exists; the job API refuses to start with this override.`));
+  }
+  if (Object.keys(override.overrides).length === 0) {
+    issues.push(issue("warning", "overrides", "The override changes nothing; remove it to use the base policy."));
+  }
+  const effective = applyPolicyOverride(context.base, override);
+  const overridable = new Set<string>(HARNESS_OVERRIDABLE_POLICY_FIELDS);
+  const result = validatePolicy(effective, context.profiles);
+  for (const found of result.issues) {
+    if (overridable.has(found.path.split(".")[0] ?? "")) issues.push(found);
+  }
+  return { override, effective, issues };
 }

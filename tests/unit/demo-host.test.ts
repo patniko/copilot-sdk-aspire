@@ -36,7 +36,7 @@ describe("opt-in demo host", () => {
 
   it("admits conversation harnesses separately from jobs", () => {
     expect(admitHostedHarness(harness, profiles, policy).model).toBe("grok-4.6");
-    expect(() => new Admission({ harnesses, profiles, policy }).admit({
+    expect(() => new Admission({ harnesses, profiles, policies: { base: policy, overrides: new Map() } }).admit({
       harness: { name: "interactive-demo" }, input: {},
     })).toThrow(/Conversation harnesses/);
     expect(() => admitHostedHarness(harnesses.get("dataset-analyst")![0]!, profiles, policy)).toThrow(/conversation harness/);

@@ -104,9 +104,11 @@ see [publication semantics](DEVELOPER-GUIDE.md#configuration-publication).
 ## Job views and pagination
 
 A job view contains `id`, `state`, `harness` (`name`, `version`, `digest`), `profile`, timestamps,
-`maxDurationSeconds`, `attempts`, `maxAttempts`, `acknowledgedGaps`, `usage`, and `pendingInputs`.
-`usage` contains `inputTokens`, `outputTokens`, and `requests`. `result` is present for a succeeded detail view;
-`error` (`code`, `message`) is included for failed, review-needed, or retry-waiting jobs.
+`maxDurationSeconds`, `attempts`, `maxAttempts`, `acknowledgedGaps`, `usage`, and `pendingInputs`, plus
+`policyDigest` (the digest of the effective policy — base policy plus any override for the harness — that admitted
+the job; absent for jobs admitted before per-harness policy). `acknowledgedGaps` lists the controls the latest
+attempt ran without. `usage` contains `inputTokens`, `outputTokens`, and `requests`. `result` is present for a
+succeeded detail view; `error` (`code`, `message`) is included for failed, review-needed, or retry-waiting jobs.
 
 The original input, resolved harness snapshot, and selected top-level model are stored but not included in
 `JobView`. There are no dedicated public snapshot or attempt-provenance endpoints. Retain submitted inputs and
@@ -148,7 +150,9 @@ comments and closes the stream after the job reaches a terminal state. A manuall
 Browser clients must use a streaming client that can attach the caller key, not place credentials in the URL.
 
 Events are an allowlisted application contract. By default they cover queued/started/retried/terminal jobs,
-sanitized runner activity, and input requested/resolved notifications. If the executor is explicitly configured
+sanitized runner activity, and input requested/resolved notifications. `job.queued` carries the admitting
+`policyDigest`, and `job.waiting_for_eligible_executor` (`missing`: required controls no polling executor enforces
+or the policy acknowledges) is recorded once when a job cannot be claimed. If the executor is explicitly configured
 with `JOB_EVENT_DETAIL=full`, runner events can additionally carry bounded SDK detail containing transcript,
 reasoning, tool, usage, failure, and sub-agent payloads. Credential-shaped fields are redacted, but arbitrary
 prompt or tool text can still contain sensitive data. The API returns only the events persisted for that job and
@@ -182,8 +186,10 @@ Send one of these bodies to the response endpoint:
 { "kind": "question", "answer": "Use the existing dataset." }
 ```
 
-Permission `scope` is optional: `kind` approves that permission type for the rest of the attempt, not future
-jobs or retries. Feedback is limited to 2000 characters; answers must contain 1-8000 characters and satisfy
+Permission `scope` is optional: `kind` approves similar requests for the rest of the attempt (the same
+non-read-only command names, all file writes, reads in the same folder, the same website host, or the same tool),
+not every request of that type and not future jobs or retries. Shell prompts list the covered names in
+`commandNames`. Feedback is limited to 2000 characters; answers must contain 1-8000 characters and satisfy
 the request's choices/freeform rules. A stale, expired, cancelled, or already answered request cannot be answered
 again. The caller cannot extend the request expiry by responding.
 
@@ -199,6 +205,10 @@ Application errors use `{ "error": { "code": "...", "message": "...", "details":
 | `409` | `idempotency_conflict`, `invalid_state` | Resolve the conflict; refresh state before acting |
 | `429` | `quota_exceeded` | Wait for open jobs to settle before submitting more |
 | `422` | `policy_rejected` | Choose a supported harness/profile/configuration |
+
+A job's `error.code` can also be `policy_revoked`: the harness's effective policy was narrowed after admission
+(for example, a model or profile removed) and the job no longer qualifies when claimed. Resubmit after the
+operator restores the policy or the harness changes; the job is not retried automatically.
 
 An HTTP success on submission means the job was accepted, not that the agent succeeded. Read the job outcome.
 Manual retry is allowed only from `failed` or `needs_review`, retains input and harness, and does not reset

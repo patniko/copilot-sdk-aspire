@@ -19,6 +19,30 @@ function countdown(expiresAt: string, now: number): string {
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 }
 
+type Permission = Extract<InputRequestView["request"], { kind: "permission" }>["permission"];
+
+/** What approving "for this run" covers, matching the runner's similar-request scope; undefined when it covers nothing. */
+function similarApprovalLabel(permission: Permission): string | undefined {
+  switch (permission.type) {
+    case "shell":
+      return permission.commandNames?.length ? `Approve ${permission.commandNames.join(", ")} for this run` : undefined;
+    case "write":
+      return "Approve all file changes for this run";
+    case "read":
+      return permission.path ? "Approve reads in this folder for this run" : undefined;
+    case "url": {
+      try {
+        const host = new URL(permission.url ?? "").hostname;
+        return host ? `Approve ${host} for this run` : undefined;
+      } catch {
+        return undefined;
+      }
+    }
+    default:
+      return permission.tool ? "Approve this tool for this run" : undefined;
+  }
+}
+
 /**
  * One approval or question from a running agent. Agent-generated content is rendered as text only.
  */
@@ -65,7 +89,7 @@ export function InputRequestCard({ request, onRespond }: {
     request.response?.kind === "permission"
       ? request.response.approved
         ? request.response.scope === "kind"
-          ? `Approved for the rest of the run`
+          ? `Approved similar requests for the rest of the run`
           : "Approved"
         : "Denied"
       : request.response?.kind === "question"
@@ -149,14 +173,16 @@ export function InputRequestCard({ request, onRespond }: {
               <button type="button" className="btn-primary btn-sm" disabled={busy} onClick={() => void respond({ kind: "permission", approved: true, scope: "once" })}>
                 {busy ? <Spinner /> : <Check />} Approve
               </button>
-              <button
-                type="button"
-                className="btn-secondary btn-sm"
-                disabled={busy}
-                onClick={() => void respond({ kind: "permission", approved: true, scope: "kind" })}
-              >
-                Approve all {permission?.type} for this run
-              </button>
+              {permission && similarApprovalLabel(permission) && (
+                <button
+                  type="button"
+                  className="btn-secondary btn-sm"
+                  disabled={busy}
+                  onClick={() => void respond({ kind: "permission", approved: true, scope: "kind" })}
+                >
+                  {similarApprovalLabel(permission)}
+                </button>
+              )}
               <button
                 type="button"
                 className="btn-danger btn-sm"

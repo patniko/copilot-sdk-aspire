@@ -20,6 +20,7 @@ your browser with a per-launch session URL. Keep the terminal open; press Ctrl+C
 | --- | --- |
 | `CONFIGURATOR_PORT` | Preferred port (default 4280). |
 | `CONFIGURATOR_NO_OPEN=1` | Print the URL instead of opening a browser. |
+| `CONFIGURATOR_GITHUB_CLIENT_ID` | GitHub OAuth App client ID for Demo Host device sign-in. Enable Device Flow on the OAuth App; no client secret or callback endpoint is used by the configurator. |
 
 ## Workflow
 
@@ -31,13 +32,18 @@ your browser with a per-launch session URL. Keep the terminal open; press Ctrl+C
    editor offers a one-click bump.
 3. **Policy**: approved agent profiles and models, limits, the built-in tool groups and permission modes harnesses
    may use, model-option ceilings (maximum reasoning effort, long context), required controls, and acknowledged
-   security gaps.
+   security gaps. **Applies to** switches between the base policy (all harnesses) and one harness: turn on
+   **Override for this harness** on a card to replace those settings for every version of that harness only; the
+   other cards inherit the base policy. Lease timing and per-caller limits are always global. The harness overview
+   and its decision list show when an override applies, and **Deploy** preflight fails if an override names a
+   harness that does not exist.
 4. **Local run**: set the Foundry endpoint and deployments (or discover them from your subscription), optional package
    proxies, then **Build & start** the stack. After saving harness edits, **Reload harnesses** (or **Save & reload
    local API** in the editor) restarts only the API. Unit and full test suites run from here too.
 5. **Try it**: pick the local stack or the selected Azure target, a harness version, an agent, and input (prefilled
    from the example), then watch the activity timeline (turns, tools, sub-agent delegation, skills) and the structured
-   result. It warns when your files differ from what the service is running.
+   result. When detailed job events are enabled, SDK events use message-aware summaries and expose their persisted
+   JSON under **SDK details**. It warns when your files differ from what the service is running.
 6. **Deploy**: describe one or more targets (tenant, subscription, region, resource group, existing Foundry account
    and deployments, with discovery), pass the preflight (configuration valid, signed in to the target tenant, Docker
    running), optionally **Preview infrastructure** (writes Bicep to `artifacts/deployment`), then **Deploy**. The
@@ -55,9 +61,15 @@ host, not a batch runner profile. GitHub-native mode uses Copilot inference and 
 and custom-runtime fields. Direct/both modes require a conversation harness and the
 [managed runtime work](DEPLOYMENT.md#demo-host-compatibility-gate).
 
-The Local run password field saves a Mission Control owner credential only in Aspire secrets. Settings reads
-and deployment-target JSON never return or store it. Deployment forwards it only for a target that explicitly
-enables GitHub hosting. Connection buttons copy non-secret `pnpm host:connect` launcher commands, not live tickets.
+When `CONFIGURATOR_GITHUB_CLIENT_ID` is set, **Sign in with GitHub** starts the OAuth App's device flow. The browser
+receives only the verification URL and one-time user code; the companion server polls GitHub, verifies the account,
+fills **GitHub owner**, and saves the OAuth token only in Aspire secrets. Enable Device Flow in the OAuth App settings.
+GitHub requires an authorization callback URL when registering an OAuth App, but this flow does not use it; a local
+placeholder such as `http://127.0.0.1:4280/oauth/callback` is sufficient.
+
+The password field remains as a manual fallback. Settings reads and deployment-target JSON never return or store the
+credential. Deployment forwards it only for a target that explicitly enables GitHub hosting. Connection buttons copy
+non-secret `pnpm host:connect` launcher commands, not live tickets.
 
 Customer-workspace changes do not hot-reconfigure retained sessions. Restarting only the job API does not
 reload the demo host. Existing conversations keep their admitted snapshot; tighter current policy can prevent
@@ -78,9 +90,9 @@ The editor has one section per part of the harness contract:
 | Overview | Version, description, a summary, and what the platform does with the harness |
 | Prompt | Prompt mode (replace, append, or customize the Copilot foundation prompt section by section) and the instructions |
 | Model | Preferred and allowed models, reasoning effort, context tier (within the policy ceilings) |
-| Tools | Harness tool bindings from the execution profiles (**Delegated only** hides one from the coordinator), and **Built-in Copilot tools** in groups: files, shell, web, built-in agents |
-| Permissions | What happens when the agent asks to read or write a file, run a command or fetch a URL: deny, ask you, or allow (yolo), per kind with a default; whether the agent can ask you questions; how long a request waits |
-| Sub-agents | Specialists the coordinator delegates to: instructions, a subset of the tools, preloaded skills, model |
+| Tools | Custom harness tool bindings from the execution profiles (**Delegated only** hides one from the coordinator), and **Built-in Copilot tools** in groups: files, shell, web, built-in agents |
+| Permissions | What happens when the agent asks to read or write a file, run a command or fetch a URL: deny, ask you (Copilot CLI defaults, where workspace reads and read-only commands run without a prompt), or allow (yolo), per kind with a default; whether the agent can ask you questions; how long a request waits |
+| Sub-agents | Read-only built-in agent status (controlled by the Tools tab), plus custom specialists: instructions, a subset of the tools, preloaded skills, model |
 | Skills | Markdown procedures stored as `skills/<name>/SKILL.md` in the harness folder |
 | Input, Output | JSON Schemas (2020-12) and an example input |
 | Limits & retry | Duration, token budget, attempts, and whether uncertain attempts may be retried |
@@ -105,8 +117,9 @@ Other aids:
   draft and warns if the files changed on disk since. Files change only when you save.
 - **Templates**: **New harness** compares five starting points, from simple to coding: structured answer, data
   analysis (Python tool), skill guided, agent team (customized prompt, two sub-agents, a delegated-only tool, a
-  skill), and **Copilot coding agent** (Copilot's full prompt and built-in tools; reads are allowed, and it asks you
-  before shell commands, file writes and web access, and can ask you questions). Each template validates against
+  skill), and **Copilot coding agent** (a managed coding job using Copilot's foundation prompt and policy-approved
+  built-in tools and agents with the Copilot CLI's approval defaults: workspace reads and read-only commands run,
+  and it asks you before other commands, file writes and web access, and can ask you questions). Each template validates against
   the current policy.
 - **Import plan**: paste or open a plan JSON from the earlier Harness Builder. The report lists what was mapped
   (prompt mode and sections, instructions, model, reasoning, sub-agents), what needs work (custom tools and MCP
@@ -122,6 +135,24 @@ with a preloaded review skill. `examples/customer-config/harnesses/copilot-codin
 template as a ready-to-run harness. On first run, examples are copied into the workspace without overwriting an
 existing `harnesses/` or `policy/` directory.
 
+### Built-ins versus custom configuration
+
+`tools[]` contains custom bindings, and `agents[]` contains custom sub-agent definitions. Empty lists do not
+disable the Copilot built-ins selected through `builtinTools`. The shipped coding sample enables `files`,
+`shell`, `web`, and `agents`; the runtime supplies built-in agents without copying their definitions into the
+harness. The editor and template comparison label custom counts separately from built-in status. Actual
+built-in agent availability depends on the installed runtime, not the number of custom definitions.
+
+This is **not the unchanged native Copilot configuration**. The batch runner retains an explicit tool allowlist,
+`mode: "empty"`, disabled ambient configuration/custom-instruction discovery, the Foundry gateway, managed
+permissions and limits, an ephemeral workspace, and the required `submit_result` contract. Appending the
+foundation prompt does not enable all CLI integrations, discovered skills, plugins, or MCP servers.
+See the [runner mapping](RUNNER-PROTOCOL.md#implementing-a-runner-with-a-copilot-sdk).
+
+The [GitHub-native demo host](USER-GUIDE.md#demo-agent-host) is a separate path using Copilot's native session
+configuration; it does not use this batch harness. Existing customer edits remain independent of the shipped
+coding sample and are not reset when the configurator starts.
+
 ## Approvals and questions
 
 ![Permissions tab](images/configurator-permissions.png)
@@ -131,7 +162,8 @@ either place:
 
 - **Job console** (served by the agent API at `/`, locally and in Azure): the **Sessions** view lists every job with
   a **Needs you** count, and the inbox lists all pending approvals and questions across sessions. Each request shows
-  the command, file diff or URL; approve it once, approve that kind of action for the rest of the run, or deny it
+  the command, file diff or URL; approve it once, approve similar requests for the rest of the run (the listed
+  commands, all file changes, that folder, that website, or that tool), or deny it
   with a note for the agent. Questions offer their choices and a free-text answer.
 - **Try it** in the configurator shows the requests of the job you started, and links to the job console when other
   sessions are waiting.
@@ -148,7 +180,7 @@ attempt deadline. Only the job's caller (its API key) can answer. The REST endpo
 | What | Where | Commit? |
 | --- | --- | --- |
 | Customer harnesses | `.copilot-agent-workspace/harnesses/<name>/` and `<name>@<version>/` (`harness.json`, instructions, `skills/<name>/SKILL.md`) | No; use separate customer-owned version control if needed |
-| Customer execution policy | `.copilot-agent-workspace/policy/execution-policy.json` | No; use separate customer-owned version control if needed |
+| Customer execution policy | `.copilot-agent-workspace/policy/execution-policy.json` (base) and `policy/harnesses/<harness>.json` (per-harness overrides) | No; use separate customer-owned version control if needed |
 | Shipped starter examples | `examples/customer-config/harnesses/` and `examples/customer-config/policy/` | Yes; platform-owned and not edited by the configurator |
 | Execution profiles and implementations | `execution-profiles/`, `src/`, and `tools/` | Yes; platform-owned |
 | Unsaved harness drafts | Browser local storage for the configurator origin | No |

@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join, relative, resolve, sep } from "node:path";
-import { ExecutionPolicy, ExecutionProfile, parseSkillMarkdown, renderSkillMarkdown, SLUG } from "@copilot-agent/contracts";
+import { ExecutionPolicy, ExecutionProfile, type HarnessPolicyOverride, parseSkillMarkdown, renderSkillMarkdown, SLUG } from "@copilot-agent/contracts";
 import type { BindingInfo, HarnessDocument, HarnessManifest, ProfileSummary } from "./types.js";
 import { EXAMPLE_CONFIG_DIR } from "./workspace.js";
 
@@ -192,6 +192,46 @@ export class Repo {
     return join(this.root, "policy", "execution-policy.json");
   }
 
+  get policyOverridesDir(): string {
+    return join(this.root, "policy", "harnesses");
+  }
+
+  #policyOverrideFile(harness: string): string {
+    if (!SLUG.test(harness)) {
+      throw new RepoError(400, "Harness names use lowercase letters, digits, and hyphens.");
+    }
+    return join(this.policyOverridesDir, `${harness}.json`);
+  }
+
+  /** Harness names with an override file in policy/harnesses/ (file name without .json). */
+  async listPolicyOverrideNames(): Promise<string[]> {
+    const entries = await readdir(this.policyOverridesDir, { withFileTypes: true }).catch(() => []);
+    return entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => entry.name.slice(0, -".json".length))
+      .sort();
+  }
+
+  /** The raw override for a harness, or undefined when there is none. Unparseable JSON is reported as an error. */
+  async readPolicyOverrideRaw(harness: string): Promise<unknown | undefined> {
+    const text = await readFile(this.#policyOverrideFile(harness), "utf8").catch(() => undefined);
+    if (text === undefined) return undefined;
+    try {
+      return JSON.parse(text) as unknown;
+    } catch (error) {
+      throw new RepoError(422, `policy/harnesses/${harness}.json is not valid JSON: ${(error as Error).message}`);
+    }
+  }
+
+  async writePolicyOverride(override: HarnessPolicyOverride): Promise<void> {
+    await mkdir(this.policyOverridesDir, { recursive: true });
+    await writeFile(this.#policyOverrideFile(override.harness), `${JSON.stringify(override, null, 2)}\n`, "utf8");
+  }
+
+  async deletePolicyOverride(harness: string): Promise<void> {
+    await rm(this.#policyOverrideFile(harness), { force: true });
+  }
+
   async listProfiles(): Promise<ProfileSummary[]> {
     const dir = join(this.platformRoot, "execution-profiles");
     const profiles: ProfileSummary[] = [];
@@ -289,6 +329,14 @@ export class Repo {
     ]);
     if (policy !== examplePolicy) {
       items.push("M policy/execution-policy.json");
+    }
+    for (const harness of await this.listPolicyOverrideNames()) {
+      const [current, example] = await Promise.all([
+        readFile(join(this.policyOverridesDir, `${harness}.json`), "utf8").catch(() => undefined),
+        readFile(join(this.examplesDir, "policy", "harnesses", `${harness}.json`), "utf8").catch(() => undefined),
+      ]);
+      if (example === undefined) items.push(`A policy/harnesses/${harness}.json`);
+      else if (current !== example) items.push(`M policy/harnesses/${harness}.json`);
     }
 
     return { items, untracked, modified };

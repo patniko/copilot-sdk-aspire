@@ -7,7 +7,7 @@ import { Repo, templateHarness } from "../server/repo.js";
 import { deployEnvironment, DeployTargetSchema } from "../server/settings.js";
 import { createFromTemplate, listTemplates } from "../server/templates.js";
 import type { HarnessDocument, ProfileSummary } from "../server/types.js";
-import { decisions, harnessDigest, validateHarness, validatePolicy } from "../server/validate.js";
+import { decisions, harnessDigest, validateHarness, validatePolicy, validatePolicyOverride } from "../server/validate.js";
 import { effectiveLimits } from "../server/validate.js";
 
 const repoRoot = join(import.meta.dirname, "..", "..");
@@ -175,8 +175,29 @@ describe("validateHarness", () => {
     expect(document.manifest).toEqual(fromTemplate.manifest);
     const result = decisions(document, { policy: shippedPolicy, profiles: shippedProfiles, all: [document] });
     expect(result).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "gap", title: "Shell and web tools can reach any network address" })]));
+    expect(document.manifest.tools).toEqual([]);
+    expect(document.manifest.agents ?? []).toEqual([]);
+    expect(result).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: "Copilot built-in sub-agents are enabled", path: "builtinTools" }),
+      expect.objectContaining({ title: "Managed job configuration, not native Copilot defaults", path: "runners" }),
+    ]));
     const snapshots = await loadHarnesses(customerConfigRoot);
     expect(harnessDigest(document)).toBe(snapshots.get("copilot-coding-agent")![0]!.digest);
+  });
+
+  it("does not report built-in agents for a custom-agent-only harness", () => {
+    const doc = harness((d) => {
+      d.manifest.agents = [{ name: "reviewer", description: "Review the answer", instructions: "Review.", tools: [] }];
+    });
+    const result = decisions(doc, { policy, profiles, all: [doc] });
+    expect(result.some((decision) => decision.title === "Copilot built-in sub-agents are enabled")).toBe(false);
+    expect(result.some((decision) => decision.title === "reviewer sub-agent")).toBe(true);
+  });
+
+  it("does not describe a conversation harness as a batch job", () => {
+    const doc = harness((d) => void (d.manifest.interaction = "conversation"));
+    const result = decisions(doc, { policy, profiles, all: [doc] });
+    expect(result.some((decision) => decision.title === "Managed job configuration, not native Copilot defaults")).toBe(false);
   });
 });
 
@@ -185,6 +206,30 @@ describe("validatePolicy", () => {
     const result = validatePolicy({ ...policy, allowedProfiles: ["ghost"], acknowledgedGaps: [] }, profiles);
     expect(result.issues.some((i) => i.level === "error" && i.message.includes("ghost"))).toBe(true);
     expect(result.issues.some((i) => i.level === "warning" && i.message.includes("egress"))).toBe(true);
+  });
+});
+
+describe("validatePolicyOverride", () => {
+  const context = { base: policy, profiles, harnessNames: ["sample"], fileHarness: "sample" };
+  const document = (overrides: unknown, harnessName = "sample") => ({ schemaVersion: "1", harness: harnessName, overrides });
+
+  it("returns the effective policy for a valid override", () => {
+    const result = validatePolicyOverride(document({ maxDurationSeconds: 60, allowedProfiles: ["node-ts-agent", "python-agent"] }), context);
+    expect(result.issues.filter((i) => i.level === "error")).toEqual([]);
+    expect(result.effective).toMatchObject({ maxDurationSeconds: 60, allowedProfiles: ["node-ts-agent", "python-agent"], leaseSeconds: 30 });
+  });
+
+  it("rejects global-only fields, unknown harnesses, and mismatched file names", () => {
+    expect(validatePolicyOverride(document({ leaseSeconds: 10 }), context).issues[0]?.level).toBe("error");
+    expect(validatePolicyOverride(document({}, "ghost"), { ...context, fileHarness: "ghost" }).issues.map((i) => i.message).join()).toMatch(/No harness named 'ghost'/);
+    expect(validatePolicyOverride(document({}, "sample"), { ...context, fileHarness: "other" }).issues.some((i) => i.path === "harness")).toBe(true);
+  });
+
+  it("reports problems with the effective policy but not with inherited global fields", () => {
+    const result = validatePolicyOverride(document({ allowedProfiles: ["ghost"] }), { ...context, base: { ...policy, leaseSeconds: 10 } });
+    expect(result.issues.some((i) => i.level === "error" && i.message.includes("ghost"))).toBe(true);
+    expect(result.issues.some((i) => i.path === "leaseSeconds")).toBe(false);
+    expect(validatePolicyOverride(document({}), context).issues.some((i) => i.level === "warning" && i.path === "overrides")).toBe(true);
   });
 });
 

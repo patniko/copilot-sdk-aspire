@@ -109,9 +109,13 @@ executor                         runner
    ```
 
    - `id` is chosen by the runner (`[A-Za-z0-9_-]{1,64}`, unique per attempt). At most 5 requests may wait at once.
-   - Permission prompts carry only display fields (`type`, `intention`, `command`, `path`, `url`, `diff`, `tool`,
-     `warning`) with fixed size limits; truncate before sending, because oversized messages fail the attempt.
-   - `scope: "kind"` approves later requests of the same type for the rest of the attempt.
+   - Permission prompts carry only display fields (`type`, `intention`, `command`, `commandNames`, `path`, `url`,
+     `diff`, `tool`, `warning`) with fixed size limits; truncate before sending, because oversized messages fail the
+     attempt. `commandNames` lists a shell request's non-read-only command names.
+   - `scope: "kind"` approves similar later requests for the rest of the attempt, like the Copilot CLI's session
+     approvals: the same non-read-only command names, all file writes (which also covers shell output redirection),
+     reads in the same folder (never a filesystem root or credential directory), the same website host, or the same
+     MCP/other tool. It does not approve every request of that type.
    - `expired` means nobody answered within `permissions.timeoutSeconds` (default 600, capped by the attempt
      deadline) or the attempt was cancelled. Deny the action, or answer the question with a note to continue.
 
@@ -152,7 +156,7 @@ Map the optional harness features to session options as follows (TypeScript name
 | `tools[].delegatedOnly` | `defaultAgent: {excludedTools: [...]}` |
 | `skills[]` | Write each to `<workspace>/skills/<name>/SKILL.md`; `enableSkills: true`, `skillDirectories`, and `builtin:skill` in `availableTools` |
 | `builtinTools[]` | `builtin:<name>` in `availableTools` for each tool in the group (files: view, glob, grep, create, edit; shell: the bash or PowerShell tool family; web: web_fetch; agents: task, read_agent, list_agents, write_agent, and built-in agents are no longer excluded) |
-| `permissions` | `onPermissionRequest` applies the rule for the request kind (read, write, shell, url, otherwise the default): `allow` approves once, `deny` rejects, `ask` sends `input_request` |
+| `permissions` | `onPermissionRequest` applies the rule for the request kind (read, write, shell, url, otherwise the default): `allow` approves once, `deny` rejects, and `ask` follows the Copilot CLI's interactive defaults. It approves reads inside the attempt workspace, shell requests whose parsed commands are all read-only with no output redirection, URLs, sandbox bypass, or paths outside the workspace, and read-only MCP tools; it sends `input_request` for everything else. Paths are resolved through symlinks. Requests marked `managedApprovalRequired` always ask |
 | `permissions.questions` | `onUserInputRequest` sends `input_request` with a question, and `builtin:ask_user` in `availableTools` |
 | (always) | `excludedBuiltinAgents` listing every built-in SDK agent, unless the harness enables the `agents` group |
 

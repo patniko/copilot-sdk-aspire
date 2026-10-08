@@ -77,7 +77,7 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
   update: Update;
   issues: Issue[];
   effective?: HarnessDetail["effective"];
-  detail?: Pick<HarnessDetail, "decisions" | "requiredCapabilities">;
+  detail?: Pick<HarnessDetail, "decisions" | "requiredCapabilities"> & Partial<Pick<HarnessDetail, "policy">>;
 }) {
   const { workspace } = useApp();
   const m = draft.manifest;
@@ -103,15 +103,15 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
           <div className="card grid grid-cols-2 gap-px overflow-hidden bg-[var(--borderColor-muted)] sm:grid-cols-4">
             <Summary label="Model" value={effective?.model ?? "not approved"} detail={m.model.reasoningEffort ? `reasoning ${m.model.reasoningEffort}` : undefined} />
             <Summary label="Prompt" value={m.prompt?.mode ?? "replace"} detail={m.prompt?.sections?.length ? `${m.prompt.sections.length} section(s) changed` : undefined} />
-            <Summary label="Tools" value={`${m.tools.length} + submit_result`} detail={m.tools.some((t) => t.delegatedOnly) ? "some delegated only" : undefined} />
+            <Summary label="Custom tools" value={`${m.tools.length} + submit_result`} detail={m.tools.some((t) => t.delegatedOnly) ? "some delegated only" : undefined} />
             <Summary label="Built-in tools" value={m.builtinTools?.length ? m.builtinTools.join(", ") : "none"} detail={permissionSummary(m.permissions)} />
-            <Summary label="Sub-agents" value={String(m.agents?.length ?? 0)} detail={m.agents?.map((a) => a.displayName ?? a.name).join(", ")} />
+            <Summary label="Sub-agents" value={`${m.agents?.length ?? 0} custom${m.builtinTools?.includes("agents") ? " + built-ins" : ""}`} detail={m.agents?.map((a) => a.displayName ?? a.name).join(", ")} />
             <Summary label="Skills" value={String(draft.skills.length)} detail={draft.skills.map((s) => s.name).join(", ")} />
             <Summary label="Runtime" value={m.runners.allowedProfiles.join(", ") || "none"} detail={`default ${m.runners.defaultProfile}`} />
             <Summary
               label="Limits"
               value={`${effective?.maxDurationSeconds ?? "?"}s · ${effective?.maxAttempts ?? "?"} attempt(s)`}
-              detail={`${effective?.tokenBudget?.toLocaleString() ?? "?"} tokens · ${m.retry.safeToRetry ? "safe to retry" : "review on uncertainty"}`}
+              detail={`${effective?.tokenBudget?.toLocaleString() ?? "?"} tokens · ${m.retry.safeToRetry ? "safe to retry" : "review on uncertainty"}${detail?.policy?.overridden.length ? " · harness policy override" : ""}`}
             />
           </div>
           {detail && detail.decisions.length > 0 && (
@@ -477,12 +477,13 @@ function ToolsTab({ draft, update, issues }: { draft: HarnessDocument; update: U
   return (
     <div className="space-y-4">
       <BuiltinToolsSection draft={draft} update={update} issues={issues} />
-      <h3 className="pt-2 text-sm font-semibold">Harness tools</h3>
+      <h3 className="pt-2 text-sm font-semibold">Custom harness tools</h3>
       <p className="fg-muted">
-        Tools are requested here and implemented by execution profiles. The agent always also gets <code>submit_result</code>. A new
+        Custom tools are requested here and implemented by execution profiles. Copilot built-ins are configured separately above.
+        The agent always also gets <code>submit_result</code>. A new
         implementation needs runner code and a binding listed in each profile (see docs/RUNNER-PROTOCOL.md). <HelpButton topic="tools" />
       </p>
-      {tools.length === 0 && <Empty>No tools. The agent can still reason and submit a result.</Empty>}
+      {tools.length === 0 && <Empty>No custom harness tools. This does not disable the Copilot built-ins selected above.</Empty>}
       {tools.map((tool, index) => {
         const error = (field: string) => issues.find((i) => i.path === `tools.${index}.${field}`)?.message;
         const users = agents.filter((a) => a.tools.includes(tool.name));
@@ -574,15 +575,15 @@ function ToolsTab({ draft, update, issues }: { draft: HarnessDocument; update: U
 // ---------------------------------------------------------------------------
 
 const GROUPS: Array<{ id: BuiltinToolGroup; label: string; tools: string; risk: string }> = [
-  { id: "files", label: "Files", tools: "view, glob, grep, create, edit", risk: "Reads and changes files in the workspace." },
-  { id: "shell", label: "Shell", tools: "bash (and its read, write, stop and list tools)", risk: "Runs any command the runner user can run." },
+  { id: "files", label: "Files", tools: "view, glob, grep, create, edit, apply_patch", risk: "Reads and changes files in the workspace." },
+  { id: "shell", label: "Shell", tools: "bash or PowerShell (and their read, write, stop and list tools)", risk: "Runs any command the runner user can run." },
   { id: "web", label: "Web", tools: "web_fetch", risk: "Fetches URLs; egress is not restricted." },
   { id: "agents", label: "Built-in agents", tools: "task, read_agent, list_agents, write_agent", risk: "Copilot's explore and general-purpose agents use the same tools and rules." },
 ];
 const KINDS: Array<{ id: "read" | "write" | "shell" | "url"; label: string; detail: string }> = [
-  { id: "read", label: "Read files", detail: "Reading files or folders the agent asks permission for." },
+  { id: "read", label: "Read files", detail: "Reading files or folders. With Ask, reads inside the workspace run without a prompt, as in the Copilot CLI." },
   { id: "write", label: "Write files", detail: "Creating or editing files (the request includes a diff)." },
-  { id: "shell", label: "Shell commands", detail: "Running a command (the request includes the full command)." },
+  { id: "shell", label: "Shell commands", detail: "Running a command (the request includes the full command). With Ask, read-only commands that stay in the workspace run without a prompt." },
   { id: "url", label: "Web access", detail: "Fetching a URL." },
 ];
 type Mode = "deny" | "ask" | "allow";
@@ -717,7 +718,7 @@ function PermissionsTab({ draft, update, issues, effective }: {
       if (next.kinds && Object.values(next.kinds).every((v) => v === undefined)) delete next.kinds;
       d.manifest.permissions = next;
     });
-  const preset = (name: "deny" | "ask-risky" | "ask-all" | "yolo") =>
+  const preset = (name: "deny" | "cli" | "yolo") =>
     update((d) => {
       if (name === "deny") {
         delete d.manifest.permissions;
@@ -725,12 +726,7 @@ function PermissionsTab({ draft, update, issues, effective }: {
       }
       const questions = d.manifest.permissions?.questions;
       const timeoutSeconds = d.manifest.permissions?.timeoutSeconds;
-      d.manifest.permissions =
-        name === "yolo"
-          ? { default: "allow" }
-          : name === "ask-all"
-            ? { default: "ask" }
-            : { default: "ask", kinds: { read: "allow", write: "ask", shell: "ask", url: "ask" } };
+      d.manifest.permissions = name === "yolo" ? { default: "allow" } : { default: "ask" };
       if (questions) d.manifest.permissions.questions = true;
       if (timeoutSeconds) d.manifest.permissions.timeoutSeconds = timeoutSeconds;
     });
@@ -757,11 +753,8 @@ function PermissionsTab({ draft, update, issues, effective }: {
           <button type="button" className="btn-secondary btn-sm" onClick={() => preset("deny")}>
             Deny everything
           </button>
-          <button type="button" className="btn-secondary btn-sm" disabled={!allowedModes.has("ask")} onClick={() => preset("ask-risky")}>
-            Ask before risky actions
-          </button>
-          <button type="button" className="btn-secondary btn-sm" disabled={!allowedModes.has("ask")} onClick={() => preset("ask-all")}>
-            Ask for everything
+          <button type="button" className="btn-secondary btn-sm" disabled={!allowedModes.has("ask")} onClick={() => preset("cli")}>
+            Copilot CLI defaults
           </button>
           <button type="button" className="btn-secondary btn-sm" disabled={!allowedModes.has("allow")} onClick={() => preset("yolo")}>
             Yolo: allow everything
@@ -891,6 +884,8 @@ function AgentsTab({ draft, update, issues }: { draft: HarnessDocument; update: 
   const { workspace } = useApp();
   const policy = workspace!.policy;
   const agents = draft.manifest.agents ?? [];
+  const builtinAgents = draft.manifest.builtinTools?.includes("agents") ?? false;
+  const builtinAgentsBlocked = builtinAgents && !policy.builtinTools?.includes("agents");
   const toolNames = draft.manifest.tools.map((t) => t.name);
   const skillNames = draft.skills.map((s) => s.name);
   const add = () =>
@@ -919,11 +914,36 @@ function AgentsTab({ draft, update, issues }: { draft: HarnessDocument; update: 
 
   return (
     <div className="space-y-4">
+      <div className="card">
+        <div className="box-header">
+          <h3 className="flex items-center gap-1 text-sm font-semibold">
+            <Copilot className="fg-done" /> Built-in Copilot agents
+          </h3>
+          <Badge tone={builtinAgentsBlocked ? "amber" : builtinAgents ? "done" : "neutral"}>
+            {builtinAgentsBlocked ? "Not allowed by policy" : builtinAgents ? "Enabled" : "Disabled"}
+          </Badge>
+        </div>
+        <div className="card-pad space-y-2 text-sm">
+          <p>
+            {builtinAgents
+              ? "The harness selects Copilot's runtime-provided agents, such as explore and general-purpose. They do not need custom definitions below."
+              : "Enable the Built-in agents group on the Tools tab to use Copilot's runtime-provided agents."}
+          </p>
+          <p className="fg-muted">
+            The installed runtime determines which built-in agents are available. Managed permissions, model policy and limits still apply.
+          </p>
+        </div>
+      </div>
+      <h3 className="pt-2 text-sm font-semibold">Custom sub-agents</h3>
       <Flash icon={<Copilot />}>
-        The coordinating agent delegates to these sub-agents with the SDK's task tool. Each sub-agent sees only its own instructions, the
-        tools and skills you give it, and what the coordinator passes. Built-in SDK agents stay disabled. <HelpButton topic="agents" />
+        Define additional specialists here. The coordinating agent delegates to them with the SDK's task tool using their configured
+        instructions, tools and skills. This list is separate from Copilot's built-in agents. <HelpButton topic="agents" />
       </Flash>
-      {agents.length === 0 && <Empty>No sub-agents. The coordinator does all the work itself.</Empty>}
+      {agents.length === 0 && <Empty>
+        {builtinAgents
+          ? "No custom sub-agents. Built-in agents are configured separately above."
+          : "No custom or built-in sub-agents are enabled. The coordinator works without delegation."}
+      </Empty>}
       {agents.map((agent, index) => {
         const error = (field: string) => issues.find((i) => i.path === `agents.${index}.${field}` || i.path.startsWith(`agents.${index}.${field}.`))?.message;
         return (
@@ -1037,7 +1057,7 @@ function AgentsTab({ draft, update, issues }: { draft: HarnessDocument; update: 
         );
       })}
       <button type="button" className="btn-secondary" onClick={add} disabled={agents.length >= 8}>
-        <Plus /> Add sub-agent
+        <Plus /> Add custom sub-agent
       </button>
     </div>
   );

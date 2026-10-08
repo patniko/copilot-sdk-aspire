@@ -2,7 +2,7 @@
   "schemaVersion": "1",
   "name": "copilot-coding-agent",
   "version": "1.0.0",
-  "description": "GitHub Copilot's coding agent with its full prompt and built-in tools. Reads are allowed; shell, file writes and web access ask the requester first.",
+  "description": "GitHub Copilot's coding agent with its full prompt and built-in tools. Approvals follow the Copilot CLI defaults: workspace reads and read-only commands run; other commands, file writes and web access ask the requester first.",
   "instructionsFile": "instructions.md",
   "prompt": {
     "mode": "append"
@@ -22,12 +22,6 @@
   ],
   "permissions": {
     "default": "ask",
-    "kinds": {
-      "read": "allow",
-      "write": "ask",
-      "shell": "ask",
-      "url": "ask"
-    },
     "questions": true,
     "timeoutSeconds": 900
   },

@@ -99,7 +99,7 @@ Authorization: Bearer {{apiKey}}
 @requestId = {{pending.response.body.$.requests[0].id}}
 @requestJobId = {{pending.response.body.$.requests[0].jobId}}
 
-### Approve the oldest pending permission request (use "scope": "kind" to allow that kind for the rest of the run)
+### Approve the oldest pending permission request (use "scope": "kind" to allow similar requests for the rest of the run)
 POST {{baseUrl}}/v1/jobs/{{requestJobId}}/input-requests/{{requestId}}/respond
 Authorization: Bearer {{apiKey}}
 Content-Type: application/json

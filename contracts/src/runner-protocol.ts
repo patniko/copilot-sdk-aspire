@@ -61,6 +61,8 @@ export const PermissionPrompt = z
     intention: z.string().max(1000).optional(),
     /** Shell: full command text. */
     command: z.string().max(8000).optional(),
+    /** Shell: command names that are not read-only, which an approval for the attempt would cover. */
+    commandNames: z.array(z.string().min(1).max(100)).max(20).optional(),
     /** Read or write: file path. */
     path: z.string().max(1000).optional(),
     url: z.string().max(2000).optional(),
@@ -91,7 +93,10 @@ export const InputResponseBody = z.discriminatedUnion("kind", [
     .object({
       kind: z.literal("permission"),
       approved: z.boolean(),
-      /** "kind" also approves later requests of the same permission type for the rest of the attempt. */
+      /**
+       * "kind" also approves similar later requests for the rest of the attempt: the same non-read-only
+       * command names, all file writes, reads in the same folder, the same website host, or the same tool.
+       */
       scope: z.enum(["once", "kind"]).optional(),
       feedback: z.string().max(2000).optional(),
     })

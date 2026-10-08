@@ -57,6 +57,7 @@ table below describes the established batch product.
 | Capability | Current scope | Evidence / detail |
 | --- | --- | --- |
 | Separate customer workspace | Harnesses and policy live in a gitignored customer workspace; profiles, examples, and implementation remain platform source | [Configurator](CONFIGURATOR.md) |
+| Per-harness policy | Operator overrides replace selected policy ceilings and required controls for one harness; jobs record the effective policy and are matched to executors per job | [Configurator](CONFIGURATOR.md), [Security](SECURITY.md) |
 | Structured agent jobs | Input validation, durable state, schema-validated results, JSON result artifact | [API](API.md) |
 | Two runner implementations | TypeScript SDK reference runner and Python SDK sample on one protocol | [Runner protocol](RUNNER-PROTOCOL.md) |
 | Rich harnesses | Prompt sections, reasoning/context options, sub-agents, delegated tools, packaged skills | [Harness contract](../contracts/src/harness.ts) |

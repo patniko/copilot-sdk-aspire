@@ -303,7 +303,7 @@ harnesses\
 | Custom sub-agents | Sub-agents editor or `agents[]` in `harness.json`. | Specialist instructions, description, tool subset, skills, optional model/reasoning effort. |
 | Skills | Skills editor or `skills\<name>\SKILL.md`. | Markdown procedure with frontmatter metadata. |
 | Runtime implementation | TypeScript or Python code plus `profile.json`. | Copilot SDK setup, tool implementations, supported capabilities, packaged dependencies. |
-| Operator policy | Policy editor or `policy\execution-policy.json`. | Approved profiles/models/tools and limits that harnesses cannot widen. |
+| Operator policy | Policy editor, `policy\execution-policy.json`, and optional `policy\harnesses\<harness>.json` overrides. | Approved profiles/models/tools, limits, and required controls that harnesses cannot widen; an operator override can differ per harness. |
 
 The coordinator is primarily the harness's prompt and top-level configuration. The `agents[]` array defines
 specialists it may delegate to; it is not a list of independently deployed bots.

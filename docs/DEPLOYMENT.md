@@ -94,8 +94,9 @@ Then submit a job using the [API example](API.md#powershell-example) or
 az containerapp logs show -g $rg -n agent-executor --tail 20
 ```
 
-`processIsolation: "uid"` must appear. If the executor reports a gap that the policy does not acknowledge, it logs
-`executor is not eligible` and claims nothing; that is the intended fail-closed behaviour.
+`processIsolation: "uid"` must appear. The executor claims only jobs whose effective policy (base policy plus any
+harness override) its controls satisfy or whose gaps that policy acknowledges. A job no executor may run stays
+`queued` and records `job.waiting_for_eligible_executor`; that is the intended fail-closed behaviour.
 
 ## Costs
 

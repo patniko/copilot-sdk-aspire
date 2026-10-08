@@ -122,8 +122,8 @@ function TemplateGrid({ templates, value, onChange }: { templates: TemplateInfo[
   const rows: Array<{ label: string; cell: (t: TemplateInfo) => React.ReactNode }> = [
     { label: "Best for", cell: (t) => <span className="text-xs">{t.bestFor}</span> },
     { label: "Prompt", cell: (t) => <Badge tone={t.promptMode === "replace" ? "neutral" : "done"}>{t.promptMode}</Badge> },
-    { label: "Tools", cell: (t) => <Counter>{t.tools}</Counter> },
-    { label: "Sub-agents", cell: (t) => <Counter>{t.agents}</Counter> },
+    { label: "Custom tools", cell: (t) => <Counter>{t.tools}</Counter> },
+    { label: "Custom sub-agents", cell: (t) => <Counter>{t.agents}</Counter> },
     { label: "Skills", cell: (t) => <Counter>{t.skills}</Counter> },
     {
       label: "Built-in tools",
@@ -140,6 +140,7 @@ function TemplateGrid({ templates, value, onChange }: { templates: TemplateInfo[
           <span className="text-xs fg-muted">none</span>
         ),
     },
+    { label: "Built-in agents", cell: (t) => <Badge tone={t.builtinTools.includes("agents") ? "done" : "neutral"}>{t.builtinTools.includes("agents") ? "enabled" : "off"}</Badge> },
     { label: "Permissions", cell: (t) => <span className="text-xs">{t.permissions}</span> },
     { label: "Reasoning", cell: (t) => <span className="text-xs">{t.reasoningEffort ?? "model default"}</span> },
     { label: "Runs on", cell: (t) => <span className="text-xs">{t.profiles.join(", ") || "no approved profile"}</span> },

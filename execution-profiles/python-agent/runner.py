@@ -17,6 +17,7 @@ from datetime import datetime
 from enum import Enum
 from importlib.metadata import version
 from typing import Any
+from urllib.parse import urlparse
 
 from copilot import CopilotClient
 from copilot.generated.rpc import PermissionDecisionApproveOnce, PermissionDecisionReject
@@ -49,7 +50,8 @@ BUILTIN_TOOL_GROUPS = {
     "web": ["web_fetch"],
     "agents": ["task", "read_agent", "list_agents", "write_agent"],
 }
-PERMISSION_LIMITS = {"intention": 1000, "command": 8000, "path": 1000, "url": 2000, "diff": 20_000, "tool": 200, "warning": 1000}
+PERMISSION_LIMITS = {"intention": 1000, "command": 8000, "path": 1000, "url": 2000, "diff": 20_000, "tool": 200, "warning": 1000, "command_name": 100, "command_names": 20}
+SENSITIVE_DIRECTORY_NAMES = {".ssh", ".gnupg", ".aws", ".azure", ".kube"}
 QUESTION_FALLBACK = "No answer was given in time. Continue with your best judgement and state your assumptions."
 MAX_DETAIL_JSON_BYTES = 200_000
 MAX_DETAIL_STRING_CHARS = 50_000
@@ -244,6 +246,16 @@ def combined_warning(request: Any) -> str | None:
     return truncate("\n".join(parts), PERMISSION_LIMITS["warning"]) if parts else None
 
 
+def command_names_needing_approval(request: Any) -> list[str]:
+    """Command names in a shell request that are not read-only: what an approval for the run covers."""
+    names: list[str] = []
+    for command in getattr(request, "commands", None) or []:
+        name = (getattr(command, "identifier", None) or "").strip()
+        if not getattr(command, "read_only", False) and name and name not in names:
+            names.append(name)
+    return names
+
+
 def permission_prompt_for(request: Any) -> dict[str, Any]:
     kind = request.kind
     warning = combined_warning(request)
@@ -251,6 +263,9 @@ def permission_prompt_for(request: Any) -> dict[str, Any]:
         prompt: dict[str, Any] = {"type": "shell"}
         add_if_present(prompt, "intention", truncate(getattr(request, "intention", None), PERMISSION_LIMITS["intention"]))
         add_if_present(prompt, "command", truncate(getattr(request, "full_command_text", None), PERMISSION_LIMITS["command"]))
+        names = [name[: PERMISSION_LIMITS["command_name"]] for name in command_names_needing_approval(request)][: PERMISSION_LIMITS["command_names"]]
+        if names:
+            prompt["commandNames"] = names
         add_if_present(prompt, "warning", warning)
         return prompt
     if kind == "write":
@@ -293,25 +308,117 @@ def policy_kind(prompt: dict[str, Any]) -> str:
     return prompt["type"] if prompt["type"] in ("read", "write", "shell", "url") else "__default__"
 
 
-def build_permission_handler(permissions: dict[str, Any] | None, ask: Any) -> Any:
-    approved_kinds: set[str] = set()
+def is_within(directory: str, path: str) -> bool:
+    try:
+        return os.path.commonpath([directory, path]) == directory
+    except ValueError:
+        return False
+
+
+def read_approval_scope(path: str) -> str:
+    """Mirrors the CLI: never widen a read approval to a filesystem root or a credential directory."""
+    directory = os.path.dirname(path)
+    too_broad = os.path.dirname(directory) == directory or os.path.basename(directory).lower() in SENSITIVE_DIRECTORY_NAMES
+    return path if too_broad else directory
+
+
+def host_of(url: str | None) -> str | None:
+    try:
+        return (urlparse(url or "").hostname or "").lower() or None
+    except ValueError:
+        return None
+
+
+def build_permission_handler(permissions: dict[str, Any] | None, ask: Any, workspace: str, working_directory: str) -> Any:
+    """Same decisions as the TypeScript reference runner (src/harness-hosting/src/permissions.ts).
+
+    ``ask`` follows the Copilot CLI's interactive defaults: reads inside the workspace, read-only shell
+    commands that stay inside it, and read-only MCP tools run without a prompt. Approving "for the run"
+    (scope ``kind``) covers similar requests: the same command names, all file writes, reads in the same
+    folder, the same website host, or the same tool.
+    """
+    root = os.path.realpath(workspace)
+    cwd = os.path.realpath(working_directory)
+    approved_commands: set[str] = set()
+    approved_hosts: set[str] = set()
+    approved_tools: set[str] = set()
+    approved_read_scopes: list[str] = []
+    writes_approved = False
+
+    def resolve_from(base: str, path: str) -> str:
+        return os.path.realpath(path if os.path.isabs(path) else os.path.join(base, path))
+
+    def readable(path: str) -> bool:
+        return is_within(root, path) or any(is_within(scope, path) for scope in approved_read_scopes)
+
+    def read_target(request: Any) -> str | None:
+        return getattr(request, "resolved_path", None) or getattr(request, "path", None)
+
+    def urls_approved(urls: Any) -> bool:
+        return all(host_of(getattr(item, "url", None)) in approved_hosts for item in urls or [])
+
+    def runs_without_prompt(request: Any, prompt: dict[str, Any]) -> bool:
+        if getattr(request, "managed_approval_required", False) or getattr(request, "request_sandbox_bypass", False):
+            return False
+        kind = request.kind
+        if kind == "read":
+            target = read_target(request)
+            return bool(target) and readable(resolve_from(cwd, target))
+        if kind == "shell":
+            commands = getattr(request, "commands", None) or []
+            if not commands:
+                return False
+            if not all(getattr(c, "read_only", False) or getattr(c, "identifier", None) in approved_commands for c in commands):
+                return False
+            if getattr(request, "has_write_file_redirection", False) and not writes_approved:
+                return False
+            if not urls_approved(getattr(request, "possible_urls", None)):
+                return False
+            base = getattr(request, "resolved_working_directory", None) or cwd
+            return all(path == "/dev/null" or is_within(root, resolve_from(base, path)) for path in getattr(request, "possible_paths", None) or [])
+        if kind == "write":
+            return writes_approved
+        if kind == "url":
+            host = host_of(getattr(request, "url", None))
+            return host is not None and host in approved_hosts
+        if kind == "mcp":
+            return getattr(request, "read_only", False) is True or prompt.get("tool", "") in approved_tools
+        return prompt.get("tool") is not None and prompt["tool"] in approved_tools
+
+    def remember_similar(request: Any, prompt: dict[str, Any]) -> None:
+        nonlocal writes_approved
+        kind = request.kind
+        if kind == "shell":
+            approved_commands.update(command_names_needing_approval(request))
+        elif kind == "write":
+            writes_approved = True
+        elif kind == "read":
+            target = read_target(request)
+            if target:
+                approved_read_scopes.append(read_approval_scope(resolve_from(cwd, target)))
+        elif kind == "url":
+            host = host_of(getattr(request, "url", None))
+            if host:
+                approved_hosts.add(host)
+        elif prompt.get("tool"):
+            approved_tools.add(prompt["tool"])
 
     async def on_permission_request(request: Any, _invocation: dict[str, str]) -> Any:
         prompt = permission_prompt_for(request)
-        if prompt["type"] in approved_kinds:
-            return PermissionDecisionApproveOnce()
         mode = permission_mode_for(permissions, policy_kind(prompt))
         if mode == "allow":
             return PermissionDecisionApproveOnce()
         if mode == "deny":
             return PermissionDecisionReject(feedback="Not permitted by the job policy.")
+        if runs_without_prompt(request, prompt):
+            return PermissionDecisionApproveOnce()
         response = await ask({"kind": "permission", "permission": prompt})
         if response.get("kind") == "expired":
             return PermissionDecisionReject(feedback="No approval was given in time.")
         if response.get("kind") != "permission" or not response.get("approved"):
             return PermissionDecisionReject(feedback=response.get("feedback") or "Denied by the reviewer.")
         if response.get("scope") == "kind":
-            approved_kinds.add(prompt["type"])
+            remember_similar(request, prompt)
         return PermissionDecisionApproveOnce(approved_interactively=True)
 
     return on_permission_request
@@ -570,7 +677,7 @@ async def run(start: dict[str, Any], cancelled: asyncio.Event, input_bridge: Inp
                 "wire_api": "completions",
             },
             tools=tools,
-            on_permission_request=build_permission_handler(definition.get("permissions"), ask_input),
+            on_permission_request=build_permission_handler(definition.get("permissions"), ask_input, workspace, files),
             on_user_input_request=on_user_input_request if (definition.get("permissions") or {}).get("questions") is True else None,
             enable_config_discovery=False,
             skip_custom_instructions=True,

@@ -43,6 +43,7 @@ const app = await buildApp({
   port,
   staticDir: dev ? undefined : staticDir,
   devOrigins: dev ? ["http://127.0.0.1:5173", "http://localhost:5173"] : [],
+  githubOAuthClientId: process.env.CONFIGURATOR_GITHUB_CLIENT_ID,
 });
 await app.listen({ host: "127.0.0.1", port });
 

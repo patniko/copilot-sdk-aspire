@@ -92,10 +92,12 @@ In the configurator, choose **Demo agent host** in Local run or in an Azure depl
 | GitHub | GitHub-native Copilot through the account's Mission Control environment; no public host ingress |
 | Both | Managed harness/Foundry through both transports; runtime work pending |
 
-For GitHub-native mode, set the expected GitHub owner; the harness and custom runtime-directory fields are unused.
-For managed modes, select a conversation harness such as `interactive-demo`. For GitHub hosting,
-save the owner's credential using the password field in Local run; the credential is kept in Aspire secrets.
-Keep it out of the workspace, target JSON, logs, and demo recordings.
+For GitHub-native mode, the harness and custom runtime-directory fields are unused. When the configurator was
+started with `CONFIGURATOR_GITHUB_CLIENT_ID`, choose **Sign in with GitHub**, open the displayed device-activation
+page, and enter its one-time code. The configurator verifies the account, fills the expected GitHub owner, and
+saves the OAuth token in Aspire secrets without returning it to the browser. For managed modes, select a
+conversation harness such as `interactive-demo`. The password field remains a manual credential fallback.
+Keep the credential out of the workspace, target JSON, logs, and demo recordings.
 
 After the host is ready, use the repository launcher with a normally enabled relay client:
 
@@ -180,8 +182,13 @@ or file contents in the structured result if you need them after cleanup; see
 ### Approvals and questions
 
 Review the displayed command, path, diff, or URL before approving. Agent-supplied descriptions are not a guarantee
-that an action is safe. Prefer a one-time approval; **kind** approval covers later requests of the same type for
-the remainder of that attempt. You can deny a request with feedback for the agent.
+that an action is safe. Prefer a one-time approval. Approving **for this run** covers similar requests for the
+remainder of that attempt, as in the Copilot CLI: the listed command names, all file changes, reads in that folder,
+that website, or that tool. You can deny a request with feedback for the agent.
+
+Harnesses that **ask** follow the Copilot CLI's defaults, so not every action prompts: reads inside the job's
+workspace, read-only shell commands that stay inside it, and read-only MCP tools run without a request. Commands
+that change state, redirect output, reach URLs, or touch paths outside the workspace still ask.
 
 Requests normally expire after 600 seconds, bounded by the harness setting and the attempt deadline. Waiting
 does not pause the deadline or release the executor slot. Expired permissions are denied; the job may continue or
@@ -253,9 +260,9 @@ for reproducibility and evidence limitations.
 | Configurator says its token is invalid | Reopen the current URL from its terminal; a prior launch URL is stale |
 | `401 unauthenticated` | Use the caller key for that stack, with the authentication format in [API](API.md#authentication) |
 | `400 invalid_input` | Match the selected harness version's input schema |
-| `422 policy_rejected` | Inspect allowed models, profiles, bindings, capabilities, and permission modes; do not weaken controls to force acceptance |
-| Job stays queued | Check dispatcher/executor health, capacity, profile eligibility, and executor logs in Aspire |
-| Executor says it is not eligible | A required control is unavailable; review [Security](SECURITY.md), not just the harness |
+| `422 policy_rejected` | Inspect allowed models, profiles, bindings, capabilities, and permission modes in the harness's effective policy (base policy plus any override); do not weaken controls to force acceptance |
+| Job stays queued | Check dispatcher/executor health, capacity, and profile eligibility. A `job.waiting_for_eligible_executor` event means the harness's effective policy requires a control (for example gateway-only egress) that no executor enforces and the policy does not acknowledge; review [Security](SECURITY.md), not just the harness |
+| Job failed with `policy_revoked` | The harness's policy was narrowed after you submitted it; resubmit once the operator policy allows it |
 | Model access fails | Check the signed-in tenant, model data-plane role, endpoint, deployment name, and quota |
 | Job waits or hits its deadline | Check the approvals inbox and the harness duration limit |
 | Saved files do not affect new jobs | Reload the local API for harness edits; rebuild/redeploy baked configuration in Azure |

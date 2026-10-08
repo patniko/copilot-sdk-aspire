@@ -265,7 +265,7 @@ export function HarnessesView() {
               <div className="flex flex-wrap items-start gap-3 p-4 pb-0">
                 <div className="min-w-0">
                   <h2 className="flex flex-wrap items-center gap-2 text-xl font-semibold">
-                    {(draft.manifest.agents?.length ?? 0) > 0 && <Copilot className="fg-done" size={20} />}
+                    {((draft.manifest.agents?.length ?? 0) > 0 || draft.manifest.builtinTools?.includes("agents")) && <Copilot className="fg-done" size={20} />}
                     {draft.manifest.name}
                     <span className="font-mono text-base font-normal fg-muted">{draft.manifest.version}</span>
                     {dirty ? <Badge tone="amber">unsaved</Badge> : <Badge tone="green">saved</Badge>}

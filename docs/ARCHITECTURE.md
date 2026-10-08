@@ -137,11 +137,12 @@ sequenceDiagram
     participant G as Gateway
     participant F as Foundry
     Caller->>API: Submit harness, input, caller key
-    API->>API: Validate schema, profile, model, policy
-    API->>DB: Store admitted harness snapshot and queued job
+    API->>API: Validate schema, profile, model, effective policy
+    API->>DB: Store harness snapshot, policy requirements/digest, queued job
     API-->>Caller: 202 job view (200 for idempotent replay)
     E->>D: Claim with service key and enforced controls
-    D->>D: Check eligibility and acknowledged gaps
+    D->>DB: Select a job whose policy requirements this executor meets or acknowledges
+    D->>D: Recheck the job against its harness's current effective policy
     D->>DB: Lease attempt and create capability record
     D-->>E: Attempt, lease token, signed inference capability
     E->>R: Spawn with private workspace and minimal environment
@@ -169,8 +170,11 @@ sequenceDiagram
 ```
 
 This is the successful claim/authorized inference path; event streaming may run concurrently with execution.
-Failed admission never creates a job. Ineligible executors do not claim one. The executor checks `hello` before
-sending job input, and a stale attempt owner cannot decide the next job state.
+Failed admission never creates a job. An executor claims only jobs whose effective policy it satisfies or whose
+missing controls that policy acknowledges; a job no polling executor can run stays queued and records
+`job.waiting_for_eligible_executor` once. A job that a narrowed policy no longer allows fails with `policy_revoked`
+at claim time. The executor checks `hello` before sending job input, and a stale attempt owner cannot decide the
+next job state.
 
 The gateway caches capability introspection for up to two seconds. Usage is reported from completed provider
 responses; it is not a pre-reserved, exact billing cap for every in-flight token. Capability revocation is recorded
@@ -273,7 +277,8 @@ deployments bake it into images. At admission the API resolves a harness's instr
 definition, computes a digest, and stores that harness snapshot with the job. A runner receives this snapshot
 rather than reopening the harness directory.
 
-Profiles and tool implementations belong to the executor image, while operator policy is loaded by the API and
+Profiles and tool implementations belong to the executor image, while operator policy — the base
+`policy/execution-policy.json` plus optional per-harness overrides in `policy/harnesses/` — is loaded by the API and
 dispatcher. A harness-only reload is not a policy or runner upgrade. Follow
 [Configuration publication](DEVELOPER-GUIDE.md#configuration-publication) for activation and versioning.
 

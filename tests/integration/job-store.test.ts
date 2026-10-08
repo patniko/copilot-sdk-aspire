@@ -34,8 +34,13 @@ function newJob(overrides: Partial<NewJob> = {}): NewJob {
   };
 }
 
-const claim = (leaseSeconds = 30) =>
-  store.claimNext({ executor, acknowledgedGaps: ["egress-not-enforced"], leaseSeconds, maxConcurrentPerPrincipal: 10 });
+const defaults = {
+  requiresUidIsolation: true,
+  requiresEgressEnforcement: true,
+  acknowledgedGaps: ["egress-not-enforced" as const],
+};
+
+const claim = (leaseSeconds = 30) => store.claimNext({ executor, defaults, leaseSeconds, maxConcurrentPerPrincipal: 10 });
 
 beforeAll(async () => {
   pool = new pg.Pool({ connectionString: inject("databaseUrl") });
@@ -183,5 +188,52 @@ describe("cancellation and capabilities", () => {
       reason: "budget_exhausted",
     });
     expect(await store.introspectCapability(randomUUID())).toMatchObject({ active: false, reason: "unknown" });
+  });
+});
+
+describe("per-harness policy", () => {
+  const strict = { digest: "sha256:strict", retryBackoffSeconds: 120, requirements: { requiresUidIsolation: true, requiresEgressEnforcement: true, acknowledgedGaps: [] } };
+  const lenient = { digest: "sha256:lenient", retryBackoffSeconds: 1, requirements: { requiresUidIsolation: true, requiresEgressEnforcement: true, acknowledgedGaps: ["egress-not-enforced" as const] } };
+
+  it("matches each job's requirements and records the gaps actually skipped", async () => {
+    const blocked = await store.createJob(newJob({ requestHash: "strict", policy: strict }), 10);
+    const allowed = await store.createJob(newJob({ requestHash: "lenient", policy: lenient }), 10);
+    expect(blocked.view.policyDigest).toBe("sha256:strict");
+
+    const first = await claim();
+    expect(first?.job.id).toBe(allowed.view.id);
+    expect(first?.attempt.acknowledgedGaps).toEqual(["egress-not-enforced"]);
+    expect(await claim()).toBeUndefined();
+
+    const enforcing = await store.claimNext({ executor: { ...executor, egress: "gateway-only" }, defaults, leaseSeconds: 30, maxConcurrentPerPrincipal: 10 });
+    expect(enforcing?.job.id).toBe(blocked.view.id);
+    expect(enforcing?.attempt.acknowledgedGaps).toEqual([]);
+  });
+
+  it("falls back to the base requirements for jobs admitted without a recorded policy", async () => {
+    await store.createJob(newJob(), 10);
+    const strictDefaults = { ...defaults, acknowledgedGaps: [] };
+    expect(await store.claimNext({ executor, defaults: strictDefaults, leaseSeconds: 30, maxConcurrentPerPrincipal: 10 })).toBeUndefined();
+    expect(await claim()).toBeDefined();
+  });
+
+  it("reports a job waiting for an eligible executor once", async () => {
+    const { view } = await store.createJob(newJob({ policy: strict }), 10);
+    const options = { executor, defaults, olderThanSeconds: 0 };
+    expect(await store.reportJobsWaitingForEligibleExecutor(options)).toEqual([{ jobId: view.id, missing: ["egress-not-enforced"] }]);
+    expect(await store.reportJobsWaitingForEligibleExecutor(options)).toEqual([]);
+    const events = await store.listEvents("alice", view.id, 0, 10);
+    expect(events.map((e) => e.body)).toContainEqual({ type: "job.waiting_for_eligible_executor", missing: ["egress-not-enforced"] });
+    expect(events[0]?.body).toEqual({ type: "job.queued", policyDigest: "sha256:strict" });
+  });
+
+  it("uses the job's retry backoff instead of the dispatcher default", async () => {
+    await store.createJob(newJob({ policy: { ...lenient, retryBackoffSeconds: 300 } }), 10);
+    const attempt = await claim();
+    const failure = { kind: "failed" as const, code: "inference_error" as const, message: "x", retryable: true, uncertainEffects: false };
+    const before = Date.now();
+    await store.completeAttempt(attempt!.attempt.id, attempt!.attempt.leaseToken, failure, 1);
+    const row = await pool.query<{ not_before: Date }>("SELECT not_before FROM jobs");
+    expect(row.rows[0]!.not_before.getTime() - before).toBeGreaterThan(250_000);
   });
 });

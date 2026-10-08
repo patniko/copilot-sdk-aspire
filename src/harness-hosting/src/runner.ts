@@ -208,7 +208,7 @@ export async function runHarness(options: RunOptions): Promise<void> {
       },
       tools: allTools,
       ...sessionOptions,
-      onPermissionRequest: buildPermissionHandler(definition.permissions, askInput),
+      onPermissionRequest: buildPermissionHandler(definition.permissions, askInput, { workspace, workingDirectory: files }),
       ...(onUserInputRequest ? { onUserInputRequest } : {}),
       enableConfigDiscovery: false,
       skipCustomInstructions: true,

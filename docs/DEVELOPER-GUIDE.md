@@ -85,12 +85,17 @@ The loader in [`registry.ts`](../src/service-defaults/src/registry.ts) uses two 
 - Skill folder names resolve to `skills/<name>/SKILL.md` and are inlined into the snapshot.
 - The loader validates schemas and computes a digest over canonicalized resolved content.
 - Admission selects a version/profile and stores the harness snapshot with the job.
+- Operator policy is `policy/execution-policy.json` plus optional `policy/harnesses/<harness>.json` overrides
+  ([`HarnessPolicyOverride`](../contracts/src/profile.ts)). Admission resolves the harness's effective policy and
+  stores its digest, required controls, acknowledged gaps, and retry backoff with the job; the dispatcher matches
+  executors per job and rechecks the current effective policy at claim time. Lease timing and per-caller quotas
+  are global. The API fails startup when an override names an unpublished harness.
 - Configuration is loaded at process startup, not continuously watched by runtime services.
 
 | Change | Local activation | Azure activation |
 | --- | --- | --- |
 | Harness instructions, schema, or skills | Save/version in the customer workspace, then reload or restart `agent-api` | Rebuild/redeploy the API image carrying the workspace registry |
-| Operator policy | Restart API and dispatcher so admission and claiming agree | Rebuild/redeploy affected control-plane images |
+| Operator policy or a per-harness override | Restart API and dispatcher so admission and claiming agree | Rebuild/redeploy affected control-plane images |
 | Profile manifest | Restart API and rebuild/restart executor; deploy aligned profile definitions | Rebuild/redeploy API and executor images |
 | Runner or packaged tool | Rebuild/restart executor image | Rebuild/redeploy executor image |
 | AppHost wiring, gateway route, or identity inputs | Restart the affected stack resources | Review published infrastructure and deploy |

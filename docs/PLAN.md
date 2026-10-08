@@ -71,6 +71,33 @@ The production architecture should realize the responsibilities described on the
 
 Do not interpret these proposals as proof that a particular released SDK, Azure SKU, or sandbox profile already supports the complete architecture.
 
+### Per-harness egress allowlists (deferred)
+
+**Status:** proposal, deferred on 2026-10-07 to keep local and Azure behavior identical. Per-harness policy
+overrides shipped separately ([Developer guide](DEVELOPER-GUIDE.md#configuration-publication)); this section covers
+only enforced, per-harness network allowlists.
+
+Proposed design: a harness declares the domains it needs (`network.egress.allow`), an operator policy override sets
+the ceiling, and a new capability-authenticated **egress gateway** (an HTTPS `CONNECT` proxy, mirroring the
+inference gateway) applies the job's allowlist, refuses private/metadata addresses after DNS resolution, and
+records allowed/denied hosts as job events. A network layer must block every other runner connection so the
+proxy cannot be bypassed. One enforced executor pool can then serve every allowlist.
+
+Runtime evidence (2026-10-07, executor image with SDK 1.0.16 and Container Apps staging):
+
+| Question | Finding |
+| --- | --- |
+| Copilot runtime `web_fetch` and shell commands | Honor `HTTPS_PROXY`/`NO_PROXY`; URL-embedded proxy credentials are sent as Basic `Proxy-Authorization`; denial fails closed |
+| Node 24 `fetch` | Uses proxy variables only with `NODE_USE_ENV_PROXY=1` |
+| Runtime sandbox network allowlist (`sandboxConfig`, experimental) | Unsupported in containers: Docker's default profile and Container Apps refuse unprivileged user/network namespaces |
+| Local per-uid filtering | Works with `--cap-add NET_ADMIN` and `iptables` owner match |
+| Container Apps | No `NET_ADMIN` (default capability set); egress control only per environment subnet (NSG/UDR) |
+| Aspire 13.6 TypeScript AppHost | Expresses VNet, subnets, NSG service-tag rules, and multiple environments, but wires cross-environment references to internal ingress (reachable only within one environment) and offers no internal-only environment, private DNS, firewall, or route table |
+
+Because Azure cannot enforce the same control with `aspire deploy` today, the local-only enforcement path was not
+built. Revisit when the AppHost can express a separately networked executor environment, when the compute target
+permits the runtime sandbox, or if a post-processed deployment outside `aspire deploy` becomes acceptable.
+
 ### Language policy and runtime terminology
 
 Keep these independent choices explicit:
@@ -906,7 +933,7 @@ boundary-by-boundary detail.
 
 | Milestone | State | Evidence |
 | --- | --- | --- |
-| M0 compatibility and threat model | Partial | SDK BYOK verified for TypeScript and Python against Foundry with Entra tokens; runner protocol v1 defined ([RUNNER-PROTOCOL.md](RUNNER-PROTOCOL.md)); uid-based runner isolation verified locally and on Container Apps. Runtime OS sandbox and egress enforcement on Container Apps not yet probed or available. |
+| M0 compatibility and threat model | Partial | SDK BYOK verified for TypeScript and Python against Foundry with Entra tokens; runner protocol v1 defined ([RUNNER-PROTOCOL.md](RUNNER-PROTOCOL.md)); uid-based runner isolation verified locally and on Container Apps. 2026-10-07: runtime OS sandbox networking and per-uid egress filtering probed and unavailable on Container Apps (no user/network namespaces, no `NET_ADMIN`); see [deferred egress allowlists](#per-harness-egress-allowlists-deferred). |
 | M1 secure reference execution | Done, with acknowledged gaps | External gateway with job-scoped capabilities; TypeScript reference runner using a pinned Python tool; customer Python runner on the same contract; no provider, database, or service credential in runner environments (inspected on live processes). Gaps: egress not enforced (explicitly acknowledged in policy), MCP integrations not implemented. |
 | M2 durable service | Done | PostgreSQL ledger with idempotent admission, fenced leases, heartbeats, lease recovery, retry/backoff, `needs_review` for uncertain effects, cancellation with capability revocation, ordered events with SSE cursors, output schema validation. Covered by integration tests. |
 | M3 reproducible Azure deployment | Done | `aspire deploy` from a clean checkout created Container Apps, ACR, PostgreSQL (Entra-only), identities, and a least-privilege model role on the existing Foundry account. TypeScript and Python agent jobs succeeded in Azure; cancellation verified; internal services not routable from the internet. |
@@ -918,10 +945,20 @@ boundary-by-boundary detail.
 - **Inference capability.** Runners authenticate to the gateway with an HS256 JWT minted per attempt (models,
   token budget, expiry). The gateway checks revocation and remaining budget with the dispatcher on each request
   (2-second cache) and reports usage back. Capabilities are revoked on cancellation and attempt completion.
-- **Executor eligibility.** Executors report the controls they enforce. A policy requirement that an executor
-  cannot meet blocks claiming unless the operator lists it in `acknowledgedGaps`; acknowledged gaps are stored on
-  each attempt and returned with the job. The shipped policy requires uid isolation and gateway-only egress and
-  acknowledges only `egress-not-enforced`.
+- **Executor eligibility.** Executors report the controls they enforce. Originally one global check blocked an
+  executor from claiming anything when a policy requirement was unmet and unacknowledged. Since 2026-10-07 the
+  check is per job: each job stores the required controls and acknowledged gaps of its effective policy, an
+  executor claims only jobs it satisfies or whose gaps that policy acknowledges, and each attempt stores the gaps it
+  actually ran with. The shipped policy requires uid isolation and gateway-only egress and acknowledges only
+  `egress-not-enforced`.
+- **Per-harness policy (2026-10-07).** Operators may add `policy/harnesses/<harness>.json` to replace overridable
+  policy fields for one harness (all versions); lease timing and per-caller quotas stay global. Jobs record the
+  effective policy digest; narrowing a policy fails affected queued jobs with `policy_revoked` at claim time.
+  Verified by unit and integration tests; local and Azure behavior is identical because no infrastructure changes.
+- **Approval defaults (2026-10-07).** Harness `ask` mirrors the Copilot CLI's interactive defaults in both runners
+  (workspace reads, workspace-confined read-only commands, and read-only MCP tools run without a prompt), and an
+  approval for the run covers similar requests only. Verified by unit tests and a Python parity check in the
+  executor image.
 - **Execution placement.** Runners execute as child processes of the executor container under a dedicated uid.
   Per-job outer isolation (Dynamic Sessions, VM pools) remains future work behind the same runner protocol.
 - **Configuration publication.** Harnesses, execution profiles, and policy are file-published and baked into
@@ -947,9 +984,10 @@ boundary-by-boundary detail.
 
 ### Open gates before production claims
 
-1. Enforce egress (dedicated execution environment with network rules or per-job sandbox) and remove the
-   `egress-not-enforced` acknowledgement.
-2. Probe and enable the Copilot runtime sandbox on the execution target once the SDK exposes safe initialization.
+1. Enforce egress identically locally and in Azure (a separately networked execution environment or a per-job
+   sandbox) and remove the `egress-not-enforced` acknowledgement; see
+   [deferred egress allowlists](#per-harness-egress-allowlists-deferred).
+2. Enable the Copilot runtime sandbox on an execution target that permits unprivileged user/network namespaces.
 3. Private networking for PostgreSQL and least-privilege database roles.
 4. Key Vault-backed service keys with rotation; Entra ID caller authentication instead of API keys.
 5. Local and remote MCP placements through the gateway/connector model.

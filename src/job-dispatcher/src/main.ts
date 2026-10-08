@@ -1,9 +1,10 @@
+import { policyFor } from "@copilot-agent/contracts";
 import { HostStore, JobStore, migrate } from "@copilot-agent/job-store";
 import {
   createPostgresPool,
   listen,
   listenPort,
-  loadPolicy,
+  loadPolicySet,
   loadHarnesses,
   loadProfiles,
   optionalEnv,
@@ -12,7 +13,8 @@ import {
 } from "@copilot-agent/service-defaults";
 import { buildDispatcher } from "./server.js";
 
-const policy = await loadPolicy();
+const policies = await loadPolicySet();
+const policy = policies.base;
 const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);
 const store = new JobStore(pool);
@@ -25,7 +27,7 @@ if (hostOwner && hostExecution === "managed" && !hostHarness) throw new Error("T
 
 const app = buildDispatcher({
   store,
-  policy,
+  policies,
   executorKey: requireEnv("EXECUTOR_KEY"),
   gatewayKey: requireEnv("GATEWAY_KEY"),
   signingKey: requireEnv("CAPABILITY_SIGNING_KEY"),
@@ -33,14 +35,18 @@ const app = buildDispatcher({
   ...(hostOwner ? {
     host: {
       store: hostStore, key: requireEnv("DEMO_HOST_KEY"), owner: hostOwner,
-      execution: hostExecution, harness: hostHarness, profiles: hostExecution === "managed" ? await loadProfiles() : undefined, policy,
+      execution: hostExecution, harness: hostHarness, profiles: hostExecution === "managed" ? await loadProfiles() : undefined,
+      policy: hostHarness ? policyFor(policies, hostHarness.definition.name) : policy,
       signingKey: requireEnv("CAPABILITY_SIGNING_KEY"),
     },
   } : {}),
 });
 
 await listen(app, listenPort(8081));
-app.log.info({ acknowledgedGaps: policy.acknowledgedGaps, requirements: policy.requirements }, "job-dispatcher ready");
+app.log.info(
+  { acknowledgedGaps: policy.acknowledgedGaps, requirements: policy.requirements, policyOverrides: [...policies.overrides.keys()] },
+  "job-dispatcher ready",
+);
 
 // Lease reaper: recovers attempts whose executor stopped heartbeating.
 const reap = async () => {

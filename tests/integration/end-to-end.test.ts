@@ -4,14 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
-import type { ExecutionPolicy, ExecutionProfile, ExecutorCapabilities, JobView } from "@copilot-agent/contracts";
+import type { ExecutionPolicy, ExecutionProfile, ExecutorCapabilities, JobView, PolicySet } from "@copilot-agent/contracts";
 import { JobEventListener, JobStore, migrate } from "@copilot-agent/job-store";
 import { ApiKeyAuthenticator, createLogger, loadHarnesses, loadPolicy, loadProfiles } from "@copilot-agent/service-defaults";
 import type { FastifyInstance } from "fastify";
 import { Admission } from "../../src/agent-api/src/admission.js";
 import { buildApi } from "../../src/agent-api/src/server.js";
 import { runAttempt } from "../../src/agent-executor/src/attempt.js";
-import { DispatcherClient, NotEligibleError } from "../../src/agent-executor/src/dispatcher-client.js";
+import { DispatcherClient } from "../../src/agent-executor/src/dispatcher-client.js";
 import { DispatcherClient as GatewayDispatcherClient } from "../../src/inference-gateway/src/dispatcher-client.js";
 import { buildGateway } from "../../src/inference-gateway/src/server.js";
 import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
@@ -26,6 +26,7 @@ const signingKey = "signing-key-".padEnd(64, "x");
 let pool: pg.Pool;
 let listener: JobEventListener;
 let policy: ExecutionPolicy;
+let policies: PolicySet;
 let api: FastifyInstance;
 let dispatcherApp: FastifyInstance;
 let gateway: FastifyInstance;
@@ -138,6 +139,7 @@ beforeAll(async () => {
   harnesses.set("input-fixture", [inputHarness(5)]);
   // Host test runs cannot switch users, so this policy acknowledges both gaps explicitly.
   policy = { ...basePolicy, leaseSeconds: 10, acknowledgedGaps: ["egress-not-enforced", "process-isolation-not-enforced"] };
+  policies = { base: policy, overrides: new Map() };
   profile = {
     ...profiles.get("node-ts-agent")!,
     entrypoint: { command: process.execPath, args: ["tests/fakes/fake-runner.mjs"], directory: ".", env: {} },
@@ -153,7 +155,7 @@ beforeAll(async () => {
   });
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
 
-  dispatcherApp = buildDispatcher({ store, policy, executorKey, gatewayKey, signingKey });
+  dispatcherApp = buildDispatcher({ store, policies, executorKey, gatewayKey, signingKey });
   await dispatcherApp.listen({ port: 0, host: "127.0.0.1" });
   dispatcherUrl = address(dispatcherApp.server);
 
@@ -171,7 +173,7 @@ beforeAll(async () => {
   api = buildApi({
     store,
     listener,
-    admission: new Admission({ harnesses, profiles, policy }),
+    admission: new Admission({ harnesses, profiles, policies }),
     authenticator: new ApiKeyAuthenticator(`alice:${apiKey}`),
     harnesses,
     maxOpenJobsPerPrincipal: 100,
@@ -188,21 +190,58 @@ afterAll(async () => {
 });
 
 describe("end-to-end job execution", () => {
-  it("refuses executors with unacknowledged security gaps", async () => {
-    const strict = buildDispatcher({
+  it("hands each job only to executors that meet or acknowledge its effective policy", async () => {
+    const store = new JobStore(pool);
+    const requirements = { requiresUidIsolation: true, requiresEgressEnforcement: true, acknowledgedGaps: ["egress-not-enforced" as const] };
+    const harness = (await loadHarnesses(join(root, "examples", "customer-config"))).get("dataset-analyst")![0]!;
+    const { view } = await store.createJob(
+      {
+        principal: "alice",
+        requestHash: "per-job-policy",
+        harness,
+        profile: "node-ts-agent",
+        model: "grok-4.6",
+        input: {},
+        maxDurationSeconds: 60,
+        tokenBudget: 1000,
+        maxAttempts: 1,
+        safeToRetry: true,
+        policy: { digest: "sha256:test", requirements, retryBackoffSeconds: 1 },
+      },
+      100,
+    );
+    const client = new DispatcherClient(dispatcherUrl, executorKey);
+    expect(await client.claim(capabilities())).toBeUndefined();
+    await expect(new DispatcherClient(dispatcherUrl, "wrong-key").claim(capabilities())).rejects.toThrow(/401/);
+
+    const isolated = await client.claim(capabilities({ processIsolation: "uid" }));
+    expect(isolated?.job.id).toBe(view.id);
+    expect(isolated?.attempt.acknowledgedGaps).toEqual(["egress-not-enforced"]);
+    await client.complete(isolated!.attempt.id, isolated!.attempt.leaseToken, { kind: "cancelled" });
+    expect((await job(view.id)).policyDigest).toBe("sha256:test");
+  });
+
+  it("fails a queued job whose harness policy no longer allows it", async () => {
+    const submitted = await submit("revoked");
+    expect(submitted.policyDigest).toMatch(/^sha256:/);
+    const narrowed = buildDispatcher({
       store: new JobStore(pool),
-      policy: { ...policy, acknowledgedGaps: ["egress-not-enforced"] },
+      policies: {
+        base: policy,
+        overrides: new Map([["dataset-analyst", { schemaVersion: "1", harness: "dataset-analyst", overrides: { allowedModels: ["other-model"] } }]]),
+      },
       executorKey,
       gatewayKey,
       signingKey,
     });
-    await strict.listen({ port: 0, host: "127.0.0.1" });
+    await narrowed.listen({ port: 0, host: "127.0.0.1" });
     try {
-      const client = new DispatcherClient(address(strict.server), executorKey);
-      await expect(client.claim(capabilities())).rejects.toBeInstanceOf(NotEligibleError);
-      await expect(new DispatcherClient(address(strict.server), "wrong-key").claim(capabilities())).rejects.toThrow(/401/);
+      expect(await new DispatcherClient(address(narrowed.server), executorKey).claim(capabilities())).toBeUndefined();
+      const failed = await job(submitted.id);
+      expect(failed.state).toBe("failed");
+      expect(failed.error?.code).toBe("policy_revoked");
     } finally {
-      await strict.close();
+      await narrowed.close();
     }
   });
 

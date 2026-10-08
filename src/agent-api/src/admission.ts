@@ -1,19 +1,29 @@
 import {
-  type ExecutionPolicy,
   type ExecutionProfile,
   type HarnessSnapshot,
+  type JobSecurityRequirements,
   type JobSubmission,
   modelOptionViolations,
+  type PolicySet,
+  policyFor,
   requiredRunnerCapabilities,
+  securityRequirementsOf,
   toolPolicyViolations,
 } from "@copilot-agent/contracts";
-import { canonicalJson, createAjv, HttpError, sha256Hex } from "@copilot-agent/service-defaults";
+import { canonicalJson, createAjv, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
 import type { ValidateFunction } from "ajv";
 
 export interface AdmissionContext {
   harnesses: Map<string, HarnessSnapshot[]>;
   profiles: Map<string, ExecutionProfile>;
-  policy: ExecutionPolicy;
+  /** Base policy plus per-harness overrides; each job is admitted against its harness's effective policy. */
+  policies: PolicySet;
+}
+
+export interface AdmittedPolicy {
+  digest: string;
+  requirements: JobSecurityRequirements;
+  retryBackoffSeconds: number;
 }
 
 export interface AdmittedJob {
@@ -26,11 +36,13 @@ export interface AdmittedJob {
   maxAttempts: number;
   safeToRetry: boolean;
   requestHash: string;
+  policy: AdmittedPolicy;
 }
 
 /**
  * Validates a submission against the published harness, approved execution profiles, and the
- * operator policy. Effective limits are the intersection; a caller can only narrow them.
+ * harness's effective operator policy (the base policy plus any override for that harness).
+ * Effective limits are the intersection; a caller can only narrow them.
  */
 export class Admission {
   readonly #validators = new Map<string, ValidateFunction>();
@@ -39,7 +51,7 @@ export class Admission {
   constructor(private readonly context: AdmissionContext) {}
 
   admit(submission: JobSubmission): AdmittedJob {
-    const { harnesses, profiles, policy } = this.context;
+    const { harnesses, profiles, policies } = this.context;
     const versions = harnesses.get(submission.harness.name);
     const harness = submission.harness.version
       ? versions?.find((v) => v.definition.version === submission.harness.version)
@@ -48,6 +60,7 @@ export class Admission {
       throw new HttpError(404, "harness_not_found", "The requested harness version is not published.");
     }
     const definition = harness.definition;
+    const policy = policyFor(policies, definition.name);
     if (definition.interaction === "conversation") {
       throw new HttpError(422, "policy_rejected", "Conversation harnesses run on the demo host, not as batch jobs.");
     }
@@ -114,6 +127,11 @@ export class Admission {
       tokenBudget: Math.min(definition.limits.maxInferenceTokens, policy.maxInferenceTokensPerJob),
       maxAttempts: Math.min(definition.retry.maxAttempts, policy.retry.maxAttempts),
       safeToRetry: definition.retry.safeToRetry,
+      policy: {
+        digest: policyDigest(policy),
+        requirements: securityRequirementsOf(policy),
+        retryBackoffSeconds: policy.retry.backoffSeconds,
+      },
       requestHash: sha256Hex(
         canonicalJson({
           harness: { name: definition.name, version: definition.version },

@@ -1,11 +1,12 @@
 import { HostStore, JobEventListener, JobStore, migrate } from "@copilot-agent/job-store";
 import {
   ApiKeyAuthenticator,
+  assertOverridesMatchHarnesses,
   createPostgresPool,
   listen,
   listenPort,
   loadHarnesses,
-  loadPolicy,
+  loadPolicySet,
   loadProfiles,
   optionalEnv,
   readPostgresConnection,
@@ -14,7 +15,9 @@ import {
 import { Admission } from "./admission.js";
 import { buildApi } from "./server.js";
 
-const [harnesses, profiles, policy] = await Promise.all([loadHarnesses(), loadProfiles(), loadPolicy()]);
+const [harnesses, profiles, policies] = await Promise.all([loadHarnesses(), loadProfiles(), loadPolicySet()]);
+assertOverridesMatchHarnesses(policies, harnesses.keys());
+const policy = policies.base;
 const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);
 
@@ -26,7 +29,7 @@ await listener.start();
 const app = buildApi({
   store,
   listener,
-  admission: new Admission({ harnesses, profiles, policy }),
+  admission: new Admission({ harnesses, profiles, policies }),
   authenticator: new ApiKeyAuthenticator(requireEnv("API_KEYS")),
   harnesses,
   maxOpenJobsPerPrincipal: policy.maxQueuedJobsPerPrincipal,
@@ -41,6 +44,11 @@ const app = buildApi({
 
 await listen(app, listenPort(8080));
 app.log.info(
-  { harnesses: [...harnesses.keys()], profiles: [...profiles.keys()], acknowledgedGaps: policy.acknowledgedGaps },
+  {
+    harnesses: [...harnesses.keys()],
+    profiles: [...profiles.keys()],
+    acknowledgedGaps: policy.acknowledgedGaps,
+    policyOverrides: [...policies.overrides.keys()],
+  },
   "agent-api ready",
 );

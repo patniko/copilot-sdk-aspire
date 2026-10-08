@@ -28,7 +28,7 @@ describe.skipIf(process.env.DEMO_GITHUB_HOST_TESTS !== "1")("GitHub-native host 
     const serviceKey = randomUUID().repeat(2);
     const signingKey = randomUUID().repeat(2);
     const dispatcher = buildDispatcher({
-      store: new JobStore(pool), hostStore: store, policy,
+      store: new JobStore(pool), hostStore: store, policies: { base: policy, overrides: new Map() },
       executorKey: "unused".repeat(8), gatewayKey: "unused-gateway".repeat(4), signingKey,
       host: { store, key: serviceKey, owner, execution: "github-native", policy, signingKey },
     });

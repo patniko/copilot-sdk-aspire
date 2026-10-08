@@ -2,12 +2,16 @@ import {
   ExecutorCapabilities,
   InputRequestBody,
   JobErrorCode,
+  modelOptionViolations,
+  type PolicySet,
+  policyFor,
   RUNNER_REQUEST_ID,
   RunnerEventBody,
-  securityGaps,
+  securityRequirementsOf,
+  toolPolicyViolations,
   type ExecutionPolicy,
 } from "@copilot-agent/contracts";
-import type { AttemptOutcome, JobStore, HostStore } from "@copilot-agent/job-store";
+import type { AttemptOutcome, Claim, JobStore, HostStore } from "@copilot-agent/job-store";
 import { createService, HttpError, requireInternalKey, signCapability } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -15,12 +19,33 @@ import { registerHostRoutes, type HostDependencies } from "./host-routes.js";
 
 export interface DispatcherDependencies {
   store: JobStore;
-  policy: ExecutionPolicy;
+  /** Base policy plus per-harness overrides. Lease timing and per-caller limits come from the base policy. */
+  policies: PolicySet;
   executorKey: string;
   gatewayKey: string;
   signingKey: string;
   hostStore?: HostStore;
   host?: HostDependencies;
+}
+
+/**
+ * Why a claimed job may no longer run under its harness's current effective policy, if anything.
+ * Narrowing a policy after admission takes effect for queued work; widening never applies retroactively.
+ */
+export function policyRevocation(job: Claim["job"], policy: ExecutionPolicy): string | undefined {
+  const definition = job.harness.definition;
+  if (!policy.allowedProfiles.includes(job.profile)) {
+    return `Profile '${job.profile}' is no longer approved by the operator policy.`;
+  }
+  if (!policy.allowedModels.includes(job.model)) {
+    return `Model '${job.model}' is no longer approved by the operator policy.`;
+  }
+  const agent = (definition.agents ?? []).find((a) => a.model && !policy.allowedModels.includes(a.model));
+  if (agent) {
+    return `Sub-agent '${agent.name}' uses a model that is no longer approved by the operator policy.`;
+  }
+  const problems = [...modelOptionViolations(definition, policy), ...toolPolicyViolations(definition, policy)];
+  return problems[0]?.message;
 }
 
 const LeaseBody = z.object({ leaseToken: z.string().min(16).max(200) }).strict();
@@ -93,7 +118,14 @@ function parse<T>(schema: z.ZodType<T>, body: unknown): T {
 
 export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   const app = createService({ name: "job-dispatcher", bodyLimit: 4 * 1024 * 1024, ready: () => deps.store.ping() });
-  const { policy } = deps;
+  const policy = deps.policies.base;
+  const defaults = securityRequirementsOf(policy);
+  const approvedProfiles = new Set([
+    ...policy.allowedProfiles,
+    ...[...deps.policies.overrides.values()].flatMap((o) => o.overrides.allowedProfiles ?? []),
+  ]);
+  const waitingThresholdSeconds = Math.max(60, policy.leaseSeconds * 2);
+  let lastWaitingCheck = 0;
   if (deps.host) registerHostRoutes(app, deps.host);
   const heartbeatSeconds = Math.max(3, Math.floor(policy.leaseSeconds / 3));
 
@@ -110,28 +142,41 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   app.post("/internal/executor/claim", async (request, reply) => {
     executorOnly(request);
     const executor = parse(ExecutorCapabilities, request.body);
-    const gaps = securityGaps(policy, executor);
-    const unacknowledged = gaps.filter((gap) => !policy.acknowledgedGaps.includes(gap));
-    if (unacknowledged.length > 0) {
-      request.log.warn({ executor: executor.executorId, unacknowledged }, "executor not eligible to claim work");
-      throw new HttpError(
-        403,
-        "executor_not_eligible",
-        "The executor cannot enforce required security controls and the operator has not acknowledged the gap.",
-        { gaps: unacknowledged },
-      );
-    }
-    const eligibleProfiles = executor.profiles.filter((p) => policy.allowedProfiles.includes(p));
+    const eligibleProfiles = executor.profiles.filter((p) => approvedProfiles.has(p));
     if (eligibleProfiles.length === 0) {
       return reply.status(204).send();
     }
+    const eligibleExecutor = { ...executor, profiles: eligibleProfiles };
     const claim = await deps.store.claimNext({
-      executor: { ...executor, profiles: eligibleProfiles },
-      acknowledgedGaps: gaps,
+      executor: eligibleExecutor,
       leaseSeconds: policy.leaseSeconds,
       maxConcurrentPerPrincipal: policy.maxConcurrentAttemptsPerPrincipal,
+      defaults,
     });
     if (!claim) {
+      if (Date.now() - lastWaitingCheck > 10_000) {
+        lastWaitingCheck = Date.now();
+        const waiting = await deps.store.reportJobsWaitingForEligibleExecutor({
+          executor: eligibleExecutor,
+          defaults,
+          olderThanSeconds: waitingThresholdSeconds,
+        });
+        for (const job of waiting) {
+          request.log.warn({ job: job.jobId, executor: executor.executorId, missing: job.missing }, "job waiting for an eligible executor");
+        }
+      }
+      return reply.status(204).send();
+    }
+    const current = policyFor(deps.policies, claim.job.harness.definition.name);
+    const revoked = policyRevocation(claim.job, current);
+    if (revoked) {
+      await deps.store.completeAttempt(
+        claim.attempt.id,
+        claim.attempt.leaseToken,
+        { kind: "failed", code: "policy_revoked", message: revoked, retryable: false, uncertainEffects: false },
+        policy.retry.backoffSeconds,
+      );
+      request.log.warn({ job: claim.job.id, reason: revoked }, "claimed job no longer allowed by its effective policy");
       return reply.status(204).send();
     }
     const capabilityToken = await signCapability(deps.signingKey, {
@@ -140,14 +185,12 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
       jobId: claim.job.id,
       attempt: claim.attempt.number,
       principal: claim.job.principal,
-      models: [...new Set([claim.job.model, ...(claim.job.harness.definition.agents ?? []).flatMap((a) => (a.model ? [a.model] : []))])].filter(
-        (model) => model === claim.job.model || policy.allowedModels.includes(model),
-      ),
+      models: [...new Set([claim.job.model, ...(claim.job.harness.definition.agents ?? []).flatMap((a) => (a.model ? [a.model] : []))])],
       tokenBudget: Math.max(1, claim.capability.tokenBudget),
       expiresAt: claim.capability.expiresAt,
     });
     request.log.info(
-      { job: claim.job.id, attempt: claim.attempt.number, executor: executor.executorId, gaps },
+      { job: claim.job.id, attempt: claim.attempt.number, executor: executor.executorId, gaps: claim.attempt.acknowledgedGaps },
       "attempt claimed",
     );
     return {

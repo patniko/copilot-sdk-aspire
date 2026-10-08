@@ -2,8 +2,8 @@ import { fork, type ChildProcess } from "node:child_process";
 import { chmod, chown, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DemoHostSettings, HostLease } from "@copilot-agent/contracts";
-import { createService, loadHarnesses, loadPolicy, loadProfiles, admitHostedHarness, optionalEnv, requireEnv, serviceUrl, listenPort } from "@copilot-agent/service-defaults";
+import { DemoHostSettings, HostLease, policyFor } from "@copilot-agent/contracts";
+import { createService, loadHarnesses, loadPolicySet, loadProfiles, admitHostedHarness, optionalEnv, requireEnv, serviceUrl, listenPort } from "@copilot-agent/service-defaults";
 import { OwnerMessage, type OwnerConfiguration } from "./protocol.js";
 import { registerAhpProxy, resolveGitHubOwner, verifyGitHubOwner } from "./proxy.js";
 import { readServerKey, type ServerKey } from "./server-key.js";
@@ -29,7 +29,7 @@ const ownerUserId = needsGitHub
 if (!ownerUserId) {
   throw new Error("Mission Control requires a valid GitHub credential for the configured demo owner.");
 }
-const policy = await loadPolicy();
+const policy = policyFor(await loadPolicySet(), settings.harness);
 const managed = transport === "github" ? undefined : await (async () => {
   const [harnesses, profiles] = await Promise.all([loadHarnesses(), loadProfiles()]);
   const harness = harnesses.get(settings.harness)?.[0];

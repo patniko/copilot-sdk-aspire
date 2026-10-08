@@ -113,12 +113,12 @@ export const help: Record<string, HelpTopic> = {
 
   // Tools
   tools: {
-    title: "Tools",
+    title: "Custom harness tools",
     option: "tools[]",
     scope: "Harness",
     summary:
-      "Tools the agent may call. A harness requests a tool by binding; the execution profile supplies the implementation. submit_result is always added by the runner.",
-    boundary: "Built-in SDK tools (shell, file edit, web) are never exposed. Every tool must be provided by each allowed execution profile.",
+      "Additional tools requested by binding; the execution profile supplies the implementation. submit_result is always added by the batch runner. An empty list does not disable Copilot built-ins.",
+    boundary: "Every custom binding must be provided by each allowed execution profile. Copilot's built-in tools are enabled separately through policy-approved builtinTools groups.",
   },
   "tool.binding": {
     title: "Binding",
@@ -137,15 +137,17 @@ export const help: Record<string, HelpTopic> = {
 
   // Agents
   agents: {
-    title: "Sub-agents",
+    title: "Custom sub-agents",
     option: "agents[]",
     scope: "Harness",
     summary:
-      "Specialists the coordinating agent can delegate to. Each has its own instructions, a subset of the harness tools and skills, and optionally its own model.",
+      "Additional specialists the coordinating agent can delegate to. Each has its own instructions, a subset of the harness tools and skills, and optionally its own model. This list does not enumerate Copilot's built-in agents.",
     effects: [
-      { when: "Any sub-agent defined", then: "The coordinator gets the task tool for delegation; built-in SDK agents stay disabled." },
+      { when: "Any custom sub-agent defined", then: "The coordinator gets the task tool for delegation to those specialists." },
+      { when: "Built-in agents group enabled", then: "Copilot's runtime-provided agents are available without custom definitions. An empty agents[] list does not disable them." },
+      { when: "Built-in agents group disabled", then: "Only the configured custom sub-agents are enabled." },
     ],
-    boundary: "Sub-agents can only use tools and skills the harness declares, and models the policy approves.",
+    boundary: "Custom sub-agents use the declared tools and skills. Built-in availability depends on the installed runtime. Managed job permission rules, approved models and limits still apply.",
   },
   "agent.description": {
     title: "Description",
@@ -206,7 +208,7 @@ export const help: Record<string, HelpTopic> = {
     summary:
       "GitHub Copilot's own tools, enabled in groups. They run in the runner container, in the attempt's private workspace, as an unprivileged user that only this executor slot uses.",
     effects: [
-      { when: "Files", then: "view, glob, grep, create and edit files in the workspace." },
+      { when: "Files", then: "view, glob, grep, create, edit and apply_patch in the workspace." },
       { when: "Shell", then: "Run commands (bash in the container), read their output, stop them." },
       { when: "Web", then: "Fetch URLs (web_fetch)." },
       { when: "Agents", then: "Copilot's built-in sub-agents (explore, general-purpose and others) and the task tools." },
@@ -221,11 +223,12 @@ export const help: Record<string, HelpTopic> = {
     summary: "What happens when the agent asks to read or write a file, run a shell command, or fetch a URL. Kinds you do not set use the default.",
     effects: [
       { when: "Deny", then: "The action is refused and the agent is told why. This is what harnesses without permissions do." },
-      { when: "Ask", then: "The action waits until the person who submitted the job approves or denies it in the job console or Try it." },
+      { when: "Ask", then: "Copilot CLI defaults: reads inside the workspace, read-only commands that stay in it and read-only MCP tools run. Anything else waits until the person who submitted the job approves or denies it in the job console or Try it." },
       { when: "Allow", then: "The action runs without review (yolo). Use only with disposable workspaces and trusted inputs." },
     ],
-    example: '{ "default": "ask", "kinds": { "read": "allow" }, "questions": true }',
-    boundary: "Harness tools (bindings) never ask. The operator policy decides whether ask and allow can be used.",
+    example: '{ "default": "ask", "questions": true }',
+    boundary:
+      "Harness tools (bindings) never ask. The operator policy decides whether ask and allow can be used. Approving for the run covers similar requests only: the same command names, all file changes, reads in that folder, the same website, or the same tool.",
   },
   "permissions.questions": {
     title: "Questions",
@@ -316,6 +319,19 @@ export const help: Record<string, HelpTopic> = {
   },
 
   // Policy
+  "policy.scope": {
+    title: "Base policy and harness overrides",
+    option: "policy/execution-policy.json, policy/harnesses/<harness>.json",
+    scope: "Operator policy",
+    summary:
+      "The base policy applies to every harness. An override file for one harness replaces whole cards (agents and models, limits, tools and permissions, model options, required controls) for every version of that harness; everything else is inherited.",
+    effects: [
+      { when: "Base policy", then: "Edits apply to all harnesses without an override for that setting." },
+      { when: "A harness", then: "Turn on Override for this harness on a card to replace those settings. Turning every card off removes the override file." },
+    ],
+    boundary:
+      "Lease timing and per-caller limits are always global. Harness definitions cannot select a policy. The job API refuses to start when an override names a harness that does not exist. Jobs record the digest of the effective policy that admitted them.",
+  },
   "policy.allowedProfiles": {
     title: "Approved profiles",
     option: "allowedProfiles",
@@ -376,13 +392,14 @@ export const help: Record<string, HelpTopic> = {
     option: "requirements.egress",
     scope: "Operator policy",
     summary: "Whether runner network access must be limited to the inference gateway.",
-    boundary: "Executors that cannot enforce a requirement refuse work unless the gap is acknowledged.",
+    boundary:
+      "No shipped executor enforces gateway-only egress. Jobs whose effective policy requires it are only claimed when that policy acknowledges the gap; otherwise they stay queued and record that they are waiting for an eligible executor.",
   },
   "policy.acknowledgedGaps": {
     title: "Acknowledged gaps",
     option: "acknowledgedGaps",
     scope: "Operator policy",
-    summary: "Requirements you accept are not enforced by the current executor. Every attempt records the gaps it ran with.",
+    summary: "Requirements you accept are not enforced by the executor that runs a job. Every attempt records the gaps it ran with.",
   },
   "policy.maxReasoningEffort": {
     title: "Maximum reasoning effort",

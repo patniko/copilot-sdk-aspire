@@ -1,10 +1,20 @@
 import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
-import { HarnessDefinition, InputResponseSubmission, parseSkillMarkdown, renderSkillMarkdown } from "@copilot-agent/contracts";
+import {
+  type ExecutionPolicy,
+  HarnessDefinition,
+  HarnessPolicyOverride,
+  InputResponseSubmission,
+  parseSkillMarkdown,
+  type PolicySet,
+  policyFor,
+  renderSkillMarkdown,
+} from "@copilot-agent/contracts";
 import { canonicalJson } from "@copilot-agent/service-defaults";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z, ZodError } from "zod";
+import { GitHubAuthError, GitHubDeviceAuth } from "./github-auth.js";
 import { mapPlannerPlan } from "./import.js";
 import { bumpPatch, compareVersions, Repo, RepoError } from "./repo.js";
 import { deployEnvironment, Settings, SettingsError } from "./settings.js";
@@ -12,7 +22,19 @@ import { StatusService } from "./status.js";
 import { TaskConflictError, TaskRunner, type TaskStep } from "./tasks.js";
 import { createFromTemplate, listTemplates } from "./templates.js";
 import { TryError, TryService } from "./try.js";
-import type { HarnessChange, HarnessChanges, HarnessDetail, HarnessDocument, HarnessSummary, Issue, TaskKind, TryTarget, WorkspaceInfo } from "./types.js";
+import type {
+  HarnessChange,
+  HarnessChanges,
+  HarnessDetail,
+  HarnessDocument,
+  HarnessSummary,
+  Issue,
+  PolicyOverrideStatus,
+  ProfileSummary,
+  TaskKind,
+  TryTarget,
+  WorkspaceInfo,
+} from "./types.js";
 import {
   decisions,
   definitionOf,
@@ -21,6 +43,7 @@ import {
   requiredCapabilitiesOf,
   validateHarness,
   validatePolicy,
+  validatePolicyOverride,
   type ValidationContext,
 } from "./validate.js";
 
@@ -35,6 +58,8 @@ export interface AppOptions {
   staticDir?: string;
   /** Extra allowed browser origins (the Vite dev server in --dev mode). */
   devOrigins?: string[];
+  /** GitHub OAuth App client ID used for the device authorization flow. */
+  githubOAuthClientId?: string;
 }
 
 const SLUG = /^[a-z][a-z0-9-]{1,62}$/;
@@ -73,6 +98,10 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   const status = new StatusService({ root, aspireEnv });
   const tasks = new TaskRunner(root, aspireEnv);
   const tryService = new TryService(root, settings, status);
+  const githubAuth = new GitHubDeviceAuth(
+    options.githubOAuthClientId,
+    (githubToken, owner) => settings.writeDemoHostGitHubIdentity(githubToken, owner),
+  );
 
   const app = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
   const allowedHosts = new Set([`127.0.0.1:${options.port}`, `localhost:${options.port}`]);
@@ -113,6 +142,9 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     if (error instanceof SettingsError) {
       return reply.status(400).send({ error: error.message });
     }
+    if (error instanceof GitHubAuthError) {
+      return reply.status(error.statusCode).send({ error: error.message });
+    }
     if (error instanceof TaskConflictError) {
       return reply.status(409).send({ error: error.message });
     }
@@ -128,8 +160,39 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   // Validation helpers
   // ---------------------------------------------------------------------------
 
+  /** Base policy plus every override that parses and matches its file name. Invalid overrides surface in check(). */
+  async function policySet(): Promise<PolicySet> {
+    const base = await repo.readPolicy();
+    const overrides = new Map<string, HarnessPolicyOverride>();
+    for (const name of await repo.listPolicyOverrideNames()) {
+      const parsed = HarnessPolicyOverride.safeParse(await repo.readPolicyOverrideRaw(name).catch(() => undefined));
+      if (parsed.success && parsed.data.harness === name) overrides.set(name, parsed.data);
+    }
+    return { base, overrides };
+  }
+
+  async function overrideStatus(
+    harness: string,
+    base: ExecutionPolicy,
+    profiles: ProfileSummary[],
+    harnessNames: string[],
+  ): Promise<PolicyOverrideStatus> {
+    let raw: unknown;
+    try {
+      raw = await repo.readPolicyOverrideRaw(harness);
+    } catch (error) {
+      return { harness, effective: base, issues: [{ level: "error", path: "(root)", message: (error as Error).message }] };
+    }
+    if (raw === undefined) return { harness, effective: base, issues: [] };
+    const result = validatePolicyOverride(raw, { base, profiles, harnessNames, fileHarness: harness });
+    return { harness, ...(result.override ? { override: result.override } : {}), effective: result.effective ?? base, issues: result.issues };
+  }
+
+  const harnessNamesOf = (documents: HarnessDocument[]) => [...new Set(documents.map((d) => d.manifest.name).filter((n) => typeof n === "string"))];
+
   async function context(document: HarnessDocument, all?: HarnessDocument[]): Promise<ValidationContext> {
-    const [policy, profiles, documents] = await Promise.all([repo.readPolicy(), repo.listProfiles(), all ?? repo.listHarnesses()]);
+    const [policies, profiles, documents] = await Promise.all([policySet(), repo.listProfiles(), all ?? repo.listHarnesses()]);
+    const override = policies.overrides.get(document.manifest.name);
     let committed: ValidationContext["committed"];
     if (await repo.harnessExists(document.folder)) {
       const manifestPath = repo.harnessManifestPath(document.folder);
@@ -157,7 +220,13 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         committed = { manifest, instructions: await repo.exampleContent(instructionsPath), skills: committedSkills };
       }
     }
-    return { policy, profiles, all: documents, committed };
+    return {
+      policy: policyFor(policies, document.manifest.name),
+      ...(override ? { policyOverride: Object.keys(override.overrides) } : {}),
+      profiles,
+      all: documents,
+      committed,
+    };
   }
 
   async function detail(document: HarnessDocument): Promise<HarnessDetail> {
@@ -166,6 +235,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       document,
       issues: validateHarness(document, ctx),
       effective: effectiveLimits(document, ctx.policy),
+      policy: { overridden: ctx.policyOverride ?? [] },
       digest: harnessDigest(document),
       decisions: decisions(document, ctx),
       requiredCapabilities: requiredCapabilitiesOf(document),
@@ -207,6 +277,17 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       });
     }
     summaries.sort((a, b) => a.name.localeCompare(b.name) || compareVersions(b.version, a.version));
+    const harnessNames = harnessNamesOf(documents);
+    const policyOverrides = await Promise.all(
+      (await repo.listPolicyOverrideNames()).map(async (name) => {
+        const status = await overrideStatus(name, policy, profiles, harnessNames);
+        return {
+          harness: name,
+          fields: Object.keys(status.override?.overrides ?? {}),
+          errors: status.issues.filter((i) => i.level === "error").length,
+        };
+      }),
+    );
     return {
       root: workspaceRoot,
       platformRoot: root,
@@ -215,6 +296,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       bindings: repo.bindings(profiles),
       policy,
       policyIssues,
+      policyOverrides,
       changes: { items: changes.items },
     };
   }
@@ -226,6 +308,12 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       .map((i) => ({ ...i, scope: "policy" }));
     const documents = await repo.listHarnesses();
     let warnings = ws.policyIssues.length - errors.length;
+    const harnessNames = harnessNamesOf(documents);
+    for (const name of await repo.listPolicyOverrideNames()) {
+      const status = await overrideStatus(name, ws.policy, ws.profiles, harnessNames);
+      errors.push(...status.issues.filter((i) => i.level === "error").map((i) => ({ ...i, scope: `policy/harnesses/${name}.json` })));
+      warnings += status.issues.filter((i) => i.level === "warning").length;
+    }
     for (const d of documents) {
       const issues = validateHarness(d, await context(d, documents));
       errors.push(...issues.filter((i) => i.level === "error").map((i) => ({ ...i, scope: `harnesses/${d.folder}` })));
@@ -239,6 +327,19 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   // ---------------------------------------------------------------------------
 
   app.get("/api/session", async () => ({ root, port: options.port }));
+  app.get("/api/settings/demo-host-oauth", async (_request, reply) => {
+    reply.header("cache-control", "no-store");
+    return { configured: githubAuth.configured };
+  });
+  app.post("/api/settings/demo-host-oauth", async (_request, reply) => {
+    reply.header("cache-control", "no-store");
+    return githubAuth.start();
+  });
+  app.post("/api/settings/demo-host-oauth/:flowId/poll", async (request, reply) => {
+    const { flowId } = z.object({ flowId: z.string().uuid() }).parse(request.params);
+    reply.header("cache-control", "no-store");
+    return githubAuth.poll(flowId);
+  });
   app.put("/api/settings/demo-host-credential", async (request, reply) => {
     const body = z.object({ token: z.string().max(16_384).refine((token) => token === "" || token.length >= 20) }).strict().parse(request.body);
     await settings.writeDemoHostGitHubToken(body.token);
@@ -454,6 +555,45 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     }
     await repo.writePolicy(result.policy);
     return validatePolicy(result.policy, await repo.listProfiles());
+  });
+
+  const harnessParam = (request: FastifyRequest) => z.string().regex(SLUG).parse((request.params as { harness?: string }).harness);
+  const overrideContext = async () => {
+    const [base, profiles, documents] = await Promise.all([repo.readPolicy(), repo.listProfiles(), repo.listHarnesses()]);
+    return { base, profiles, harnessNames: harnessNamesOf(documents) };
+  };
+  const overrideBody = (request: FastifyRequest, harness: string) => ({
+    schemaVersion: "1",
+    harness,
+    overrides: (request.body as { overrides?: unknown } | undefined)?.overrides,
+  });
+
+  app.get("/api/policy/overrides/:harness", async (request): Promise<PolicyOverrideStatus> => {
+    const { base, profiles, harnessNames } = await overrideContext();
+    return overrideStatus(harnessParam(request), base, profiles, harnessNames);
+  });
+
+  app.post("/api/policy/overrides/:harness/validate", async (request) => {
+    const harness = harnessParam(request);
+    const { base, profiles, harnessNames } = await overrideContext();
+    return validatePolicyOverride(overrideBody(request, harness), { base, profiles, harnessNames, fileHarness: harness });
+  });
+
+  app.put("/api/policy/overrides/:harness", async (request): Promise<PolicyOverrideStatus> => {
+    const harness = harnessParam(request);
+    const { base, profiles, harnessNames } = await overrideContext();
+    const result = validatePolicyOverride(overrideBody(request, harness), { base, profiles, harnessNames, fileHarness: harness });
+    const errors = result.issues.filter((i) => i.level === "error");
+    if (!result.override || errors.length > 0) {
+      throw new RepoError(422, `Fix ${errors.length} error(s) before saving: ${errors[0]?.message ?? "invalid override"}`);
+    }
+    await repo.writePolicyOverride(result.override);
+    return overrideStatus(harness, base, profiles, harnessNames);
+  });
+
+  app.delete("/api/policy/overrides/:harness", async (request) => {
+    await repo.deletePolicyOverride(harnessParam(request));
+    return { deleted: true };
   });
 
   // ---------------------------------------------------------------------------

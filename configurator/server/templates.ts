@@ -91,14 +91,16 @@ export function listTemplates(policy: ExecutionPolicy, profiles: ProfileSummary[
     {
       id: "copilot-coding",
       title: "Copilot coding agent",
-      summary: "GitHub Copilot's full prompt and built-in tools: files, shell, web and built-in sub-agents. Asks you before risky actions.",
+      summary: "Managed coding jobs with Copilot's foundation prompt and policy-approved built-in tools and agents. Copilot CLI approval defaults; not the native CLI configuration.",
       bestFor: "Coding tasks: write and run code, change a cloned repository, investigate and fix problems.",
       promptMode: "append",
       tools: 0,
       agents: 0,
       skills: 0,
       builtinTools: codingGroups(policy),
-      permissions: canAsk(policy) ? "Reads allowed; asks before shell, writes and web; asks questions" : "Needs the 'ask' permission mode in the policy",
+      permissions: canAsk(policy)
+        ? "Copilot CLI defaults: workspace reads and read-only commands run; asks before other commands, writes and web; asks questions"
+        : "Needs the 'ask' permission mode in the policy",
       profiles:
         canAsk(policy) && codingGroups(policy).length > 0
           ? approvedProfiles(policy, profiles, { capabilities: ["prompt-sections", "builtin-tools", "interactive"] })
@@ -139,9 +141,10 @@ export function createFromTemplate(
 }
 
 /**
- * GitHub Copilot's default coding agent as a harness: the full foundation prompt, every built-in
- * tool group the policy allows, reads approved automatically, and a person asked before shell
- * commands, file writes and web access. The agent can also ask questions.
+ * A managed coding harness using Copilot's foundation prompt and every built-in
+ * tool group the policy allows, with the Copilot CLI's approval defaults: workspace reads and
+ * read-only commands run, and a person is asked before other commands, file writes and web access.
+ * The agent can also ask questions.
  */
 function copilotCodingTemplate(
   name: string,
@@ -165,12 +168,11 @@ function copilotCodingTemplate(
     skills: [],
     manifest: {
       ...base,
-      description: "GitHub Copilot's coding agent with its full prompt and built-in tools. Reads are allowed; shell, file writes and web access ask the requester first.",
+      description: "GitHub Copilot's coding agent with its full prompt and built-in tools. Approvals follow the Copilot CLI defaults: workspace reads and read-only commands run; other commands, file writes and web access ask the requester first.",
       prompt: { mode: "append" },
       builtinTools: policy ? codingGroups(policy) : [...BUILTIN_TOOL_GROUPS],
       permissions: {
         default: "ask",
-        kinds: { read: "allow", write: "ask", shell: "ask", url: "ask" },
         questions: true,
         timeoutSeconds: 900,
       },

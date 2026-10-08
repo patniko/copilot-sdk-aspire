@@ -35,7 +35,7 @@ interface Job {
   result?: unknown;
   error?: { code: string; message: string };
 }
-interface JobEvent {
+export interface JobEvent {
   seq: number;
   at: string;
   body: { type: string; [key: string]: unknown };
@@ -61,6 +61,33 @@ function skeleton(schema: any, depth = 0): unknown {
   return null;
 }
 
+function describeSdkEvent(detail: Record<string, any> = {}): string {
+  const data = detail.data ?? {};
+  switch (detail.eventType) {
+    case "assistant.message":
+      return data.content ? `Assistant: ${singleLine(data.content, 220)}` : "Assistant message";
+    case "assistant.reasoning":
+      return data.content ? `Reasoning: ${singleLine(data.content, 220)}` : "Assistant reasoning";
+    case "user.message":
+      return data.content ? `User: ${singleLine(data.content, 220)}` : "User message";
+    case "assistant.usage":
+      return `Model usage: ${data.model ?? "unknown model"} · ${data.inputTokens ?? 0} in · ${data.outputTokens ?? 0} out`;
+    case "model.call_failure":
+      return `Model call failed: ${data.errorCode ?? data.failureKind ?? data.errorMessage ?? "unknown error"}`;
+    case "tool.execution_progress":
+      return data.progressMessage ?? "Tool progress";
+    case "tool.execution_partial_result":
+      return `Tool output: ${singleLine(data.partialOutput ?? "", 220)}`;
+    default:
+      return String(detail.eventType ?? "SDK event").replaceAll(".", " ");
+  }
+}
+
+function singleLine(value: unknown, limit: number): string {
+  const text = String(value).replace(/\s+/g, " ").trim();
+  return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
 function describeRunnerEvent(e: Record<string, any>): string {
   switch (e.kind) {
     case "tool.started":
@@ -77,6 +104,8 @@ function describeRunnerEvent(e: Record<string, any>): string {
       return "Agent turn started";
     case "agent.turn_completed":
       return "Agent turn completed";
+    case "sdk.event":
+      return describeSdkEvent(e.detail);
     default:
       return e.message ?? e.kind;
   }
@@ -87,6 +116,8 @@ function describe(event: JobEvent): string {
   switch (b.type) {
     case "job.attempt_started":
       return `Attempt ${b.attempt} started on ${b.profile}`;
+    case "job.waiting_for_eligible_executor":
+      return `Waiting for an executor that enforces what this harness's policy requires (${b.missing.join(", ")})`;
     case "job.runner_event":
       return describeRunnerEvent(b.event);
     case "job.retry_scheduled":
@@ -138,14 +169,26 @@ function eventIcon(event: JobEvent): { icon: ReactNode; className?: string } {
   }
 }
 
-function EventItem({ event }: { event: JobEvent }) {
+export function EventItem({ event }: { event: JobEvent }) {
   const { icon, className } = eventIcon(event);
+  const body = event.body as Record<string, any>;
+  const detail = body.type === "job.runner_event" ? body.event?.detail : undefined;
   return (
     <li className="timeline-item !py-1">
       <span className={clsx("timeline-badge", className)}>{icon}</span>
-      <div className="flex min-w-0 flex-1 items-baseline gap-2 pt-0.5 text-xs">
-        <span>{describe(event)}</span>
-        <span className="ml-auto shrink-0 font-mono text-[11px] fg-muted">{new Date(event.at).toLocaleTimeString([], { hour12: false })}</span>
+      <div className="min-w-0 flex-1 pt-0.5 text-xs">
+        <div className="flex items-baseline gap-2">
+          <span className="min-w-0 whitespace-pre-wrap break-words">{describe(event)}</span>
+          <span className="ml-auto shrink-0 font-mono text-[11px] fg-muted">{new Date(event.at).toLocaleTimeString([], { hour12: false })}</span>
+        </div>
+        {detail && (
+          <details className="mt-1">
+            <summary className="w-max fg-accent">SDK details</summary>
+            <pre className="mt-1 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md border p-2 text-[11px]">
+              {JSON.stringify(detail, null, 2)}
+            </pre>
+          </details>
+        )}
       </div>
     </li>
   );

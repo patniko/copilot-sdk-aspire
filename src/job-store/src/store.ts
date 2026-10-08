@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import {
   DEFAULT_INPUT_TIMEOUT_SECONDS,
+  jobSecurityGaps,
   summarizeInputRequest,
   type InputRequestBody,
   type InputRequestState,
@@ -12,6 +13,7 @@ import {
   type JobErrorCode,
   type JobEventBody,
   type JobEventView,
+  type JobSecurityRequirements,
   type JobState,
   type JobView,
   type RunnerEventBody,
@@ -48,6 +50,16 @@ export interface NewJob {
   tokenBudget: number;
   maxAttempts: number;
   safeToRetry: boolean;
+  /** The effective policy that admitted the job. Omitted fields fall back to the dispatcher's base policy. */
+  policy?: { digest: string; requirements: JobSecurityRequirements; retryBackoffSeconds: number };
+}
+
+/** Claim-time options. `defaults` applies to jobs admitted without recorded requirements. */
+export interface ClaimOptions {
+  executor: ExecutorCapabilities;
+  leaseSeconds: number;
+  maxConcurrentPerPrincipal: number;
+  defaults: JobSecurityRequirements;
 }
 
 export interface Claim {
@@ -67,6 +79,12 @@ export interface Claim {
     acknowledgedGaps: string[];
   };
   capability: { jti: string; expiresAt: Date; tokenBudget: number };
+}
+
+/** A queued job no recently polling executor can run, reported once. */
+export interface WaitingJob {
+  jobId: string;
+  missing: string[];
 }
 
 export type AttemptOutcome =
@@ -130,6 +148,11 @@ interface JobRow {
   inference_requests: number;
   created_at: Date;
   updated_at: Date;
+  policy_digest?: string | null;
+  requires_uid_isolation?: boolean | null;
+  requires_egress_enforcement?: boolean | null;
+  policy_acknowledged_gaps?: string[] | null;
+  retry_backoff_seconds?: number | null;
   acknowledged_gaps?: string[] | null;
   pending_inputs?: string | number | null;
 }
@@ -160,6 +183,38 @@ const JOB_VIEW_SELECT = `
     WHERE ir.job_id = j.id AND ir.state = 'pending' AND ir.expires_at > now()
   ) AS pending_inputs
   FROM jobs j`;
+
+/**
+ * SQL predicate: true when the executor may run job `j`. Every control the job requires is enforced by the
+ * executor or acknowledged by the job's effective policy. Uses five parameters starting at `$first`, supplied by
+ * {@link eligibilityParams}; NULL job columns (jobs admitted before per-harness policy) use the base-policy defaults.
+ */
+function eligibleForExecutor(first: number): string {
+  const [uid, egress, gaps, executorUid, executorEgress] = [0, 1, 2, 3, 4].map((offset) => `$${first + offset}`);
+  return `
+  (NOT COALESCE(j.requires_uid_isolation, ${uid}::boolean) OR ${executorUid}::boolean
+     OR 'process-isolation-not-enforced' = ANY(COALESCE(j.policy_acknowledged_gaps, ${gaps}::text[])))
+  AND (NOT COALESCE(j.requires_egress_enforcement, ${egress}::boolean) OR ${executorEgress}::boolean
+     OR 'egress-not-enforced' = ANY(COALESCE(j.policy_acknowledged_gaps, ${gaps}::text[])))`;
+}
+
+function eligibilityParams(options: Pick<ClaimOptions, "executor" | "defaults">): unknown[] {
+  return [
+    options.defaults.requiresUidIsolation,
+    options.defaults.requiresEgressEnforcement,
+    options.defaults.acknowledgedGaps,
+    options.executor.processIsolation === "uid",
+    options.executor.egress === "gateway-only",
+  ];
+}
+
+function requirementsOf(job: JobRow, defaults: JobSecurityRequirements): JobSecurityRequirements {
+  return {
+    requiresUidIsolation: job.requires_uid_isolation ?? defaults.requiresUidIsolation,
+    requiresEgressEnforcement: job.requires_egress_enforcement ?? defaults.requiresEgressEnforcement,
+    acknowledgedGaps: (job.policy_acknowledged_gaps ?? defaults.acknowledgedGaps) as JobSecurityRequirements["acknowledgedGaps"],
+  };
+}
 
 export class JobStore {
   constructor(private readonly pool: pg.Pool) {}
@@ -204,8 +259,9 @@ export class JobStore {
           const inserted = await client.query<JobRow>(
             `INSERT INTO jobs (id, principal, idempotency_key, request_hash, state, harness_name, harness_version,
                harness_digest, harness_snapshot, profile, model, input, max_duration_seconds, token_budget,
-               max_attempts, safe_to_retry)
-             VALUES ($1,$2,$3,$4,'queued',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+               max_attempts, safe_to_retry, policy_digest, requires_uid_isolation, requires_egress_enforcement,
+               policy_acknowledged_gaps, retry_backoff_seconds)
+             VALUES ($1,$2,$3,$4,'queued',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
              RETURNING *`,
             [
               id,
@@ -223,9 +279,14 @@ export class JobStore {
               job.tokenBudget,
               job.maxAttempts,
               job.safeToRetry,
+              job.policy?.digest ?? null,
+              job.policy?.requirements.requiresUidIsolation ?? null,
+              job.policy?.requirements.requiresEgressEnforcement ?? null,
+              job.policy?.requirements.acknowledgedGaps ?? null,
+              job.policy?.retryBackoffSeconds ?? null,
             ],
           );
-          await this.#event(client, id, { type: "job.queued" });
+          await this.#event(client, id, job.policy ? { type: "job.queued", policyDigest: job.policy.digest } : { type: "job.queued" });
           return { view: toView(inserted.rows[0]!), created: true };
         });
       } catch (error) {
@@ -415,26 +476,27 @@ export class JobStore {
   // Dispatcher-facing operations. Attempts are fenced by (attempt id, lease token).
   // -------------------------------------------------------------------------
 
-  async claimNext(options: {
-    executor: ExecutorCapabilities;
-    acknowledgedGaps: string[];
-    leaseSeconds: number;
-    maxConcurrentPerPrincipal: number;
-  }): Promise<Claim | undefined> {
+  /**
+   * Claims the oldest dispatchable job this executor may run: its profile matches, and every control the
+   * job's effective policy requires is either enforced by the executor or acknowledged by that policy.
+   */
+  async claimNext(options: ClaimOptions): Promise<Claim | undefined> {
     return this.#tx(async (client) => {
       const candidate = await client.query<JobRow>(
         `SELECT j.* FROM jobs j
          WHERE j.state IN ('queued','retry_wait') AND j.not_before <= now() AND j.profile = ANY($1::text[])
            AND (SELECT count(*) FROM jobs r WHERE r.principal = j.principal AND r.state IN ('running','cancel_requested')) < $2
+           AND ${eligibleForExecutor(3)}
          ORDER BY j.not_before, j.created_at
          FOR UPDATE SKIP LOCKED
          LIMIT 1`,
-        [options.executor.profiles, options.maxConcurrentPerPrincipal],
+        [options.executor.profiles, options.maxConcurrentPerPrincipal, ...eligibilityParams(options)],
       );
       const job = candidate.rows[0];
       if (!job) {
         return undefined;
       }
+      const acknowledgedGaps = jobSecurityGaps(requirementsOf(job, options.defaults), options.executor);
       const attemptId = randomUUID();
       const number = job.attempts + 1;
       const leaseToken = randomBytes(32).toString("base64url");
@@ -451,7 +513,7 @@ export class JobStore {
           leaseToken,
           options.leaseSeconds,
           job.max_duration_seconds,
-          options.acknowledgedGaps,
+          acknowledgedGaps,
           JSON.stringify(options.executor),
         ],
       );
@@ -472,7 +534,7 @@ export class JobStore {
         type: "job.attempt_started",
         attempt: number,
         profile: job.profile,
-        acknowledgedGaps: options.acknowledgedGaps,
+        acknowledgedGaps,
       });
       return {
         job: {
@@ -488,10 +550,43 @@ export class JobStore {
           number,
           leaseToken,
           deadline: deadline.toISOString(),
-          acknowledgedGaps: options.acknowledgedGaps,
+          acknowledgedGaps,
         },
         capability: { jti, expiresAt, tokenBudget },
       };
+    });
+  }
+
+  /**
+   * Records `job.waiting_for_eligible_executor` once for dispatchable jobs, older than `olderThanSeconds`,
+   * that this executor's profiles could run but whose required controls it neither enforces nor may skip.
+   * Called when a claim finds nothing, so a job stuck on an unmet requirement is visible to its caller.
+   */
+  async reportJobsWaitingForEligibleExecutor(
+    options: Pick<ClaimOptions, "executor" | "defaults"> & { olderThanSeconds: number; limit?: number },
+  ): Promise<WaitingJob[]> {
+    return this.#tx(async (client) => {
+      const blocked = await client.query<JobRow>(
+        `UPDATE jobs w SET waiting_reported = true
+         WHERE w.id IN (
+           SELECT j.id FROM jobs j
+           WHERE j.state IN ('queued','retry_wait') AND NOT j.waiting_reported
+             AND j.not_before <= now() - make_interval(secs => $7) AND j.profile = ANY($1::text[])
+             AND NOT (${eligibleForExecutor(2)})
+           ORDER BY j.not_before
+           FOR UPDATE SKIP LOCKED
+           LIMIT $8)
+         RETURNING w.*`,
+        [options.executor.profiles, ...eligibilityParams(options), options.olderThanSeconds, options.limit ?? 20],
+      );
+      const waiting: WaitingJob[] = [];
+      for (const job of blocked.rows) {
+        const requirements = requirementsOf(job, options.defaults);
+        const missing = jobSecurityGaps(requirements, options.executor).filter((gap) => !requirements.acknowledgedGaps.includes(gap));
+        await this.#event(client, job.id, { type: "job.waiting_for_eligible_executor", missing });
+        waiting.push({ jobId: job.id, missing });
+      }
+      return waiting;
     });
   }
 
@@ -799,7 +894,7 @@ export class JobStore {
     const canRetry =
       failure.retryable && attemptNumber < job.max_attempts && (job.safe_to_retry || !failure.uncertainEffects);
     if (canRetry) {
-      const delay = backoffSeconds * 2 ** (attemptNumber - 1);
+      const delay = (job.retry_backoff_seconds ?? backoffSeconds) * 2 ** (attemptNumber - 1);
       const notBefore = new Date(Date.now() + delay * 1000);
       await client.query(
         "UPDATE jobs SET state = 'retry_wait', not_before = $2, error_code = $3, error_message = $4, updated_at = now() WHERE id = $1",
@@ -975,6 +1070,7 @@ function toView(row: JobRow): JobView {
     attempts: row.attempts,
     maxAttempts: row.max_attempts,
     acknowledgedGaps: row.acknowledged_gaps ?? [],
+    ...(row.policy_digest ? { policyDigest: row.policy_digest } : {}),
     usage: {
       inputTokens: Number(row.input_tokens),
       outputTokens: Number(row.output_tokens),

@@ -39,7 +39,7 @@ export type JobSubmission = z.infer<typeof JobSubmission>;
 
 export const JobErrorCode = z.union([
   RunnerFailureCode,
-  z.enum(["lease_expired", "executor_lost", "protocol_error", "runner_exited", "policy_rejected"]),
+  z.enum(["lease_expired", "executor_lost", "protocol_error", "runner_exited", "policy_rejected", "policy_revoked"]),
 ]);
 export type JobErrorCode = z.infer<typeof JobErrorCode>;
 
@@ -67,6 +67,8 @@ export interface JobView {
   maxAttempts: number;
   /** Requirements the execution target could not enforce, acknowledged by the operator. */
   acknowledgedGaps: string[];
+  /** Digest of the effective policy (base plus any harness override) that admitted the job. */
+  policyDigest?: string;
   result?: unknown;
   error?: JobError;
   usage: JobUsage;
@@ -121,7 +123,7 @@ export function summarizeInputRequest(request: InputRequestBody): string {
 
 /** Application events: an allowlisted, versioned contract. Raw SDK events are not exposed. */
 export const JobEventBody = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("job.queued") }).strict(),
+  z.object({ type: z.literal("job.queued"), policyDigest: z.string().optional() }).strict(),
   z
     .object({
       type: z.literal("job.attempt_started"),
@@ -130,6 +132,8 @@ export const JobEventBody = z.discriminatedUnion("type", [
       acknowledgedGaps: z.array(z.string()),
     })
     .strict(),
+  /** No executor that recently polled enforces the controls this job's policy requires. Recorded once. */
+  z.object({ type: z.literal("job.waiting_for_eligible_executor"), missing: z.array(z.string()) }).strict(),
   z.object({ type: z.literal("job.runner_event"), attempt: z.number().int(), event: RunnerEventBody }).strict(),
   z.object({ type: z.literal("job.cancel_requested") }).strict(),
   z

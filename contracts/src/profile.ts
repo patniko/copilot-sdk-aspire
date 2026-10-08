@@ -90,6 +90,101 @@ export type ExecutionPolicy = z.infer<typeof ExecutionPolicy>;
 export type SecurityGap = ExecutionPolicy["acknowledgedGaps"][number];
 
 /**
+ * Policy fields an operator may override for one harness. Lease timing and per-caller quotas
+ * (`leaseSeconds`, `maxConcurrentAttemptsPerPrincipal`, `maxQueuedJobsPerPrincipal`) stay global.
+ */
+export const HARNESS_OVERRIDABLE_POLICY_FIELDS = [
+  "allowedProfiles",
+  "allowedModels",
+  "maxDurationSeconds",
+  "maxInferenceTokensPerJob",
+  "retry",
+  "requirements",
+  "acknowledgedGaps",
+  "maxReasoningEffort",
+  "allowLongContext",
+  "builtinTools",
+  "permissionModes",
+] as const;
+export type HarnessOverridablePolicyField = (typeof HARNESS_OVERRIDABLE_POLICY_FIELDS)[number];
+
+/**
+ * Operator-owned override for one harness, stored as `policy/harnesses/<harness>.json`. Each listed
+ * field replaces the base policy value for every version of that harness; omitted fields inherit.
+ * Harness definitions cannot reference or select a policy.
+ */
+export const HarnessPolicyOverride = z
+  .object({
+    schemaVersion: z.literal("1"),
+    harness: z.string().regex(SLUG),
+    overrides: ExecutionPolicy.pick({
+      allowedProfiles: true,
+      allowedModels: true,
+      maxDurationSeconds: true,
+      maxInferenceTokensPerJob: true,
+      retry: true,
+      requirements: true,
+      acknowledgedGaps: true,
+      maxReasoningEffort: true,
+      allowLongContext: true,
+      builtinTools: true,
+      permissionModes: true,
+    })
+      .partial()
+      .strict(),
+  })
+  .strict();
+export type HarnessPolicyOverride = z.infer<typeof HarnessPolicyOverride>;
+
+/** The base policy plus operator overrides keyed by harness name. */
+export interface PolicySet {
+  base: ExecutionPolicy;
+  overrides: ReadonlyMap<string, HarnessPolicyOverride>;
+}
+
+/** Applies a harness override to the base policy. */
+export function applyPolicyOverride(base: ExecutionPolicy, override: HarnessPolicyOverride | undefined): ExecutionPolicy {
+  if (!override) return base;
+  const effective: Record<string, unknown> = { ...base };
+  for (const field of HARNESS_OVERRIDABLE_POLICY_FIELDS) {
+    const value = override.overrides[field];
+    if (value !== undefined) effective[field] = value;
+  }
+  return effective as ExecutionPolicy;
+}
+
+/** The effective policy for one harness: the base policy plus that harness's override, if any. */
+export function policyFor(set: PolicySet, harness: string): ExecutionPolicy {
+  return applyPolicyOverride(set.base, set.overrides.get(harness));
+}
+
+/** Security controls a job's effective policy requires, recorded at admission and matched at claim time. */
+export interface JobSecurityRequirements {
+  requiresUidIsolation: boolean;
+  requiresEgressEnforcement: boolean;
+  acknowledgedGaps: SecurityGap[];
+}
+
+export function securityRequirementsOf(policy: ExecutionPolicy): JobSecurityRequirements {
+  return {
+    requiresUidIsolation: policy.requirements.processIsolation === "uid",
+    requiresEgressEnforcement: policy.requirements.egress === "gateway-only",
+    acknowledgedGaps: [...policy.acknowledgedGaps],
+  };
+}
+
+/** Controls a job requires that the executor does not enforce, whether or not they are acknowledged. */
+export function jobSecurityGaps(
+  requirements: Pick<JobSecurityRequirements, "requiresUidIsolation" | "requiresEgressEnforcement">,
+  executor: Pick<ExecutorCapabilities, "processIsolation" | "egress">,
+): SecurityGap[] {
+  const gaps: SecurityGap[] = [];
+  if (requirements.requiresUidIsolation && executor.processIsolation !== "uid") gaps.push("process-isolation-not-enforced");
+  if (requirements.requiresEgressEnforcement && executor.egress !== "gateway-only") gaps.push("egress-not-enforced");
+  return gaps;
+}
+
+/**
  * Checks a harness's model options against policy ceilings. Returns field-scoped problems; the
  * agent API rejects such jobs, and the configurator shows them as errors.
  */
@@ -159,15 +254,8 @@ export type ExecutorCapabilities = z.infer<typeof ExecutorCapabilities>;
 
 /**
  * Returns the security gaps between what the policy requires and what the executor enforces.
- * The dispatcher refuses to hand work to an executor with unacknowledged gaps.
+ * The dispatcher hands a job only to executors whose gaps the job's effective policy acknowledges.
  */
 export function securityGaps(policy: ExecutionPolicy, executor: ExecutorCapabilities): SecurityGap[] {
-  const gaps: SecurityGap[] = [];
-  if (policy.requirements.processIsolation === "uid" && executor.processIsolation !== "uid") {
-    gaps.push("process-isolation-not-enforced");
-  }
-  if (policy.requirements.egress === "gateway-only" && executor.egress !== "gateway-only") {
-    gaps.push("egress-not-enforced");
-  }
-  return gaps;
+  return jobSecurityGaps(securityRequirementsOf(policy), executor);
 }

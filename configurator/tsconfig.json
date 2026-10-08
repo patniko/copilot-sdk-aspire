@@ -12,5 +12,5 @@
     "noEmit": true,
     "types": []
   },
-  "include": ["src", "server/types.ts"]
+  "include": ["src", "server/types.ts", "test/**/*.test.tsx"]
 }

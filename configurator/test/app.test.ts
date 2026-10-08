@@ -77,6 +77,12 @@ describe("request security", () => {
     expect(body.profiles.map((p: { id: string }) => p.id)).toEqual(["node-ts-agent", "python-agent"]);
   });
 
+  it("reports when GitHub OAuth device sign-in is not configured", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/settings/demo-host-oauth", headers: headers() });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ configured: false });
+  });
+
   it("rejects harness folder traversal", async () => {
     const response = await app.inject({ method: "GET", url: "/api/harnesses/..%2Fpolicy", headers: headers() });
     expect(response.statusCode).toBe(400);
@@ -294,12 +300,13 @@ describe("templates and imports", () => {
     expect(detail.document.manifest).toMatchObject({
       prompt: { mode: "append" },
       builtinTools: ["files", "shell", "web", "agents"],
-      permissions: { default: "ask", kinds: { read: "allow", write: "ask", shell: "ask", url: "ask" }, questions: true },
+      permissions: { default: "ask", questions: true },
       retry: { safeToRetry: false },
     });
+    expect(detail.document.manifest.permissions.kinds).toBeUndefined();
     expect(detail.issues.filter((issue: { level: string }) => issue.level === "error")).toEqual([]);
     expect(detail.requiredCapabilities).toEqual(expect.arrayContaining(["builtin-tools", "interactive", "prompt-sections"]));
-    expect(detail.decisions.map((d: { title: string }) => d.title).join("\n")).toContain("Asks you before: write, shell, url");
+    expect(detail.decisions.map((d: { title: string }) => d.title).join("\n")).toContain("Copilot CLI approvals for: read, write, shell, url");
   });
 
   it("maps a coding plan with allow-all to built-in tools and yolo permissions", async () => {
@@ -333,6 +340,69 @@ describe("policy", () => {
       payload: { policy: { ...current, allowedProfiles: ["missing-profile"] } },
     });
     expect(response.statusCode).toBe(422);
+  });
+
+  it("saves, applies, reports, and removes a per-harness override", async () => {
+    const save = await app.inject({
+      method: "PUT",
+      url: "/api/policy/overrides/dataset-analyst",
+      headers: headers(),
+      payload: { overrides: { maxDurationSeconds: 45, allowedModels: ["grok-4.6"] } },
+    });
+    expect(save.statusCode).toBe(200);
+    expect(save.json()).toMatchObject({ harness: "dataset-analyst", effective: { maxDurationSeconds: 45 }, issues: [] });
+    const file = JSON.parse(await readFile(join(root, "policy", "harnesses", "dataset-analyst.json"), "utf8"));
+    expect(file).toEqual({ schemaVersion: "1", harness: "dataset-analyst", overrides: { maxDurationSeconds: 45, allowedModels: ["grok-4.6"] } });
+
+    const detail = (await app.inject({ method: "GET", url: "/api/harnesses/dataset-analyst", headers: headers() })).json();
+    expect(detail.effective.maxDurationSeconds).toBe(Math.min(45, detail.document.manifest.limits.maxDurationSeconds));
+    expect(detail.policy.overridden.sort()).toEqual(["allowedModels", "maxDurationSeconds"]);
+    expect(detail.decisions.map((d: { title: string }) => d.title)).toContain("Operator policy override for this harness");
+    const other = (await app.inject({ method: "GET", url: "/api/harnesses/text-summarizer", headers: headers() })).json();
+    expect(other.policy.overridden).toEqual([]);
+
+    const workspace = (await app.inject({ method: "GET", url: "/api/workspace", headers: headers() })).json();
+    expect(workspace.policyOverrides).toEqual([{ harness: "dataset-analyst", fields: ["allowedModels", "maxDurationSeconds"], errors: 0 }]);
+    expect(workspace.changes.items).toContain("A policy/harnesses/dataset-analyst.json");
+
+    const removed = await app.inject({ method: "DELETE", url: "/api/policy/overrides/dataset-analyst", headers: headers() });
+    expect(removed.statusCode).toBe(200);
+    const after = (await app.inject({ method: "GET", url: "/api/policy/overrides/dataset-analyst", headers: headers() })).json();
+    expect(after.override).toBeUndefined();
+    expect(after.effective.maxDurationSeconds).toBe(workspace.policy.maxDurationSeconds);
+  });
+
+  it("rejects global-only fields and overrides for unknown harnesses", async () => {
+    const globalField = await app.inject({
+      method: "PUT",
+      url: "/api/policy/overrides/dataset-analyst",
+      headers: headers(),
+      payload: { overrides: { leaseSeconds: 60 } },
+    });
+    expect(globalField.statusCode).toBe(422);
+    const unknown = await app.inject({
+      method: "PUT",
+      url: "/api/policy/overrides/no-such-harness",
+      headers: headers(),
+      payload: { overrides: { maxDurationSeconds: 30 } },
+    });
+    expect(unknown.statusCode).toBe(422);
+    expect(unknown.json().error).toMatch(/No harness named/);
+    const traversal = await app.inject({ method: "GET", url: "/api/policy/overrides/..%2Fpolicy", headers: headers() });
+    expect(traversal.statusCode).toBe(400);
+  });
+
+  it("blocks deployment checks on an orphaned override file", async () => {
+    await mkdir(join(root, "policy", "harnesses"), { recursive: true });
+    const orphan = join(root, "policy", "harnesses", "renamed-away.json");
+    await writeFile(orphan, JSON.stringify({ schemaVersion: "1", harness: "renamed-away", overrides: { maxDurationSeconds: 30 } }));
+    try {
+      const check = (await app.inject({ method: "GET", url: "/api/check", headers: headers() })).json();
+      expect(check.ok).toBe(false);
+      expect(check.errors).toEqual(expect.arrayContaining([expect.objectContaining({ scope: "policy/harnesses/renamed-away.json" })]));
+    } finally {
+      await rm(orphan, { force: true });
+    }
   });
 });
 

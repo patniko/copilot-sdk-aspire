@@ -5,8 +5,10 @@ import {
   ExecutionPolicy,
   ExecutionProfile,
   HarnessDefinition,
+  HarnessPolicyOverride,
   type HarnessSnapshot,
   parseSkillMarkdown,
+  type PolicySet,
   type SkillDefinition,
   SLUG,
 } from "@copilot-agent/contracts";
@@ -45,6 +47,11 @@ function sortKeys(value: unknown): unknown {
 
 export function sha256Hex(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/** Stable digest of an effective policy, recorded on jobs for provenance. */
+export function policyDigest(policy: ExecutionPolicy): string {
+  return `sha256:${sha256Hex(canonicalJson(policy))}`;
 }
 
 export function createAjv(): Ajv2020 {
@@ -150,6 +157,53 @@ export async function loadPolicy(root = configRoot()): Promise<ExecutionPolicy> 
     throw new ConfigError(`Execution policy is invalid: ${parsed.error.message}`);
   }
   return parsed.data;
+}
+
+/** Operator overrides in `policy/harnesses/<harness>.json`, keyed by harness name. A missing directory means none. */
+export async function loadPolicyOverrides(root = configRoot()): Promise<Map<string, HarnessPolicyOverride>> {
+  const directory = join(root, "policy", "harnesses");
+  const overrides = new Map<string, HarnessPolicyOverride>();
+  let entries;
+  try {
+    entries = await readdir(directory, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return overrides;
+    throw error;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const file = join(directory, entry.name);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readFile(file, "utf8"));
+    } catch (error) {
+      throw new ConfigError(`Policy override ${entry.name} is not valid JSON: ${(error as Error).message}`);
+    }
+    const parsed = HarnessPolicyOverride.safeParse(raw);
+    if (!parsed.success) {
+      throw new ConfigError(`Policy override ${entry.name} is invalid: ${parsed.error.message}`);
+    }
+    if (`${parsed.data.harness}.json` !== entry.name) {
+      throw new ConfigError(`Policy override ${entry.name} must be named after its harness ('${parsed.data.harness}.json').`);
+    }
+    overrides.set(parsed.data.harness, parsed.data);
+  }
+  return overrides;
+}
+
+/** The base policy plus per-harness overrides. */
+export async function loadPolicySet(root = configRoot()): Promise<PolicySet> {
+  const [base, overrides] = await Promise.all([loadPolicy(root), loadPolicyOverrides(root)]);
+  return { base, overrides };
+}
+
+/** Fails when an override names a harness that is not published, so a typo cannot silently fall back to the base policy. */
+export function assertOverridesMatchHarnesses(policies: PolicySet, harnessNames: Iterable<string>): void {
+  const known = new Set(harnessNames);
+  const unknown = [...policies.overrides.keys()].filter((name) => !known.has(name));
+  if (unknown.length > 0) {
+    throw new ConfigError(`Policy overrides name unpublished harnesses: ${unknown.join(", ")}.`);
+  }
 }
 
 function compareSemver(a: string, b: string): number {

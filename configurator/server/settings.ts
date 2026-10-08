@@ -164,6 +164,13 @@ export class Settings {
     await this.#writeSecrets({ "Parameters:demo-host-github-token": token || undefined });
   }
 
+  async writeDemoHostGitHubIdentity(token: string, owner: string): Promise<void> {
+    await this.#writeSecrets({
+      "Parameters:demo-host-github-token": token,
+      "Parameters:demo-host-owner": owner,
+    });
+  }
+
   async #readStored(): Promise<StoredSettings> {
     try {
       return StoredSettings.parse(JSON.parse(await readFile(this.file, "utf8")));

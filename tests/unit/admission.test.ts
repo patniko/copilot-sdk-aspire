@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { describe, expect, it, beforeAll } from "vitest";
-import type { ExecutionPolicy, ExecutionProfile, HarnessSnapshot } from "@copilot-agent/contracts";
+import type { ExecutionPolicy, ExecutionProfile, HarnessPolicyOverride, HarnessSnapshot } from "@copilot-agent/contracts";
 import { HttpError, loadHarnesses, loadPolicy, loadProfiles } from "@copilot-agent/service-defaults";
 import { Admission } from "../../src/agent-api/src/admission.js";
 
@@ -24,7 +24,7 @@ beforeAll(async () => {
 });
 
 function admit(submission: object, policyOverrides: Partial<ExecutionPolicy> = {}) {
-  return new Admission({ harnesses, profiles, policy: { ...policy, ...policyOverrides } }).admit(
+  return new Admission({ harnesses, profiles, policies: { base: { ...policy, ...policyOverrides }, overrides: new Map() } }).admit(
     submission as Parameters<Admission["admit"]>[0],
   );
 }
@@ -54,7 +54,7 @@ function admitWithDefinition(definition: HarnessSnapshot["definition"], policyOv
   return new Admission({
     harnesses: new Map([[definition.name, [snapshot]]]),
     profiles,
-    policy: { ...policy, ...policyOverrides },
+    policies: { base: { ...policy, ...policyOverrides }, overrides: new Map() },
   }).admit({ harness: { name: definition.name }, input: validInput });
 }
 
@@ -126,5 +126,39 @@ describe("Admission", () => {
     expect(error.details).toMatchObject({
       problems: [{ path: "permissions.default" }, { path: "permissions.kinds.shell" }, { path: "permissions.questions" }],
     });
+  });
+});
+
+describe("Admission with per-harness policy", () => {
+  const submission = { harness: { name: "dataset-analyst" }, input: validInput };
+  const admitWith = (overrides: Map<string, HarnessPolicyOverride>, base: Partial<ExecutionPolicy> = {}) =>
+    new Admission({ harnesses, profiles, policies: { base: { ...policy, ...base }, overrides } }).admit(submission);
+  const override = (harness: string, fields: HarnessPolicyOverride["overrides"]): Map<string, HarnessPolicyOverride> =>
+    new Map([[harness, { schemaVersion: "1", harness, overrides: fields }]]);
+
+  it("applies an override only to its own harness", () => {
+    expect(errorCode(() => admitWith(override("dataset-analyst", { allowedModels: ["other"] })))).toBe("policy_rejected");
+    expect(errorCode(() => admitWith(override("text-summarizer", { allowedModels: ["other"] })))).toBeUndefined();
+  });
+
+  it("lets an override widen or narrow the base policy for that harness", () => {
+    expect(errorCode(() => admitWith(override("dataset-analyst", { allowedModels: ["grok-4.6"] }), { allowedModels: ["other"] }))).toBeUndefined();
+    expect(admitWith(override("dataset-analyst", { maxDurationSeconds: 30 })).maxDurationSeconds).toBe(30);
+  });
+
+  it("records the effective policy digest, requirements, and backoff on the admitted job", () => {
+    const plain = admitWith(new Map());
+    const strict = admitWith(
+      override("dataset-analyst", {
+        requirements: { processIsolation: "uid", egress: "gateway-only" },
+        acknowledgedGaps: [],
+        retry: { maxAttempts: 1, backoffSeconds: 90 },
+      }),
+    );
+    expect(plain.policy.digest).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(strict.policy.digest).not.toBe(plain.policy.digest);
+    expect(strict.policy.requirements).toEqual({ requiresUidIsolation: true, requiresEgressEnforcement: true, acknowledgedGaps: [] });
+    expect(strict.policy.retryBackoffSeconds).toBe(90);
+    expect(strict.maxAttempts).toBe(1);
   });
 });

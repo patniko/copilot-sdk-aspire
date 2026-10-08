@@ -1,7 +1,7 @@
 // Types shared by the configurator server and UI. Type-only imports keep the UI bundle free of server code.
-import type { DemoHostSettings, ExecutionPolicy, HarnessDefinition, SkillDefinition } from "@copilot-agent/contracts";
+import type { DemoHostSettings, ExecutionPolicy, HarnessDefinition, HarnessPolicyOverride, SkillDefinition } from "@copilot-agent/contracts";
 
-export type { ExecutionPolicy, SkillDefinition };
+export type { ExecutionPolicy, HarnessPolicyOverride, SkillDefinition };
 
 /**
  * harness.json on disk: the harness contract with `instructionsFile` in place of inline instructions
@@ -73,7 +73,17 @@ export interface WorkspaceInfo {
   bindings: BindingInfo[];
   policy: ExecutionPolicy;
   policyIssues: Issue[];
+  /** Operator overrides in policy/harnesses/, with the fields they replace. */
+  policyOverrides: Array<{ harness: string; fields: string[]; errors: number }>;
   changes: { items: string[] };
+}
+
+/** One harness's override and the effective policy it produces (the base policy when there is none). */
+export interface PolicyOverrideStatus {
+  harness: string;
+  override?: HarnessPolicyOverride;
+  effective: ExecutionPolicy;
+  issues: Issue[];
 }
 
 export interface EffectiveLimits {
@@ -87,6 +97,8 @@ export interface HarnessDetail {
   document: HarnessDocument;
   issues: Issue[];
   effective: EffectiveLimits;
+  /** Policy fields replaced by an operator override for this harness (empty: the base policy applies). */
+  policy: { overridden: string[] };
   digest?: string;
   /** Things the author should know or decide: who implements what, what to review, accepted gaps. */
   decisions: Decision[];

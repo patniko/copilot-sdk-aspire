@@ -5,5 +5,6 @@
     "declaration": false,
     "sourceMap": false
   },
-  "include": ["server", "test"]
+  "include": ["server", "test"],
+  "exclude": ["test/**/*.test.tsx"]
 }

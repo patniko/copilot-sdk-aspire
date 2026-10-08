@@ -45,7 +45,12 @@ function newJob(overrides: Partial<NewJob> = {}): NewJob {
 }
 
 const claim = () =>
-  store.claimNext({ executor, acknowledgedGaps: ["egress-not-enforced"], leaseSeconds: 30, maxConcurrentPerPrincipal: 10 });
+  store.claimNext({
+    executor,
+    defaults: { requiresUidIsolation: true, requiresEgressEnforcement: true, acknowledgedGaps: ["egress-not-enforced"] },
+    leaseSeconds: 30,
+    maxConcurrentPerPrincipal: 10,
+  });
 
 async function claimedJob(overrides: Partial<NewJob> = {}) {
   const created = await store.createJob(newJob(overrides), 10);

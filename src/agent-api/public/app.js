@@ -527,7 +527,7 @@ function renderResolvedRequest(view) {
     response?.kind === "permission"
       ? response.approved
         ? response.scope === "kind"
-          ? "Approved for the rest of the run"
+          ? "Approved similar requests for the rest of the run"
           : "Approved"
         : "Denied"
       : response?.kind === "question"
@@ -666,11 +666,15 @@ function renderPermissionBody(body, view) {
         "div",
         { class: "request-actions" },
         el("button", { type: "button", class: "primary", onclick: () => respondToRequest(view, { kind: "permission", approved: true }, status), text: "Approve" }),
-        el("button", {
-          type: "button",
-          onclick: () => respondToRequest(view, { kind: "permission", approved: true, scope: "kind" }, status),
-          text: `Approve all ${prompt.type ?? "actions"} for this run`,
-        }),
+        ...(similarApprovalLabel(prompt)
+          ? [
+              el("button", {
+                type: "button",
+                onclick: () => respondToRequest(view, { kind: "permission", approved: true, scope: "kind" }, status),
+                text: similarApprovalLabel(prompt),
+              }),
+            ]
+          : []),
         el("button", {
           type: "button",
           class: "danger",
@@ -750,6 +754,29 @@ function targetLabel(prompt) {
   return "Target";
 }
 
+/** What approving "for this run" covers, matching the runner's similar-request scope; undefined when it covers nothing. */
+function similarApprovalLabel(prompt) {
+  switch (prompt.type) {
+    case "shell":
+      return prompt.commandNames?.length ? `Approve ${prompt.commandNames.join(", ")} for this run` : undefined;
+    case "write":
+      return "Approve all file changes for this run";
+    case "read":
+      return prompt.path ? "Approve reads in this folder for this run" : undefined;
+    case "url": {
+      let host;
+      try {
+        host = new URL(prompt.url).hostname;
+      } catch {
+        host = undefined;
+      }
+      return host ? `Approve ${host} for this run` : undefined;
+    }
+    default:
+      return prompt.tool ? "Approve this tool for this run" : undefined;
+  }
+}
+
 function renderDiff(diff) {
   const pre = el("pre", { class: "code diff-view" });
   for (const line of diff.split(/\r?\n/)) {
@@ -766,7 +793,7 @@ function renderResponseSummary(view) {
   const response = view.response;
   if (response?.kind === "permission") {
     const lines = [response.approved ? "Approved" : "Denied"];
-    if (response.scope === "kind") lines.push("Also allowed this action type for the rest of the run.");
+    if (response.scope === "kind") lines.push("Also allowed similar requests for the rest of the run.");
     if (response.feedback) lines.push(`Feedback: ${response.feedback}`);
     return el("div", { class: response.approved ? "flash info" : "flash warning", text: lines.join("\n") });
   }
@@ -843,6 +870,8 @@ function describeEvent(body) {
       return "Queued";
     case "job.attempt_started":
       return `Attempt ${body.attempt} started on ${body.profile}${body.acknowledgedGaps?.length ? ` (gaps: ${body.acknowledgedGaps.join(", ")})` : ""}`;
+    case "job.waiting_for_eligible_executor":
+      return `Waiting for an executor that enforces what this harness's policy requires (${body.missing.join(", ")})`;
     case "job.runner_event": {
       const e = body.event;
       switch (e.kind) {

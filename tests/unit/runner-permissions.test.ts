@@ -1,9 +1,23 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { PermissionPrompt, type InputResponseBody, type PermissionsConfig } from "@copilot-agent/contracts";
 import { buildPermissionHandler, permissionPromptFor } from "../../src/harness-hosting/src/permissions.js";
 
 type PermissionRequestForTest = Parameters<typeof permissionPromptFor>[0];
 const request = (value: Record<string, unknown>) => value as unknown as PermissionRequestForTest;
+
+const root = mkdtempSync(join(tmpdir(), "runner-permissions-"));
+const workspace = join(root, "attempt");
+const files = join(workspace, "files");
+const outside = join(root, "outside");
+mkdirSync(files, { recursive: true });
+mkdirSync(outside, { recursive: true });
+writeFileSync(join(outside, "secret.txt"), "secret");
+symlinkSync(outside, join(files, "escape"), "junction");
+const context = { workspace, workingDirectory: files };
+afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 async function decide(
   permissions: PermissionsConfig | undefined,
@@ -11,9 +25,22 @@ async function decide(
   response: InputResponseBody = { kind: "expired" },
 ) {
   const ask = vi.fn(async () => response);
-  const result = await buildPermissionHandler(permissions, ask)(req, { sessionId: "s" });
+  const result = await buildPermissionHandler(permissions, ask, context)(req, { sessionId: "s" });
   return { result, ask };
 }
+
+const shell = (fields: Record<string, unknown>) =>
+  request({
+    kind: "shell",
+    intention: "inspect",
+    fullCommandText: "cmd",
+    commands: [],
+    hasWriteFileRedirection: false,
+    possiblePaths: [],
+    possibleUrls: [],
+    canOfferSessionApproval: true,
+    ...fields,
+  });
 
 describe("runner permission handler", () => {
   it("keeps omitted permissions as deny-all without asking", async () => {
@@ -49,15 +76,146 @@ describe("runner permission handler", () => {
     });
   });
 
-  it("remembers approved permission kind for the rest of the attempt", async () => {
+  it("remembers approved file writes for the rest of the attempt", async () => {
     const response: InputResponseBody = { kind: "permission", approved: true, scope: "kind" };
     const ask = vi.fn(async () => response);
-    const handler = buildPermissionHandler({ default: "ask" }, ask);
+    const handler = buildPermissionHandler({ default: "ask" }, ask, context);
     const first = await handler(request({ kind: "write", fileName: "a.txt", diff: "+a", intention: "write" }), { sessionId: "s" });
     const second = await handler(request({ kind: "write", fileName: "b.txt", diff: "+b", intention: "write" }), { sessionId: "s" });
     expect(first).toEqual({ kind: "approve-once", approvedInteractively: true });
     expect(second).toEqual({ kind: "approve-once" });
     expect(ask).toHaveBeenCalledTimes(1);
+  });
+
+  describe("ask follows the Copilot CLI defaults", () => {
+    const ask: PermissionsConfig = { default: "ask" };
+
+    it("reads inside the workspace without asking and asks for reads outside it", async () => {
+      for (const path of ["notes.md", join(files, "data", "x.csv"), join(workspace, "skills", "s", "SKILL.md")]) {
+        const inside = await decide(ask, request({ kind: "read", path, intention: "inspect" }));
+        expect(inside.result).toEqual({ kind: "approve-once" });
+        expect(inside.ask).not.toHaveBeenCalled();
+      }
+      for (const path of [join(outside, "secret.txt"), "../../outside/secret.txt", join("escape", "secret.txt")]) {
+        const out = await decide(ask, request({ kind: "read", path, intention: "inspect" }));
+        expect(out.ask).toHaveBeenCalledTimes(1);
+        expect(out.result.kind).toBe("reject");
+      }
+    });
+
+    it("runs read-only commands that stay in the workspace without asking", async () => {
+      const readOnly = await decide(
+        ask,
+        shell({ fullCommandText: "git status && ls src 2>/dev/null", commands: [{ identifier: "git status", readOnly: true }, { identifier: "ls", readOnly: true }], possiblePaths: ["src", "/dev/null"] }),
+      );
+      expect(readOnly.result).toEqual({ kind: "approve-once" });
+      expect(readOnly.ask).not.toHaveBeenCalled();
+    });
+
+    it("asks for commands that change state, redirect output, leave the workspace, reach URLs, or bypass the sandbox", async () => {
+      const readOnlyCommand = [{ identifier: "cat", readOnly: true }];
+      const cases = [
+        shell({ commands: [{ identifier: "npm install", readOnly: false }] }),
+        shell({ commands: [], fullCommandText: "unparsed" }),
+        shell({ commands: readOnlyCommand, hasWriteFileRedirection: true }),
+        shell({ commands: readOnlyCommand, possiblePaths: [join(outside, "secret.txt")] }),
+        shell({ commands: readOnlyCommand, possiblePaths: [join("escape", "secret.txt")] }),
+        shell({ commands: [{ identifier: "curl", readOnly: true }], possibleUrls: [{ url: "https://example.com" }] }),
+        shell({ commands: readOnlyCommand, requestSandboxBypass: true }),
+        shell({ commands: readOnlyCommand, managedApprovalRequired: true }),
+      ];
+      for (const req of cases) {
+        const { ask: asked } = await decide(ask, req);
+        expect(asked).toHaveBeenCalledTimes(1);
+      }
+    });
+
+    it("always asks before writing files and fetching URLs", async () => {
+      const write = await decide(ask, request({ kind: "write", fileName: "a.txt", diff: "+a", intention: "write" }));
+      const url = await decide(ask, request({ kind: "url", url: "https://example.com", intention: "fetch" }));
+      expect(write.ask).toHaveBeenCalledTimes(1);
+      expect(url.ask).toHaveBeenCalledTimes(1);
+    });
+
+    it("runs read-only MCP tools without asking", async () => {
+      const readOnly = await decide(ask, request({ kind: "mcp", serverName: "github", toolName: "list_issues", toolTitle: "List", readOnly: true }));
+      const mutating = await decide(ask, request({ kind: "mcp", serverName: "github", toolName: "create_issue", toolTitle: "Create", readOnly: false }));
+      expect(readOnly.ask).not.toHaveBeenCalled();
+      expect(mutating.ask).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps explicit deny rules ahead of the CLI defaults", async () => {
+      const { result, ask: asked } = await decide(
+        { default: "ask", kinds: { read: "deny", shell: "deny" } },
+        shell({ commands: [{ identifier: "ls", readOnly: true }] }),
+      );
+      expect(result).toEqual({ kind: "reject", feedback: "Not permitted by the job policy." });
+      expect(asked).not.toHaveBeenCalled();
+      const read = await decide({ default: "ask", kinds: { read: "deny" } }, request({ kind: "read", path: "notes.md", intention: "x" }));
+      expect(read.result.kind).toBe("reject");
+    });
+  });
+
+  describe("approval for the rest of the attempt covers similar requests only", () => {
+    const forRun: InputResponseBody = { kind: "permission", approved: true, scope: "kind" };
+
+    it("covers the approved command names, not every command", async () => {
+      const ask = vi.fn(async () => forRun);
+      const handler = buildPermissionHandler({ default: "ask" }, ask, context);
+      const install = shell({ fullCommandText: "npm install", commands: [{ identifier: "npm install", readOnly: false }] });
+      expect(permissionPromptFor(install).commandNames).toEqual(["npm install"]);
+      await handler(install, { sessionId: "s" });
+      await handler(shell({ commands: [{ identifier: "npm install", readOnly: false }, { identifier: "git status", readOnly: true }] }), { sessionId: "s" });
+      expect(ask).toHaveBeenCalledTimes(1);
+      await handler(shell({ commands: [{ identifier: "rm", readOnly: false }] }), { sessionId: "s" });
+      expect(ask).toHaveBeenCalledTimes(2);
+    });
+
+    it("lets approved writes cover output redirection", async () => {
+      const ask = vi.fn(async () => forRun);
+      const handler = buildPermissionHandler({ default: "ask" }, ask, context);
+      await handler(request({ kind: "write", fileName: "a.txt", diff: "+a", intention: "write" }), { sessionId: "s" });
+      const result = await handler(shell({ commands: [{ identifier: "echo", readOnly: true }], hasWriteFileRedirection: true }), { sessionId: "s" });
+      expect(result).toEqual({ kind: "approve-once" });
+      expect(ask).toHaveBeenCalledTimes(1);
+    });
+
+    it("covers the same website host for fetches and commands", async () => {
+      const ask = vi.fn(async () => forRun);
+      const handler = buildPermissionHandler({ default: "ask" }, ask, context);
+      await handler(request({ kind: "url", url: "https://example.com/a", intention: "fetch" }), { sessionId: "s" });
+      await handler(request({ kind: "url", url: "https://EXAMPLE.com/b?q=1", intention: "fetch" }), { sessionId: "s" });
+      await handler(shell({ commands: [{ identifier: "curl", readOnly: true }], possibleUrls: [{ url: "https://example.com/c" }] }), { sessionId: "s" });
+      expect(ask).toHaveBeenCalledTimes(1);
+      await handler(request({ kind: "url", url: "https://other.example.org", intention: "fetch" }), { sessionId: "s" });
+      expect(ask).toHaveBeenCalledTimes(2);
+    });
+
+    it("covers reads in the approved folder, never a filesystem root", async () => {
+      const ask = vi.fn(async () => forRun);
+      const handler = buildPermissionHandler({ default: "ask" }, ask, context);
+      writeFileSync(join(outside, "other.txt"), "other");
+      await handler(request({ kind: "read", path: join(outside, "secret.txt"), intention: "x" }), { sessionId: "s" });
+      await handler(request({ kind: "read", path: join(outside, "other.txt"), intention: "x" }), { sessionId: "s" });
+      expect(ask).toHaveBeenCalledTimes(1);
+
+      const rootAsk = vi.fn(async () => forRun);
+      const rootHandler = buildPermissionHandler({ default: "ask" }, rootAsk, context);
+      const systemRoot = join(root, "..").split(/[\\/]/)[0] + (process.platform === "win32" ? "\\" : "/");
+      await rootHandler(request({ kind: "read", path: join(systemRoot, "first-file"), intention: "x" }), { sessionId: "s" });
+      await rootHandler(request({ kind: "read", path: join(systemRoot, "second-file"), intention: "x" }), { sessionId: "s" });
+      expect(rootAsk).toHaveBeenCalledTimes(2);
+    });
+
+    it("covers the same tool for MCP and other requests", async () => {
+      const ask = vi.fn(async () => forRun);
+      const handler = buildPermissionHandler({ default: "ask" }, ask, context);
+      const create = request({ kind: "mcp", serverName: "github", toolName: "create_issue", toolTitle: "Create", readOnly: false });
+      await handler(create, { sessionId: "s" });
+      await handler(create, { sessionId: "s" });
+      await handler(request({ kind: "mcp", serverName: "github", toolName: "delete_repo", toolTitle: "Delete", readOnly: false }), { sessionId: "s" });
+      expect(ask).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("uses the default rule for mcp and other permission kinds", async () => {

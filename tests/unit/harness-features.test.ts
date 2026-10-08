@@ -247,7 +247,7 @@ describe("admission of harness features", () => {
     if (overrides.capabilities) {
       changedProfiles.set("node-ts-agent", { ...profiles.get("node-ts-agent")!, capabilities: overrides.capabilities });
     }
-    return new Admission({ harnesses, profiles: changedProfiles, policy: { ...policy, ...overrides.policy } }).admit({
+    return new Admission({ harnesses, profiles: changedProfiles, policies: { base: { ...policy, ...overrides.policy }, overrides: new Map() } }).admit({
       harness: { name: "insights-team" },
       input,
     } as never);

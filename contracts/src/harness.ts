@@ -95,7 +95,10 @@ export type BuiltinToolGroup = (typeof BUILTIN_TOOL_GROUPS)[number];
 export const PERMISSION_KINDS = ["read", "write", "shell", "url"] as const;
 export type PermissionKind = (typeof PERMISSION_KINDS)[number];
 
-/** deny: refuse; ask: route to a person through the job's input requests; allow: approve automatically. */
+/**
+ * deny: refuse; allow: approve automatically; ask: follow the Copilot CLI's interactive defaults
+ * (workspace reads, read-only commands and read-only MCP tools run) and route everything else to a person.
+ */
 export const PermissionMode = z.enum(["deny", "ask", "allow"]);
 export type PermissionMode = z.infer<typeof PermissionMode>;
 

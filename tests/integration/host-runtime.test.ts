@@ -39,7 +39,7 @@ describe.skipIf(!enabled)("real managed AHP host in Docker", () => {
     const hostKey = randomUUID().repeat(2);
     const connectionToken = randomUUID().repeat(2);
     const dispatcher = buildDispatcher({
-      store: new JobStore(pool), hostStore: store, policy, executorKey: "unused".repeat(8),
+      store: new JobStore(pool), hostStore: store, policies: { base: policy, overrides: new Map() }, executorKey: "unused".repeat(8),
       gatewayKey: "unused-gateway".repeat(4), signingKey: key,
       host: { store, key: hostKey, owner, harness: harnesses.get("interactive-demo")![0]!, profiles, policy, signingKey: key },
     });
