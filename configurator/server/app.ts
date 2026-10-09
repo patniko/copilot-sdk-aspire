@@ -271,6 +271,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         latest: latest.get(d.manifest.name) === d.manifest.version,
         modified: changes.modified.has(d.folder),
         untracked: changes.untracked.has(d.folder),
+        interaction: d.manifest.interaction,
         errors: issues.filter((i) => i.level === "error").length,
         warnings: issues.filter((i) => i.level === "warning").length,
         digest: harnessDigest(d),
@@ -616,6 +617,24 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   );
   app.get("/api/status/local", async () => status.local());
   app.get("/api/status/azure", async () => status.azure(await settings.target(undefined)));
+
+  // Reachability only: the response body is discarded and only the status code leaves the server.
+  app.post("/api/check-url", async (request) => {
+    const { url } = z.object({ url: z.string().url().regex(/^https?:\/\//i) }).parse(request.body);
+    try {
+      const response = await fetch(url, { method: "GET", redirect: "follow", signal: AbortSignal.timeout(8_000) });
+      await response.body?.cancel().catch(() => undefined);
+      return { reachable: true, status: response.status };
+    } catch (error) {
+      const cause = (error as { cause?: { code?: string; message?: string } }).cause;
+      return { reachable: false, detail: cause?.code ?? cause?.message ?? (error as Error).message };
+    }
+  });
+
+  const subscriptionQuery = (request: { query: unknown }) => z.string().uuid().parse((request.query as { subscription?: string }).subscription);
+  app.get("/api/azure/subscriptions", async () => ({ subscriptions: await status.subscriptions() }));
+  app.get("/api/azure/locations", async () => ({ locations: await status.locations() }));
+  app.get("/api/azure/resource-groups", async (request) => ({ resourceGroups: await status.resourceGroups(subscriptionQuery(request)) }));
 
   app.get("/api/foundry/accounts", async (request) => {
     const subscription = z.string().uuid().parse((request.query as { subscription?: string }).subscription);

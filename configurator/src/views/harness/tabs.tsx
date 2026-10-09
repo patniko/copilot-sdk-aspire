@@ -4,7 +4,7 @@ import type { BuiltinToolGroup } from "@copilot-agent/contracts";
 import type { HarnessDetail, HarnessDocument, HarnessManifest, Issue, SkillDefinition } from "../../../server/types";
 import { DecisionList } from "../../components/LivePlan";
 import { ArrowRight, Copilot, Plus, Trash2, Wrench } from "../../components/icons";
-import { Badge, ChipsInput, Empty, Field, Flash, HelpButton, IssueList, JsonEditor, NumberInput, SegmentedControl, Toggle } from "../../components/ui";
+import { Badge, Empty, Field, Flash, HelpButton, IssueList, JsonEditor, NumberInput, OrderedList, SegmentedControl, Toggle, VersionInput } from "../../components/ui";
 import { useApp } from "../../state";
 
 export type Tab = "overview" | "prompt" | "model" | "tools" | "permissions" | "agents" | "skills" | "input" | "output" | "limits" | "runtime";
@@ -56,6 +56,11 @@ export function tabFor(path: string): Tab {
 export type Update = (mutate: (d: HarnessDocument) => void, key?: string) => void;
 
 const EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+
+/** Normalizes a slug as it is typed: lowercase, and any run of other characters becomes one hyphen. */
+export function typingSlug(text: string): string {
+  return text.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
+}
 const SECTIONS: Array<{ name: string; label: string; about: string }> = [
   { name: "preamble", label: "Preamble", about: "Opening framing of the prompt." },
   { name: "identity", label: "Identity", about: "Who the agent is (GitHub Copilot by default)." },
@@ -94,7 +99,7 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
               <input className="input" value={m.name} disabled />
             </Field>
             <Field label="Version" help="harness.version" error={errorAt("version")} hint="Change the version, then save to keep both versions or replace the selected one.">
-              <input className="input font-mono" value={m.version} onChange={(e) => set((x) => void (x.version = e.target.value), "version")} />
+              <VersionInput value={m.version} onChange={(version) => set((x) => void (x.version = version), "version")} />
             </Field>
             <Field label="Description" help="harness.description" className="md:col-span-2" error={errorAt("description")}>
               <textarea className="input" rows={3} value={m.description} onChange={(e) => set((x) => void (x.description = e.target.value), "description")} />
@@ -132,9 +137,8 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
       return (
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Preferred model" help="model.preferred" error={errorAt("model.preferred") ?? errorAt("model")}>
-            <input
+            <select
               className="input"
-              list="approved-models"
               value={m.model.preferred}
               onChange={(e) =>
                 set((x) => {
@@ -142,35 +146,55 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
                   if (e.target.value && !x.model.allowed.includes(e.target.value)) x.model.allowed = [e.target.value, ...x.model.allowed];
                 }, "model.preferred")
               }
-            />
-            <datalist id="approved-models">
-              {policy.allowedModels.map((model) => (
-                <option key={model} value={model} />
-              ))}
-            </datalist>
-          </Field>
-          <Field label="Allowed models" help="model.allowed" hint="Fallbacks in order. Only policy-approved models can run.">
-            <ChipsInput values={m.model.allowed} onChange={(values) => set((x) => void (x.model.allowed = values))} suggestions={policy.allowedModels} />
-          </Field>
-          <Field label="Reasoning effort" help="model.reasoningEffort" hint={cap ? `Policy maximum: ${cap}.` : "No policy cap."} error={errorAt("model.reasoningEffort")}>
-            <select
-              className="input"
-              value={m.model.reasoningEffort ?? ""}
-              onChange={(e) =>
-                set((x) => {
-                  if (e.target.value) x.model.reasoningEffort = e.target.value as (typeof EFFORTS)[number];
-                  else delete x.model.reasoningEffort;
-                })
-              }
             >
-              <option value="">Model default</option>
-              {EFFORTS.map((effort, index) => (
-                <option key={effort} value={effort} disabled={index > capIndex}>
-                  {effort}
-                  {index > capIndex ? " (above policy cap)" : ""}
+              {!m.model.preferred && <option value="">Choose a model</option>}
+              {m.model.preferred && !policy.allowedModels.includes(m.model.preferred) && (
+                <option value={m.model.preferred}>{m.model.preferred} (not approved by policy)</option>
+              )}
+              {policy.allowedModels.map((model) => (
+                <option key={model} value={model}>
+                  {model}
                 </option>
               ))}
             </select>
+          </Field>
+          <Field label="Allowed models" help="model.allowed" hint="Tried in this order when the preferred model is unavailable. Only policy-approved models can run.">
+            <OrderedList
+              label="Allowed models"
+              values={m.model.allowed}
+              options={policy.allowedModels}
+              onChange={(values) => set((x) => void (x.model.allowed = values))}
+              empty="No fallbacks; only the preferred model is used."
+              describe={(model) => (
+                <span className="flex flex-wrap gap-1">
+                  {model === m.model.preferred && <Badge tone="blue">preferred</Badge>}
+                  {!policy.allowedModels.includes(model) && <Badge tone="red">not approved</Badge>}
+                </span>
+              )}
+            />
+          </Field>
+          <Field label="Reasoning effort" help="model.reasoningEffort" hint={cap ? `Policy maximum: ${cap}.` : "No policy cap."} error={errorAt("model.reasoningEffort")}>
+            <div>
+              <SegmentedControl
+                label="Reasoning effort"
+                value={m.model.reasoningEffort ?? ""}
+                onChange={(value) =>
+                  set((x) => {
+                    if (value) x.model.reasoningEffort = value as (typeof EFFORTS)[number];
+                    else delete x.model.reasoningEffort;
+                  })
+                }
+                options={[
+                  { value: "", label: "Model default" },
+                  ...EFFORTS.map((effort, index) => ({
+                    value: effort,
+                    label: effort,
+                    disabled: index > capIndex && m.model.reasoningEffort !== effort,
+                    title: index > capIndex ? "Above the policy cap" : undefined,
+                  })),
+                ]}
+              />
+            </div>
           </Field>
           <Field
             label="Context tier"
@@ -178,22 +202,28 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
             hint={policy.allowLongContext ? "Long context is allowed by policy." : "The policy does not allow long context."}
             error={errorAt("model.contextTier")}
           >
-            <select
-              className="input"
-              value={m.model.contextTier ?? ""}
-              onChange={(e) =>
-                set((x) => {
-                  if (e.target.value) x.model.contextTier = e.target.value as "default" | "long_context";
-                  else delete x.model.contextTier;
-                })
-              }
-            >
-              <option value="">Model default</option>
-              <option value="default">default</option>
-              <option value="long_context" disabled={!policy.allowLongContext}>
-                long_context{policy.allowLongContext ? "" : " (not allowed by policy)"}
-              </option>
-            </select>
+            <div>
+              <SegmentedControl
+                label="Context tier"
+                value={m.model.contextTier ?? ""}
+                onChange={(value) =>
+                  set((x) => {
+                    if (value) x.model.contextTier = value as "default" | "long_context";
+                    else delete x.model.contextTier;
+                  })
+                }
+                options={[
+                  { value: "", label: "Model default" },
+                  { value: "default", label: "default" },
+                  {
+                    value: "long_context",
+                    label: "long_context",
+                    disabled: !policy.allowLongContext && m.model.contextTier !== "long_context",
+                    title: policy.allowLongContext ? undefined : "Not allowed by policy",
+                  },
+                ]}
+              />
+            </div>
           </Field>
           <div className="flex flex-wrap items-center gap-1 text-xs fg-muted md:col-span-2">
             Policy-approved models:
@@ -262,7 +292,7 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
             hint={`Effective: ${effective?.maxDurationSeconds ?? "?"}s (policy max ${policy.maxDurationSeconds}s).`}
             error={errorAt("limits.maxDurationSeconds")}
           >
-            <NumberInput value={m.limits.maxDurationSeconds} min={10} max={3600} onChange={(v) => set((x) => void (x.limits.maxDurationSeconds = v), "limits.duration")} />
+            <NumberInput unit="seconds" value={m.limits.maxDurationSeconds} min={10} max={3600} onChange={(v) => set((x) => void (x.limits.maxDurationSeconds = v), "limits.duration")} />
           </Field>
           <Field
             label="Inference token budget per job"
@@ -270,7 +300,7 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
             hint={`Effective: ${effective?.tokenBudget?.toLocaleString() ?? "?"} (policy max ${policy.maxInferenceTokensPerJob.toLocaleString()}).`}
             error={errorAt("limits.maxInferenceTokens")}
           >
-            <NumberInput value={m.limits.maxInferenceTokens} min={1000} step={1000} onChange={(v) => set((x) => void (x.limits.maxInferenceTokens = v), "limits.tokens")} />
+            <NumberInput unit="tokens" value={m.limits.maxInferenceTokens} min={1000} step={1000} onChange={(v) => set((x) => void (x.limits.maxInferenceTokens = v), "limits.tokens")} />
           </Field>
           <Field label="Max attempts" help="retry.maxAttempts" hint={`Effective: ${effective?.maxAttempts ?? "?"} (policy max ${policy.retry.maxAttempts}).`} error={errorAt("retry.maxAttempts")}>
             <NumberInput value={m.retry.maxAttempts} min={1} max={5} onChange={(v) => set((x) => void (x.retry.maxAttempts = v), "retry.attempts")} />
@@ -381,13 +411,19 @@ function PromptTab({ draft, update, errorAt }: { draft: HarnessDocument; update:
                     </div>
                     <div className="text-xs fg-muted">{section.about}</div>
                   </div>
-                  <select className="input !w-40" aria-label={`${section.label} action`} value={action} onChange={(e) => setSection(section.name, e.target.value)}>
-                    <option value="keep">Keep</option>
-                    <option value="replace">Replace</option>
-                    <option value="prepend">Prepend</option>
-                    <option value="append">Append</option>
-                    <option value="remove">Remove</option>
-                  </select>
+                  <SegmentedControl
+                    size="sm"
+                    label={`${section.label} action`}
+                    value={action}
+                    onChange={(value) => setSection(section.name, value)}
+                    options={[
+                      { value: "keep", label: "Keep" },
+                      { value: "replace", label: "Replace" },
+                      { value: "prepend", label: "Prepend" },
+                      { value: "append", label: "Append" },
+                      { value: "remove", label: "Remove" },
+                    ]}
+                  />
                 </div>
                 {current && action !== "remove" && (
                   <textarea
@@ -468,8 +504,9 @@ function ToolsTab({ draft, update, issues }: { draft: HarnessDocument; update: U
     for (let i = 2; tools.some((t) => t.name === name); i++) name = `compute_${base}_${i}`;
     update((d) => void d.manifest.tools.push({ name, kind: binding.kind, description: binding.description, binding: bindingId }));
   };
-  const rename = (index: number, next: string) =>
+  const rename = (index: number, raw: string) =>
     update((d) => {
+      const next = raw.toLowerCase().replace(/[^a-z0-9_]+/g, "_");
       const previous = d.manifest.tools[index]!.name;
       d.manifest.tools[index]!.name = next;
       for (const agent of d.manifest.agents ?? []) agent.tools = agent.tools.map((t) => (t === previous ? next : t));
@@ -830,6 +867,7 @@ function PermissionsTab({ draft, update, issues, effective }: {
           error={errorAt("permissions.timeoutSeconds")}
         >
           <NumberInput
+            unit="seconds"
             value={timeout}
             min={30}
             max={3600}
@@ -962,7 +1000,7 @@ function AgentsTab({ draft, update, issues }: { draft: HarnessDocument; update: 
             </div>
             <div className="card-pad grid gap-3 md:grid-cols-2">
               <Field label="Name" hint="Lowercase slug the coordinator uses." error={error("name")}>
-                <input className="input font-mono" value={agent.name} onChange={(e) => setAgent(index, (a) => void (a.name = e.target.value), `agents.${index}.name`)} />
+                <input className="input font-mono" value={agent.name} onChange={(e) => setAgent(index, (a) => void (a.name = typingSlug(e.target.value)), `agents.${index}.name`)} />
               </Field>
               <Field label="Display name" error={error("displayName")}>
                 <input
@@ -1034,23 +1072,20 @@ function AgentsTab({ draft, update, issues }: { draft: HarnessDocument; update: 
                 </select>
               </Field>
               <Field label="Reasoning effort" error={error("reasoningEffort")}>
-                <select
-                  className="input"
-                  value={agent.reasoningEffort ?? ""}
-                  onChange={(e) =>
-                    setAgent(index, (a) => {
-                      if (e.target.value) a.reasoningEffort = e.target.value as (typeof EFFORTS)[number];
-                      else delete a.reasoningEffort;
-                    })
-                  }
-                >
-                  <option value="">Inherit</option>
-                  {EFFORTS.map((effort) => (
-                    <option key={effort} value={effort}>
-                      {effort}
-                    </option>
-                  ))}
-                </select>
+                <div>
+                  <SegmentedControl
+                    size="sm"
+                    label={`${agent.name} reasoning effort`}
+                    value={agent.reasoningEffort ?? ""}
+                    onChange={(value) =>
+                      setAgent(index, (a) => {
+                        if (value) a.reasoningEffort = value as (typeof EFFORTS)[number];
+                        else delete a.reasoningEffort;
+                      })
+                    }
+                    options={[{ value: "", label: "Inherit" }, ...EFFORTS.map((effort) => ({ value: effort, label: effort }))]}
+                  />
+                </div>
               </Field>
             </div>
           </div>
@@ -1075,8 +1110,9 @@ function SkillsTab({ draft, update, issues }: { draft: HarnessDocument; update: 
       for (let i = 2; d.skills.some((s) => s.name === name); i++) name = `new-skill-${i}`;
       d.skills.push({ name, description: "Say when the agent should use this skill.", content: "# Steps\n\n1. Describe the procedure." });
     });
-  const rename = (index: number, next: string) =>
+  const rename = (index: number, raw: string) =>
     update((d) => {
+      const next = typingSlug(raw);
       const previous = d.skills[index]!.name;
       d.skills[index]!.name = next;
       for (const agent of d.manifest.agents ?? []) {

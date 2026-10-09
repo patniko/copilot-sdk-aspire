@@ -6,7 +6,8 @@ import type { InputRequestView, InputResponseSubmission } from "@copilot-agent/c
 import { api, errorMessage } from "../api";
 import { InputRequestCard } from "../components/InputRequestCard";
 import { ResultView } from "../components/ResultView";
-import { Badge, Card, Empty, Field, Flash, JsonEditor, PageHeader, Spinner, stateTone } from "../components/ui";
+import { SchemaForm, supportsForm } from "../components/SchemaForm";
+import { Badge, Card, Empty, Field, Flash, JsonEditor, PageHeader, SegmentedControl, Spinner, stateTone } from "../components/ui";
 import { useApp } from "../state";
 import { AlertIcon, BookIcon, CommentIcon, DotFillIcon, PersonIcon, SyncIcon } from "@primer/octicons-react";
 
@@ -237,6 +238,8 @@ export function TryView() {
 
   const harness = harnesses?.find((h) => h.name === name);
   const live = harness?.versions.find((v) => v.version === version) ?? harness?.versions[0];
+  const [inputMode, setInputMode] = useState<"form" | "json">("form");
+  const formAvailable = !!live && supportsForm(live.inputSchema);
   useEffect(() => {
     if (!harness) return;
     const v = harness.versions[0]!;
@@ -444,16 +447,35 @@ export function TryView() {
                     {target === "local" ? "Use Reload harnesses on Local run." : "Deploy to publish them."}
                   </Flash>
                 )}
-                <Field label="Input">
-                  <JsonEditor rows={16} value={input} onChange={setInput} />
-                </Field>
+                <div>
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <span className="label !mb-0">Input</span>
+                    {formAvailable && (
+                      <SegmentedControl
+                        size="sm"
+                        label="Input editor"
+                        value={inputMode}
+                        onChange={setInputMode}
+                        options={[
+                          { value: "form", label: "Form" },
+                          { value: "json", label: "JSON" },
+                        ]}
+                      />
+                    )}
+                  </div>
+                  {formAvailable && inputMode === "form" ? (
+                    <SchemaForm schema={live!.inputSchema} value={input} onChange={setInput} />
+                  ) : (
+                    <JsonEditor rows={16} value={input} onChange={setInput} />
+                  )}
+                </div>
                 {submitError && <pre className="whitespace-pre-wrap text-xs text-red-600 dark:text-red-400">{submitError}</pre>}
                 <div className="flex gap-2">
                   <button type="button" className="btn-primary" disabled={busy || !name} onClick={() => void submit()}>
                     {busy ? <Spinner /> : <Play className="h-4 w-4" />} Run job
                   </button>
                   <button type="button" className="btn-ghost" onClick={() => live && setInput(skeleton(live.inputSchema))}>
-                    Reset input
+                    {Array.isArray(live?.inputSchema.examples) && live.inputSchema.examples.length ? "Reset to example" : "Reset input"}
                   </button>
                 </div>
               </div>

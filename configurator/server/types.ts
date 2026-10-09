@@ -39,6 +39,8 @@ export interface HarnessSummary {
   modified: boolean;
   /** Has no platform example with the same folder name. */
   untracked: boolean;
+  /** Set when the harness opts into multi-turn conversations (the demo agent host). */
+  interaction?: "conversation";
   errors: number;
   warnings: number;
   /** Content digest the API would assign (absent if invalid). */
@@ -273,6 +275,24 @@ export interface AzureStatus {
   apps: AzureApp[];
   apiUrl?: string;
   error?: string;
+}
+
+export interface AzureSubscription {
+  id: string;
+  name: string;
+  tenantId: string;
+  isDefault: boolean;
+}
+
+export interface AzureLocation {
+  name: string;
+  displayName: string;
+  geography?: string;
+}
+
+export interface AzureResourceGroup {
+  name: string;
+  location: string;
 }
 
 export interface FoundryAccount {

@@ -45,16 +45,24 @@ CONFIGURATOR_GITHUB_CLIENT_ID=your-oauth-app-client-id
    and its decision list show when an override applies, and **Deploy** preflight fails if an override names a
    harness that does not exist.
 4. **Local run**: set the Foundry endpoint and deployments (or discover them from your subscription), optional package
-   proxies, then **Build & start** the stack. After saving harness edits, **Reload harnesses** (or **Save & reload
+   proxies, then **Build & start** the stack. URL fields check their format as you type, and **Test** reports whether
+   the address answers from this machine. After saving harness edits, **Reload harnesses** (or **Save & reload
    local API** in the editor) restarts only the API. Unit and full test suites run from here too.
 5. **Try it**: pick the local stack or the selected Azure target, a harness version, an agent, and input (prefilled
-   from the example), then watch the activity timeline (turns, tools, sub-agent delegation, skills) and the structured
-   result. When detailed job events are enabled, SDK events use message-aware summaries and expose their persisted
-   JSON under **SDK details**. It warns when your files differ from what the service is running.
-6. **Deploy**: describe one or more targets (tenant, subscription, region, resource group, existing Foundry account
-   and deployments, with discovery), pass the preflight (configuration valid, signed in to the target tenant, Docker
-   running), optionally **Preview infrastructure** (writes Bicep to `artifacts/deployment`), then **Deploy**. The
-   Azure status card shows each container app, the API URL, and buttons to open the job console or copy the key.
+   from the example). Input is a form generated from the harness input schema: text areas for long strings, chips for
+   lists, nested groups for objects, and an inline JSON box for shapes the form cannot express (such as a table of
+   rows). Switch to **JSON** to edit the whole document. Then watch the activity timeline (turns, tools, sub-agent
+   delegation, skills) and the structured result. When detailed job events are enabled, SDK events use
+   message-aware summaries and expose their persisted JSON under **SDK details**. It warns when your files differ
+   from what the service is running.
+6. **Deploy**: describe one or more targets, pass the preflight (configuration valid, signed in to the target tenant,
+   Docker running), optionally **Preview infrastructure** (writes Bicep to `artifacts/deployment`), then **Deploy**.
+   When the Azure CLI is signed in, **Subscription** lists your subscriptions (choosing one also sets the tenant),
+   **Region** lists physical regions by geography, and **Resource group** suggests existing groups and says whether
+   the name is new or existing; **Enter IDs manually** remains available. A chosen Foundry account collapses into a
+   summary with **Change account** and **Edit manually**, and **Model deployments** suggests the account's
+   deployments with their model and version. The Azure status card shows each container app, the API URL, and
+   buttons to open the job console or copy the key.
 
 Command output streams into the task drawer at the bottom; long tasks can be cancelled. The customer workspace is
 deliberately not committed with the platform source. Back it up or version it in a separate customer-owned
@@ -64,9 +72,10 @@ repository if it must be shared or audited.
 
 Local run and each deployment target have independent **Demo agent host** settings: disabled, direct,
 GitHub-native Mission Control, or managed hosting through both transports. These select a separate long-lived
-host, not a batch runner profile. GitHub-native mode uses Copilot inference and disables the irrelevant harness
-and custom-runtime fields. Direct/both modes require a conversation harness and the
-[managed runtime work](DEPLOYMENT.md#demo-host-compatibility-gate).
+host, not a batch runner profile. GitHub-native mode uses Copilot inference and hides the irrelevant harness
+and custom-runtime fields. Direct/both modes require a conversation harness, chosen from the workspace harnesses that
+set `interaction: "conversation"`, and the [managed runtime work](DEPLOYMENT.md#demo-host-compatibility-gate). When a
+GitHub credential is stored, a deployment target offers the signed-in login as **GitHub owner**.
 
 When `CONFIGURATOR_GITHUB_CLIENT_ID` is set, **Sign in with GitHub** starts the OAuth App's device flow. The browser
 receives only the verification URL and one-time user code; the companion server polls GitHub, verifies the account,
@@ -75,7 +84,7 @@ GitHub requires an authorization callback URL when registering an OAuth App, but
 placeholder such as `http://127.0.0.1:4280/oauth/callback` is sufficient. Local run shows a persistent
 **Credential stored for @owner** badge when the secret exists; it never returns or displays the token.
 
-The password field remains as a manual fallback. Settings reads and deployment-target JSON never return or store the
+The password field (with **Show**/**Hide**) remains as a manual fallback. Settings reads and deployment-target JSON never return or store the
 credential. Deployment forwards it only for a target that explicitly enables GitHub hosting. Connection buttons copy
 non-secret `pnpm host:connect` launcher commands, not live tickets.
 
@@ -97,7 +106,7 @@ The editor has one section per part of the harness contract:
 | --- | --- |
 | Overview | Version, description, a summary, and what the platform does with the harness |
 | Prompt | Prompt mode (replace, append, or customize the Copilot foundation prompt section by section) and the instructions |
-| Model | Preferred and allowed models, reasoning effort, context tier (within the policy ceilings) |
+| Model | Preferred model (from the policy-approved list), allowed models as an ordered fallback list, reasoning effort and context tier (options above the policy ceilings are disabled) |
 | Tools | Custom harness tool bindings from the execution profiles (**Delegated only** hides one from the coordinator), and **Built-in Copilot tools** in groups: files, shell, web, built-in agents |
 | Permissions | What happens when the agent asks to read or write a file, run a command or fetch a URL: deny, ask you (Copilot CLI defaults, where workspace reads and read-only commands run without a prompt), or allow (yolo), per kind with a default; whether the agent can ask you questions; how long a request waits |
 | Sub-agents | Read-only built-in agent status (controlled by the Tools tab), plus custom specialists: instructions, a subset of the tools, preloaded skills, model |
@@ -116,6 +125,9 @@ Other aids:
   rejected without overwriting an existing version.
 - **Discard changes** asks for confirmation, then restores the last saved content and clears the browser draft
   and undo history. It does not change files on disk.
+- **Versions and names**: the version field and **New version** dialog offer patch, minor, and major bumps. Harness,
+  sub-agent, and skill names are lowercased and hyphenated as you type; tool names use underscores. Durations and
+  token budgets show a readable value (for example `15 min` or `200k tokens`) and their allowed range.
 - **Help**: every setting has a **?** popover explaining what it does in this service, what each choice changes,
   and where the platform enforces limits regardless of the harness.
 - **Decisions**: the Live plan (and the Overview tab on narrower screens) lists what the platform implements or
@@ -223,8 +235,11 @@ The companion server can edit files and run commands, so it is locked down:
 - Binds to `127.0.0.1` only and accepts only `127.0.0.1`/`localhost` Host headers (DNS-rebinding protection).
 - Every API call needs the per-launch token from the session URL; cross-origin requests are refused.
 - Runs only a fixed set of commands (`pnpm build`/`test`, `aspire start`/`stop`/`resource restart`/`publish`/`deploy`,
-  `az login`). Values that reach a command line (names, IDs, URLs) are validated against strict patterns, and
-  shell-routed commands refuse metacharacters.
+  `az login`, and read-only Azure CLI discovery: `az account show`/`list`/`list-locations`, `az group list`, and
+  Foundry account and deployment lists). Values that reach a command line (names, IDs, URLs) are validated against
+  strict patterns, and shell-routed commands refuse metacharacters.
+- URL **Test** buttons send one unauthenticated GET from this machine to the entered `http(s)` URL and return only
+  the HTTP status or connection error, never the response body.
 - Writes customer definitions only under `.copilot-agent-workspace/harnesses/` and
   `.copilot-agent-workspace/policy/`, plus `.configurator/` and managed AppHost user-secret keys. Harness folder
   names are validated and confined to the workspace.

@@ -93,6 +93,21 @@ describe("request security", () => {
     expect(response.statusCode).toBe(400);
   });
 
+  it("validates discovery and URL check inputs before calling tools", async () => {
+    const locations = await app.inject({ method: "GET", url: "/api/azure/resource-groups?subscription=--help", headers: headers() });
+    expect(locations.statusCode).toBe(400);
+    const groups = await app.inject({ method: "GET", url: "/api/azure/resource-groups", headers: headers() });
+    expect(groups.statusCode).toBe(400);
+    const file = await app.inject({ method: "POST", url: "/api/check-url", headers: headers(), payload: { url: "file:///etc/passwd" } });
+    expect(file.statusCode).toBe(400);
+  });
+
+  it("reports workspace harnesses that opt into conversations", async () => {
+    const response = await app.inject({ method: "GET", url: "/api/workspace", headers: headers() });
+    const demo = response.json().harnesses.find((h: { name: string }) => h.name === "interactive-demo");
+    expect(demo.interaction).toBe("conversation");
+  });
+
   it("serves the UI with a restrictive content security policy and 404s unknown API paths", async () => {
     const staticApp = await buildApp({
       root: platformRoot,

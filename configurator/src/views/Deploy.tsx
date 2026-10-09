@@ -1,10 +1,13 @@
 import clsx from "clsx";
 import { Cloud, ExternalLink, FileCode2, LogIn, Plus, RefreshCw, Rocket, Save, Trash2 } from "../components/icons";
+import { PencilIcon } from "@primer/octicons-react";
 import { useEffect, useMemo, useState } from "react";
-import type { DeployTarget, Issue } from "../../server/types";
+import type { DeployTarget, FoundryDeployment, Issue } from "../../server/types";
 import { api, errorMessage } from "../api";
 import { FoundryPicker } from "../components/FoundryPicker";
 import { DemoHostFields } from "../components/DemoHostFields";
+import { deploymentDetails, isGuid, RegionPicker, ResourceGroupInput, SubscriptionPicker, useFoundryDeployments } from "../components/AzurePickers";
+import { UrlInput } from "../components/UrlInput";
 import { Badge, Card, ChipsInput, CopyButton, Empty, Field, HelpButton, Modal, PageHeader, Spinner, StatusLine, stateTone } from "../components/ui";
 import { useApp } from "../state";
 
@@ -24,6 +27,107 @@ function blankTarget(existing: DeployTarget[], tenantId = "", subscriptionId = "
     foundryEndpoint: endpoint,
     foundryDeployments: deployments,
   };
+}
+
+function FoundrySection({ target, update, fieldErrors }: {
+  target: DeployTarget;
+  update: (patch: Partial<DeployTarget>) => void;
+  fieldErrors: Record<string, string>;
+}) {
+  const configured = !!(target.foundryAccount && target.foundryEndpoint);
+  const [mode, setMode] = useState<"summary" | "pick" | "manual">(configured ? "summary" : "pick");
+  const [picked, setPicked] = useState<FoundryDeployment[]>();
+  const known = useFoundryDeployments(mode === "summary" && !picked ? target.subscriptionId : undefined, target.foundryResourceGroup, target.foundryAccount);
+  const deployments = picked ?? known.data?.deployments;
+  const subscriptionId = isGuid(target.subscriptionId) ? target.subscriptionId : undefined;
+  const foundryError = fieldErrors.foundryAccount ?? fieldErrors.foundryResourceGroup ?? fieldErrors.foundryEndpoint;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-1">
+        <span className="label !mb-0">Model provider (existing Foundry account)</span>
+        <HelpButton topic="target.foundry" />
+      </div>
+      {mode === "summary" && configured ? (
+        <div className="card card-pad flex flex-wrap items-start gap-4">
+          <div className="min-w-0 flex-1">
+            <div className="font-semibold">{target.foundryAccount}</div>
+            <div className="text-xs fg-muted">
+              resource group <code className="text-[11px]">{target.foundryResourceGroup}</code>
+            </div>
+            <code className="mt-1 block break-all text-[11px]">{target.foundryEndpoint}</code>
+            {foundryError && <p className="mt-1 text-xs fg-danger">{foundryError}</p>}
+          </div>
+          <div className="flex gap-2">
+            <button type="button" className="btn-secondary btn-sm" onClick={() => setMode("pick")}>
+              Change account
+            </button>
+            <button type="button" className="btn-ghost btn-sm" onClick={() => setMode("manual")}>
+              <PencilIcon size={14} /> Edit manually
+            </button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <FoundryPicker
+            subscriptionId={subscriptionId}
+            onPick={(account, found) => {
+              setPicked(found);
+              update({
+                foundryAccount: account.name,
+                foundryResourceGroup: account.resourceGroup,
+                foundryEndpoint: account.endpoint,
+                foundryDeployments: found.map((d) => d.name),
+              });
+              setMode("summary");
+            }}
+          />
+          {mode === "manual" ? (
+            <div className="grid gap-4 md:grid-cols-3">
+              <Field label="Foundry account" error={fieldErrors.foundryAccount}>
+                <input className="input font-mono" value={target.foundryAccount} spellCheck={false} onChange={(e) => update({ foundryAccount: e.target.value.trim() })} />
+              </Field>
+              <Field label="Foundry resource group" error={fieldErrors.foundryResourceGroup}>
+                <input
+                  className="input font-mono"
+                  value={target.foundryResourceGroup}
+                  spellCheck={false}
+                  onChange={(e) => update({ foundryResourceGroup: e.target.value.trim() })}
+                />
+              </Field>
+              <Field label="Foundry endpoint" error={fieldErrors.foundryEndpoint}>
+                <UrlInput label="Foundry endpoint" https probePath="/models" value={target.foundryEndpoint} onChange={(foundryEndpoint) => update({ foundryEndpoint })} />
+              </Field>
+              {configured && (
+                <div className="md:col-span-3">
+                  <button type="button" className="btn-ghost btn-sm" onClick={() => setMode("summary")}>
+                    Done
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : (
+            <button type="button" className="link text-xs" onClick={() => setMode("manual")}>
+              Enter account details manually
+            </button>
+          )}
+        </>
+      )}
+      <Field
+        label="Model deployments"
+        error={fieldErrors.foundryDeployments}
+        hint={known.loading ? "Loading deployments in this account…" : known.error ? `Could not list deployments: ${known.error}` : "Deployment names the gateway routes to."}
+      >
+        <ChipsInput
+          values={target.foundryDeployments}
+          onChange={(values) => update({ foundryDeployments: values })}
+          pattern={/^[A-Za-z0-9._-]{1,64}$/}
+          suggestions={deployments?.map((d) => d.name)}
+          details={deploymentDetails(deployments)}
+        />
+      </Field>
+    </div>
+  );
 }
 
 export function DeployView() {
@@ -159,68 +263,42 @@ export function DeployView() {
             {target && (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 <div className="md:col-span-2 xl:col-span-3">
-                  <DemoHostFields value={target.demoHost} onChange={(demoHost) => update({ demoHost })} />
+                  <DemoHostFields
+                    value={target.demoHost}
+                    onChange={(demoHost) => update({ demoHost })}
+                    knownOwner={settings?.demoHostCredentialStored ? settings.local.demoHost?.owner || undefined : undefined}
+                  />
                 </div>
-                <Field label="Target name" error={fieldErrors.name}>
+                <Field label="Target name" error={fieldErrors.name} hint="Lowercase letters, digits, and hyphens.">
                   <input
                     className="input font-mono"
                     value={target.name}
                     onChange={(e) => {
-                      const name = e.target.value.toLowerCase();
+                      const name = e.target.value.toLowerCase().replace(/[^a-z0-9-]+/g, "-");
                       update({ name });
                       setSelected(name);
                     }}
                   />
                 </Field>
-                <Field label="Region" error={fieldErrors.location}>
-                  <input className="input font-mono" value={target.location} onChange={(e) => update({ location: e.target.value })} />
-                </Field>
-                <Field label="Resource group" help="target.resourceGroup" hint="Created if it does not exist." error={fieldErrors.resourceGroup}>
-                  <input className="input font-mono" value={target.resourceGroup} onChange={(e) => update({ resourceGroup: e.target.value })} />
-                </Field>
-                <Field label="Tenant ID" error={fieldErrors.tenantId}>
-                  <input className="input font-mono" value={target.tenantId} onChange={(e) => update({ tenantId: e.target.value })} />
-                </Field>
-                <Field label="Subscription ID" help="target.subscription" error={fieldErrors.subscriptionId}>
-                  <input className="input font-mono" value={target.subscriptionId} onChange={(e) => update({ subscriptionId: e.target.value })} />
-                </Field>
-                <div className="flex items-end">
-                  <button
-                    type="button"
-                    className="btn-ghost btn-sm"
-                    disabled={!environment?.azure.ok}
-                    onClick={() => update({ tenantId: environment!.azure.tenantId!, subscriptionId: environment!.azure.subscriptionId! })}
-                  >
-                    Use signed-in subscription
-                  </button>
-                </div>
+                <SubscriptionPicker
+                  tenantId={target.tenantId}
+                  subscriptionId={target.subscriptionId}
+                  signedIn={!!environment?.azure.ok}
+                  errors={{ tenantId: fieldErrors.tenantId, subscriptionId: fieldErrors.subscriptionId }}
+                  onChange={(ids) => update(ids)}
+                />
+                <RegionPicker subscriptionId={target.subscriptionId} value={target.location} onChange={(location) => update({ location })} error={fieldErrors.location} />
+                <ResourceGroupInput
+                  subscriptionId={target.subscriptionId}
+                  value={target.resourceGroup}
+                  region={target.location}
+                  onChange={(resourceGroup) => update({ resourceGroup })}
+                  error={fieldErrors.resourceGroup}
+                />
                 <div className="md:col-span-2 xl:col-span-3">
-                  <div className="flex items-center gap-1"><span className="label !mb-0">Model provider (existing Foundry account)</span><HelpButton topic="target.foundry" /></div>
-                  <FoundryPicker
-                    subscriptionId={/^[0-9a-f-]{36}$/i.test(target.subscriptionId) ? target.subscriptionId : undefined}
-                    onPick={(account, deployments) =>
-                      update({
-                        foundryAccount: account.name,
-                        foundryResourceGroup: account.resourceGroup,
-                        foundryEndpoint: account.endpoint,
-                        foundryDeployments: deployments.map((d) => d.name),
-                      })
-                    }
-                  />
+                  <FoundrySection key={index} target={target} update={update} fieldErrors={fieldErrors} />
                 </div>
-                <Field label="Foundry account" error={fieldErrors.foundryAccount}>
-                  <input className="input font-mono" value={target.foundryAccount} onChange={(e) => update({ foundryAccount: e.target.value })} />
-                </Field>
-                <Field label="Foundry resource group" error={fieldErrors.foundryResourceGroup}>
-                  <input className="input font-mono" value={target.foundryResourceGroup} onChange={(e) => update({ foundryResourceGroup: e.target.value })} />
-                </Field>
-                <Field label="Foundry endpoint" error={fieldErrors.foundryEndpoint}>
-                  <input className="input font-mono" value={target.foundryEndpoint} onChange={(e) => update({ foundryEndpoint: e.target.value })} />
-                </Field>
-                <Field label="Model deployments" className="md:col-span-2" error={fieldErrors.foundryDeployments}>
-                  <ChipsInput values={target.foundryDeployments} onChange={(values) => update({ foundryDeployments: values })} pattern={/^[A-Za-z0-9._-]{1,64}$/} />
-                </Field>
-                <div className="flex items-end justify-end">
+                <div className="flex justify-end md:col-span-2 xl:col-span-3">
                   <button
                     type="button"
                     className="btn-danger btn-sm"

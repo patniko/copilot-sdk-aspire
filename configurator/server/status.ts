@@ -1,6 +1,9 @@
 import { capture, parseJsonOutput } from "./process.js";
 import type {
   AzureApp,
+  AzureLocation,
+  AzureResourceGroup,
+  AzureSubscription,
   AzureStatus,
   DeployTarget,
   EnvironmentStatus,
@@ -141,6 +144,46 @@ export class StatusService {
       apiUrl: api ? `https://${api.fqdn}` : undefined,
       error: list.code === 0 ? undefined : firstLine(list.stderr),
     };
+  }
+
+  async subscriptions(): Promise<AzureSubscription[]> {
+    const result = await capture("az", ["account", "list", "--only-show-errors", "-o", "json"], { cwd: this.deps.root, timeoutMs: 30_000 });
+    if (result.code !== 0) {
+      throw new Error(firstLine(result.stderr) ?? "Could not list subscriptions. Run az login.");
+    }
+    return (parseJsonOutput<Array<Record<string, any>>>(result.stdout) ?? [])
+      .filter((s) => (s.state ?? "Enabled") === "Enabled")
+      .map((s) => ({ id: String(s.id), name: String(s.name), tenantId: String(s.tenantId), isDefault: Boolean(s.isDefault) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  async locations(): Promise<AzureLocation[]> {
+    const result = await capture("az", ["account", "list-locations", "-o", "json"], { cwd: this.deps.root, timeoutMs: 45_000 });
+    if (result.code !== 0) {
+      throw new Error(firstLine(result.stderr) ?? "Could not list regions.");
+    }
+    return (parseJsonOutput<Array<Record<string, any>>>(result.stdout) ?? [])
+      .filter((l) => (l.metadata?.regionType ?? "Physical") === "Physical")
+      .map((l) => ({
+        name: String(l.name),
+        displayName: String(l.displayName ?? l.name),
+        geography: typeof l.metadata?.geographyGroup === "string" ? l.metadata.geographyGroup : undefined,
+      }))
+      .sort((a, b) => (a.geography ?? "").localeCompare(b.geography ?? "") || a.displayName.localeCompare(b.displayName));
+  }
+
+  async resourceGroups(subscriptionId: string): Promise<AzureResourceGroup[]> {
+    const result = await capture(
+      "az",
+      ["group", "list", "--subscription", subscriptionId, "-o", "json"],
+      { cwd: this.deps.root, timeoutMs: 45_000 },
+    );
+    if (result.code !== 0) {
+      throw new Error(firstLine(result.stderr) ?? "Could not list resource groups.");
+    }
+    return (parseJsonOutput<Array<Record<string, any>>>(result.stdout) ?? [])
+      .map((g) => ({ name: String(g.name), location: String(g.location ?? "") }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   async foundryAccounts(subscriptionId: string): Promise<FoundryAccount[]> {

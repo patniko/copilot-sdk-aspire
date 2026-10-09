@@ -3,13 +3,12 @@ import { useEffect, useState } from "react";
 import type { HarnessChanges, HarnessDetail, HarnessDocument, ImportResult, TemplateInfo } from "../../../server/types";
 import { api, errorMessage } from "../../api";
 import { CheckCircle2, Copilot, Download, FileCode2, XCircle } from "../../components/icons";
-import { Badge, Counter, Field, Flash, IssueList, Modal, Spinner } from "../../components/ui";
+import { Badge, bumpSemver, Counter, Field, Flash, IssueList, Modal, Spinner, VersionInput } from "../../components/ui";
 import { useApp } from "../../state";
 import { AlertIcon, DiffAddedIcon, DiffModifiedIcon, DiffRemovedIcon } from "@primer/octicons-react";
 
 export function bump(version: string): string {
-  const m = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
-  return m ? `${m[1]}.${m[2]}.${Number(m[3]) + 1}` : "1.0.0";
+  return bumpSemver(version, "patch");
 }
 
 export function slugify(text: string): string {
@@ -100,7 +99,7 @@ export function HarnessDialog({ mode, current, onClose, onDone }: {
         </p>
       ) : mode === "version" ? (
         <Field label="Version" hint={`Copies ${current?.manifest.name} ${current?.manifest.version} into a new folder. The highest version becomes the default.`}>
-          <input className="input font-mono" value={version} onChange={(e) => setVersion(e.target.value)} autoFocus />
+          <VersionInput value={version} onChange={setVersion} base={current?.manifest.version} autoFocus />
         </Field>
       ) : (
         <>
@@ -109,7 +108,13 @@ export function HarnessDialog({ mode, current, onClose, onDone }: {
             help="harness.name"
             hint={mode === "new" ? "Lowercase letters, digits, and hyphens." : "Copies the current version under a new name at 1.0.0."}
           >
-            <input className="input font-mono md:!w-80" value={name} onChange={(e) => setName(e.target.value.toLowerCase())} autoFocus placeholder="support-triage" />
+            <input
+              className="input font-mono md:!w-80"
+              value={name}
+              onChange={(e) => setName(e.target.value.toLowerCase().replace(/[^a-z0-9-]+/g, "-"))}
+              autoFocus
+              placeholder="support-triage"
+            />
           </Field>
           {mode === "new" && (templates ? <TemplateGrid templates={templates} value={template} onChange={setTemplate} /> : <Spinner />)}
         </>

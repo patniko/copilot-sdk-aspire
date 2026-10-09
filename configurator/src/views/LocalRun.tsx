@@ -1,15 +1,18 @@
 import { ExternalLink, FlaskConical, Hammer, Play, RefreshCw, RotateCw, Save, Square } from "../components/icons";
 import { useEffect, useState } from "react";
-import type { LocalSettings } from "../../server/types";
+import type { FoundryDeployment, LocalSettings } from "../../server/types";
 import { api, errorMessage } from "../api";
 import { FoundryPicker } from "../components/FoundryPicker";
 import { DemoHostFields } from "../components/DemoHostFields";
-import { Badge, Card, ChipsInput, CopyButton, Empty, Field, PageHeader, Spinner, stateTone } from "../components/ui";
+import { deploymentDetails } from "../components/AzurePickers";
+import { UrlInput } from "../components/UrlInput";
+import { Badge, Card, ChipsInput, CopyButton, Empty, Field, PageHeader, SecretInput, Spinner, stateTone } from "../components/ui";
 import { useApp } from "../state";
 
 export function LocalRunView() {
   const { settings, refreshSettings, environment, local, refreshLocal, runTask, tasks, toast, setView } = useApp();
   const [draft, setDraft] = useState<LocalSettings>();
+  const [discovered, setDiscovered] = useState<FoundryDeployment[]>();
   const [saving, setSaving] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [hostCredential, setHostCredential] = useState("");
@@ -239,7 +242,11 @@ export function LocalRunView() {
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
             <div className="md:col-span-2">
-              <DemoHostFields value={draft.demoHost} onChange={(demoHost) => setDraft({ ...draft, demoHost })} />
+              <DemoHostFields
+                value={draft.demoHost}
+                onChange={(demoHost) => setDraft({ ...draft, demoHost })}
+                knownOwner={settings?.demoHostCredentialStored ? settings.local.demoHost?.owner || undefined : undefined}
+              />
             </div>
             <div className="md:col-span-2">
               <Field label="Demo host GitHub account"
@@ -274,8 +281,7 @@ export function LocalRunView() {
             </div>
             <div className="md:col-span-2 flex items-end gap-3">
               <Field label="Demo host GitHub credential" className="flex-1" hint="For Mission Control. Saved only to Aspire secrets, never returned or stored in a deployment target.">
-                <input className="input" type="password" autoComplete="off" value={hostCredential}
-                  onChange={(event) => setHostCredential(event.target.value)} />
+                <SecretInput label="Demo host GitHub credential" value={hostCredential} onChange={setHostCredential} />
               </Field>
               <button type="button" className="btn-secondary" disabled={hostCredential.length < 20 || savingCredential}
                 onClick={() => void saveHostCredential()}>Save credential</button>
@@ -283,22 +289,29 @@ export function LocalRunView() {
             <div className="md:col-span-2">
               <FoundryPicker
                 subscriptionId={environment?.azure.subscriptionId}
-                onPick={(account, deployments) =>
-                  setDraft({ ...draft, foundryEndpoint: account.endpoint, foundryDeployments: deployments.map((d) => d.name) })
-                }
+                onPick={(account, deployments) => {
+                  setDiscovered(deployments);
+                  setDraft({ ...draft, foundryEndpoint: account.endpoint, foundryDeployments: deployments.map((d) => d.name) });
+                }}
               />
             </div>
             <Field label="Foundry endpoint" help="local.foundryEndpoint" hint="OpenAI v1 endpoint, e.g. https://<account>.openai.azure.com/openai/v1" error={fieldErrors.foundryEndpoint}>
-              <input className="input font-mono" value={draft.foundryEndpoint} onChange={(e) => setDraft({ ...draft, foundryEndpoint: e.target.value })} />
+              <UrlInput label="Foundry endpoint" https probePath="/models" value={draft.foundryEndpoint} onChange={(foundryEndpoint) => setDraft({ ...draft, foundryEndpoint })} />
             </Field>
             <Field label="Model deployments" help="local.foundryDeployments" hint="Deployment names the gateway routes; jobs use the policy-approved model names." error={fieldErrors.foundryDeployments}>
-              <ChipsInput values={draft.foundryDeployments} onChange={(values) => setDraft({ ...draft, foundryDeployments: values })} pattern={/^[A-Za-z0-9._-]{1,64}$/} />
+              <ChipsInput
+                values={draft.foundryDeployments}
+                onChange={(values) => setDraft({ ...draft, foundryDeployments: values })}
+                pattern={/^[A-Za-z0-9._-]{1,64}$/}
+                suggestions={discovered?.map((d) => d.name)}
+                details={deploymentDetails(discovered)}
+              />
             </Field>
             <Field label="npm registry for image builds" help="local.registries" hint="Leave empty for registry.npmjs.org." error={fieldErrors.npmRegistry}>
-              <input className="input font-mono" value={draft.npmRegistry} onChange={(e) => setDraft({ ...draft, npmRegistry: e.target.value })} />
+              <UrlInput label="npm registry" placeholder="https://registry.npmjs.org" value={draft.npmRegistry} onChange={(npmRegistry) => setDraft({ ...draft, npmRegistry })} />
             </Field>
             <Field label="PyPI index for image builds" hint="Leave empty for pypi.org." error={fieldErrors.pipIndexUrl}>
-              <input className="input font-mono" value={draft.pipIndexUrl} onChange={(e) => setDraft({ ...draft, pipIndexUrl: e.target.value })} />
+              <UrlInput label="PyPI index" placeholder="https://pypi.org/simple" value={draft.pipIndexUrl} onChange={(pipIndexUrl) => setDraft({ ...draft, pipIndexUrl })} />
             </Field>
             <Field
               label="NuGet service index for the Aspire CLI"
@@ -306,7 +319,12 @@ export function LocalRunView() {
               hint="Replaces nuget.org when the configurator runs Aspire (for networks that block it). Also map packages to this feed in a local NuGet.config."
               error={fieldErrors.nugetServiceIndex}
             >
-              <input className="input font-mono" value={draft.nugetServiceIndex} onChange={(e) => setDraft({ ...draft, nugetServiceIndex: e.target.value })} />
+              <UrlInput
+                label="NuGet service index"
+                placeholder="https://api.nuget.org/v3/index.json"
+                value={draft.nugetServiceIndex}
+                onChange={(nugetServiceIndex) => setDraft({ ...draft, nugetServiceIndex })}
+              />
             </Field>
           </div>
         )}

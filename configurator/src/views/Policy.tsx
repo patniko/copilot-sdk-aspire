@@ -2,7 +2,7 @@ import { RotateCcw, Save, ShieldCheck, Trash2 } from "../components/icons";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ExecutionPolicy, Issue, PolicyOverrideStatus } from "../../server/types";
 import { api, errorMessage } from "../api";
-import { Badge, Card, ChipsInput, Field, Flash, HelpButton, IssueList, NumberInput, PageHeader, Spinner, Toggle } from "../components/ui";
+import { Badge, Card, ChipsInput, Field, Flash, HelpButton, IssueList, NumberInput, PageHeader, SegmentedControl, Spinner, Toggle } from "../components/ui";
 import { useApp, useDebounced } from "../state";
 
 const GAPS: Array<{ id: ExecutionPolicy["acknowledgedGaps"][number]; label: string; description: string }> = [
@@ -287,17 +287,17 @@ export function PolicyView() {
         <div className="grid gap-4 md:grid-cols-3">
           <Locked locked={locked("limits")}>
             <Field label="Max duration per attempt (s)" help="policy.maxDurationSeconds">
-              <NumberInput value={draft.maxDurationSeconds} min={10} max={3600} onChange={(v) => update((p) => void (p.maxDurationSeconds = v))} />
+              <NumberInput unit="seconds" value={draft.maxDurationSeconds} min={10} max={3600} onChange={(v) => update((p) => void (p.maxDurationSeconds = v))} />
             </Field>
           </Locked>
           <Locked locked={locked("limits")}>
             <Field label="Max inference tokens per job" help="policy.maxInferenceTokensPerJob">
-              <NumberInput value={draft.maxInferenceTokensPerJob} min={1000} step={1000} onChange={(v) => update((p) => void (p.maxInferenceTokensPerJob = v))} />
+              <NumberInput unit="tokens" value={draft.maxInferenceTokensPerJob} min={1000} step={1000} onChange={(v) => update((p) => void (p.maxInferenceTokensPerJob = v))} />
             </Field>
           </Locked>
           <fieldset disabled={harnessScope} className={harnessScope ? "opacity-70" : undefined}>
             <Field label="Lease seconds" help="policy.leaseSeconds" hint={harnessScope ? "Global; set in the base policy." : "Executors heartbeat every third of this."}>
-              <NumberInput value={draft.leaseSeconds} min={10} max={600} onChange={(v) => update((p) => void (p.leaseSeconds = v))} />
+              <NumberInput unit="seconds" value={draft.leaseSeconds} min={10} max={600} onChange={(v) => update((p) => void (p.leaseSeconds = v))} />
             </Field>
           </fieldset>
           <fieldset disabled={harnessScope} className={harnessScope ? "opacity-70" : undefined}>
@@ -318,7 +318,7 @@ export function PolicyView() {
           </Locked>
           <Locked locked={locked("limits")}>
             <Field label="Retry backoff (s)" hint="Doubles after each attempt.">
-              <NumberInput value={draft.retry.backoffSeconds} min={1} max={3600} onChange={(v) => update((p) => void (p.retry.backoffSeconds = v))} />
+              <NumberInput unit="seconds" value={draft.retry.backoffSeconds} min={1} max={3600} onChange={(v) => update((p) => void (p.retry.backoffSeconds = v))} />
             </Field>
           </Locked>
         </div>
@@ -395,22 +395,25 @@ export function PolicyView() {
         <Locked locked={locked("model")}>
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="Maximum reasoning effort" help="policy.maxReasoningEffort" hint="Jobs from harnesses above the cap are rejected at admission.">
-              <select
-                className="input"
-                value={draft.maxReasoningEffort ?? ""}
-                onChange={(e) =>
-                  update((p) => {
-                    if (e.target.value) p.maxReasoningEffort = e.target.value as NonNullable<ExecutionPolicy["maxReasoningEffort"]>;
-                    else delete p.maxReasoningEffort;
-                  })
-                }
-              >
-                <option value="">No cap</option>
-                <option value="low">low</option>
-                <option value="medium">medium</option>
-                <option value="high">high</option>
-                <option value="xhigh">xhigh</option>
-              </select>
+              <div>
+                <SegmentedControl
+                  label="Maximum reasoning effort"
+                  value={draft.maxReasoningEffort ?? ""}
+                  onChange={(value) =>
+                    update((p) => {
+                      if (value) p.maxReasoningEffort = value as NonNullable<ExecutionPolicy["maxReasoningEffort"]>;
+                      else delete p.maxReasoningEffort;
+                    })
+                  }
+                  options={[
+                    { value: "", label: "No cap" },
+                    { value: "low", label: "low" },
+                    { value: "medium", label: "medium" },
+                    { value: "high", label: "high" },
+                    { value: "xhigh", label: "xhigh" },
+                  ]}
+                />
+              </div>
             </Field>
             <div className="pt-6">
               <Toggle
@@ -438,16 +441,30 @@ export function PolicyView() {
         <Locked locked={locked("controls")}>
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="Runner process isolation" help="policy.processIsolation">
-              <select className="input" value={draft.requirements.processIsolation} onChange={(e) => update((p) => void (p.requirements.processIsolation = e.target.value as "uid" | "none"))}>
-                <option value="uid">Separate unprivileged user (uid)</option>
-                <option value="none">None</option>
-              </select>
+              <div>
+                <SegmentedControl
+                  label="Runner process isolation"
+                  value={draft.requirements.processIsolation}
+                  onChange={(value) => update((p) => void (p.requirements.processIsolation = value))}
+                  options={[
+                    { value: "uid", label: "Separate unprivileged user (uid)" },
+                    { value: "none", label: "None" },
+                  ]}
+                />
+              </div>
             </Field>
             <Field label="Network egress" help="policy.egress">
-              <select className="input" value={draft.requirements.egress} onChange={(e) => update((p) => void (p.requirements.egress = e.target.value as "gateway-only" | "none"))}>
-                <option value="gateway-only">Gateway only</option>
-                <option value="none">Unrestricted</option>
-              </select>
+              <div>
+                <SegmentedControl
+                  label="Network egress"
+                  value={draft.requirements.egress}
+                  onChange={(value) => update((p) => void (p.requirements.egress = value))}
+                  options={[
+                    { value: "gateway-only", label: "Gateway only" },
+                    { value: "none", label: "Unrestricted" },
+                  ]}
+                />
+              </div>
             </Field>
           </div>
           <div className="mt-5 space-y-3">

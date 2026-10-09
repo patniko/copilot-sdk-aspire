@@ -34,6 +34,16 @@ beforeEach(() => {
 });
 
 describe("managed coding harness display", () => {
+  it("orders allowed models and uses segmented controls for model options", () => {
+    const draft = codingHarness();
+    draft.manifest.model = { preferred: "grok-4.6", allowed: ["grok-4.6", "legacy-model"] };
+    const html = render("model", draft);
+    expect(html).toContain('aria-label="Allowed models"');
+    expect(html).toContain("Move grok-4.6 down");
+    expect(html).toContain("not approved");
+    expect(html).toContain('role="radiogroup" aria-label="Reasoning effort"');
+    expect(html).toContain('role="radiogroup" aria-label="Context tier"');
+  });
   it("distinguishes custom counts from enabled built-ins in the overview", () => {
     const html = render("overview");
     expect(html).toContain("Custom tools");

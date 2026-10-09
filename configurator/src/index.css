@@ -487,6 +487,12 @@
   .fg-accent {
     color: var(--fgColor-accent);
   }
+  .link {
+    color: var(--fgColor-accent);
+  }
+  .link:hover {
+    text-decoration: underline;
+  }
   .fg-success {
     color: var(--fgColor-success);
   }
