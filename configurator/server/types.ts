@@ -192,6 +192,8 @@ export interface SettingsInfo {
   local: LocalSettings;
   targets: DeployTarget[];
   selectedTarget?: string;
+  /** Whether the demo host GitHub credential exists. The credential itself is never returned. */
+  demoHostCredentialStored: boolean;
   /** Where local values are stored (Aspire user secrets file), for display. */
   secretsPath?: string;
 }

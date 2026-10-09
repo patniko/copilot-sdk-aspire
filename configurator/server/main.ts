@@ -5,11 +5,13 @@ import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildApp } from "./app.js";
+import { loadLocalEnvironment } from "./environment.js";
 import { CUSTOMER_WORKSPACE_DIR, ensureCustomerWorkspace } from "./workspace.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const configuratorDir = resolve(here, "..");
 const root = resolve(configuratorDir, "..");
+await loadLocalEnvironment(root);
 const workspaceRoot = join(root, CUSTOMER_WORKSPACE_DIR);
 await ensureCustomerWorkspace(root, workspaceRoot);
 const dev = process.argv.includes("--dev");

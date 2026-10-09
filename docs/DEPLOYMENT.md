@@ -35,6 +35,9 @@ on the existing Foundry account you name. The deployment never creates, modifies
   User Access Administrator), and to create role assignments on the Foundry account.
 - A Foundry/Azure OpenAI deployment serving the OpenAI v1 chat completions API with available quota.
 - Images are built locally for `linux/amd64`. On ARM64 workstations Docker emulates amd64, so the first build is slow.
+  Local runs (`aspire run`/**Local run**) instead build the executor and demo host for the workstation's native
+  architecture, because an emulated host build can exceed Aspire's container build timeout. The managed-runtime host
+  stage always builds amd64 for its Linux x64 artifacts.
 
 ## Inputs
 

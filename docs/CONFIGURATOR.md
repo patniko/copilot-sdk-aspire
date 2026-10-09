@@ -22,6 +22,13 @@ your browser with a per-launch session URL. Keep the terminal open; press Ctrl+C
 | `CONFIGURATOR_NO_OPEN=1` | Print the URL instead of opening a browser. |
 | `CONFIGURATOR_GITHUB_CLIENT_ID` | GitHub OAuth App client ID for Demo Host device sign-in. Enable Device Flow on the OAuth App; no client secret or callback endpoint is used by the configurator. |
 
+`pnpm configure` automatically loads these variables from a gitignored `.env.local` at the repository root.
+Values already set in the process environment take precedence. For example:
+
+```dotenv
+CONFIGURATOR_GITHUB_CLIENT_ID=your-oauth-app-client-id
+```
+
 ## Workflow
 
 1. **Overview** shows the pipeline, the tools on this machine (Node.js, pnpm, Aspire CLI, Docker, Azure CLI), and
@@ -65,7 +72,8 @@ When `CONFIGURATOR_GITHUB_CLIENT_ID` is set, **Sign in with GitHub** starts the 
 receives only the verification URL and one-time user code; the companion server polls GitHub, verifies the account,
 fills **GitHub owner**, and saves the OAuth token only in Aspire secrets. Enable Device Flow in the OAuth App settings.
 GitHub requires an authorization callback URL when registering an OAuth App, but this flow does not use it; a local
-placeholder such as `http://127.0.0.1:4280/oauth/callback` is sufficient.
+placeholder such as `http://127.0.0.1:4280/oauth/callback` is sufficient. Local run shows a persistent
+**Credential stored for @owner** badge when the secret exists; it never returns or displays the token.
 
 The password field remains as a manual fallback. Settings reads and deployment-target JSON never return or store the
 credential. Deployment forwards it only for a target that explicitly enables GitHub hosting. Connection buttons copy

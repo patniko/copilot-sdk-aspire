@@ -217,6 +217,7 @@ export class Settings {
       local,
       targets,
       selectedTarget: stored.selectedTarget ?? targets[0]?.name,
+      demoHostCredentialStored: Boolean(text("Parameters:demo-host-github-token")),
       secretsPath: await this.secretsPath(),
     };
   }

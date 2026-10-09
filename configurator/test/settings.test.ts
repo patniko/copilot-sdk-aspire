@@ -49,6 +49,7 @@ describe("Aspire user secrets", () => {
       secretsPath,
       prefix + JSON.stringify({
         "Parameters:dev-api-key": apiKey,
+        "Parameters:demo-host-github-token": "gho_test-token-that-must-not-be-returned",
         "Parameters:foundry-endpoint": local.foundryEndpoint,
         "Parameters:foundry-deployments": "test-model, second-model",
       }),
@@ -61,7 +62,9 @@ describe("Aspire user secrets", () => {
       foundryEndpoint: local.foundryEndpoint,
       foundryDeployments: ["test-model", "second-model"],
     });
+    expect(info.demoHostCredentialStored).toBe(true);
     expect(JSON.stringify(info)).not.toContain(apiKey);
+    expect(JSON.stringify(info)).not.toContain("gho_test-token-that-must-not-be-returned");
     expect(captureMock).toHaveBeenCalledOnce();
     expect(captureMock).toHaveBeenCalledWith(
       "aspire",
@@ -96,7 +99,9 @@ describe("Aspire user secrets", () => {
 
   it("allows a genuinely missing secrets file on first setup", async () => {
     expect(await settings.devApiKey()).toBeUndefined();
-    expect((await settings.read()).local.foundryEndpoint).toBe("");
+    const info = await settings.read();
+    expect(info.local.foundryEndpoint).toBe("");
+    expect(info.demoHostCredentialStored).toBe(false);
 
     await settings.writeLocal(local);
 

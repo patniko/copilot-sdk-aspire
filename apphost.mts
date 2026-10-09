@@ -151,17 +151,22 @@ if (demoHostTransport !== 'disabled') {
   api
     .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
     .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport);
+  const hostStage = direct && demoHostRuntimeDirectory ? 'agent-host-runtime' : 'agent-host';
   const host = builder
     .addDockerfile('agent-host', '.', {
       dockerfilePath: 'deploy/Dockerfile',
-      stage: direct && demoHostRuntimeDirectory ? 'agent-host-runtime' : 'agent-host',
+      stage: hostStage,
     })
     .withBuildArg('CUSTOMER_CONFIG_DIR', CUSTOMER_WORKSPACE_DIR)
     .withBuildArg('DEMO_RUNTIME_DIR', demoHostRuntimeDirectory || '.runtime-artifacts')
     .withBuildArg('NPM_REGISTRY', npmRegistry)
     .withBuildArg('PIP_INDEX_URL', pipIndexUrl)
     .withContainerBuildOptions(async (ctx) => {
-      await ctx.targetPlatform.set(ContainerTargetPlatform.LinuxAmd64);
+      // Local runs build natively like the executor: an emulated amd64 build on ARM64 hosts exceeds Aspire's build
+      // timeout. Publishing, and the managed-runtime stage's Linux x64 artifacts, require amd64.
+      if (isPublish || hostStage === 'agent-host-runtime') {
+        await ctx.targetPlatform.set(ContainerTargetPlatform.LinuxAmd64);
+      }
     })
     .withVolume('/data', { name: 'demo-host-data' })
     .withHttpEndpoint({ targetPort: 8080, env: 'PORT' })

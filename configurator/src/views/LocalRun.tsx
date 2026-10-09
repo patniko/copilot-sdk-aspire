@@ -50,6 +50,7 @@ export function LocalRunView() {
     try {
       await api("/api/settings/demo-host-credential", { method: "PUT", body: { token: hostCredential } });
       setHostCredential("");
+      await refreshSettings();
       toast("Saved the demo host credential to Aspire secrets", "success");
     } catch (error) {
       toast(errorMessage(error), "error");
@@ -251,6 +252,11 @@ export function LocalRunView() {
                     {savingCredential || githubAuth?.status === "pending" ? <Spinner /> : <ExternalLink className="h-4 w-4" />}
                     Sign in with GitHub
                   </button>
+                  <Badge tone={settings?.demoHostCredentialStored ? "green" : "neutral"}>
+                    {settings?.demoHostCredentialStored
+                      ? `Credential stored${settings.local.demoHost?.owner ? ` for @${settings.local.demoHost.owner}` : ""}`
+                      : "No credential stored"}
+                  </Badge>
                   {githubAuth && (
                     <div className="text-xs">
                       {githubAuth.status === "pending" ? (
