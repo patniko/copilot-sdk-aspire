@@ -95,6 +95,7 @@ ENTRYPOINT ["node", "dist/main.js"]
 FROM agent-executor AS agent-host
 ARG CUSTOMER_CONFIG_DIR
 COPY --from=build /out/agent-host /app/src/agent-host
+COPY --chmod=0444 deploy/verify-host-storage.py /opt/verify-host-storage.py
 COPY ${CUSTOMER_CONFIG_DIR}/harnesses /config/harnesses
 COPY ${CUSTOMER_CONFIG_DIR}/policy /config/policy
 RUN mkdir -m 0711 /data

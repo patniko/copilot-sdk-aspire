@@ -19,7 +19,7 @@ See [demo setup](docs/USER-GUIDE.md#demo-agent-host) and the
 
 ## Quick start
 
-With Node.js, pnpm, Aspire, Docker, and Azure CLI available:
+With Node.js, pnpm, Aspire, the .NET 10 SDK, Docker, and Azure CLI available:
 
 ```powershell
 pnpm install

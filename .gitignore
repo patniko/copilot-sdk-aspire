@@ -4,6 +4,8 @@ dist/
 *.tsbuildinfo
 coverage/
 artifacts/
+**/bin/
+**/obj/
 .venv/
 __pycache__/
 *.pyc

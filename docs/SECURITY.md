@@ -85,6 +85,13 @@ runtime functionality; this demo is not a hostile-caller sandbox or a substitute
 layer. Do not enable arbitrary native SDK TCP access. Egress remains unenforced and the executor's root-launcher,
 shared-infrastructure, asynchronous-usage, and in-flight revocation limitations still matter.
 
+The Azure host template limits each revision to one replica and gives the execution uid private Azure Files
+mount permissions. This is not a deployment-wide singleton during rolling replacement: drain/deactivate the old
+revision first and check for reactivation after deployment. A real native conversation resumed successfully in
+Azure qualification, but the [synthetic storage probe](../deploy/verify-host-storage.py) failed SQLite WAL setup
+on a fresh database. Neither one successful resume nor private mount permissions establish general durability.
+The storage gate remains open; see [qualification evidence](DEPLOYMENT.md#native-qualification-evidence).
+
 Durable storage correctness, single-writer revision handling, account binding, permission arbitration, and
 real deployed transport behavior require explicit qualification. No production-hardening, multi-customer
 isolation, automatic retention/deletion, or uninterrupted failover is claimed.

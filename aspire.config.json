@@ -16,6 +16,7 @@
     }
   },
   "packages": {
+    "CopilotAgent.Hosting": "./deploy/CopilotAgent.Hosting/CopilotAgent.Hosting.csproj",
     "Aspire.Hosting.PostgreSQL": "13.6.0",
     "Aspire.Hosting.JavaScript": "13.6.0",
     "Aspire.Hosting.Azure.AppContainers": "13.6.0",

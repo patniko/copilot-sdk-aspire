@@ -67,8 +67,8 @@
   <text x="324" y="723" class="node" text-anchor="middle">Local Linux agent-host + named volume</text>
   <text x="324" y="749" class="body" text-anchor="middle">GitHub-native relay; managed WSS requires runtime work</text>
   <rect x="678" y="696" width="552" height="80" rx="10" fill="#fff4df" stroke="#b7791f"/>
-  <text x="954" y="723" class="node" text-anchor="middle">Azure agent-host + persistent volume</text>
-  <text x="954" y="749" class="body" text-anchor="middle">Native relay has no public ingress; storage gates apply</text>
+  <text x="954" y="723" class="node" text-anchor="middle">Azure agent-host: 1 replica/revision + Azure Files</text>
+  <text x="954" y="749" class="body" text-anchor="middle">Native: no public ingress; drain before replacement</text>
   <text x="32" y="843" class="body">Both placements preserve provider choice: batch/managed use Foundry; GitHub-native uses Copilot.</text>
   <text x="32" y="875" class="label">Placement parity is not production hardening. Network egress remains unenforced; see docs/SECURITY.md and docs/DEPLOYMENT.md.</text>
 </svg>

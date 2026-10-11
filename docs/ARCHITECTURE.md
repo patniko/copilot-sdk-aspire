@@ -77,7 +77,7 @@ flowchart LR
     Provision["agent-api<br/>Caller-authenticated provisioning"]
     Direct["Direct WSS ingress<br/>One-time ticket"]
     MC["GitHub Mission Control / WPS"]
-    Host["agent-host<br/>Supervisor + isolated SDK owner"]
+    Host["agent-host<br/>Azure: one replica per revision<br/>Supervisor + isolated SDK owner"]
     State[("Named volume / Azure Files<br/>Runtime history and workspace")]
     Dispatch["job-dispatcher<br/>Host lease and session grants"]
     Ledger[("PostgreSQL<br/>Owner; managed snapshots/usage")]
@@ -101,7 +101,12 @@ GitHub hosting introduces a GitHub identity credential; that is a different boun
 batch runners.
 
 The PostgreSQL host lease fences grant issuance and binds the durable host to an immutable GitHub user ID.
-The runtime catalog also permits only one writer. Managed hosting permits at most ten open retained conversations and
+The runtime catalog also permits only one writer. The deployment pins the host to one replica per revision;
+operators must still stop the old revision before starting a replacement because Single revision mode can overlap
+replicas during rollout and can reactivate a previously stopped revision. Inspect/deactivate old revisions after
+deployment as well. The Azure Files mount is owned by execution uid 10001 with private file/directory modes
+and byte-range locking enabled; see [storage qualification](DEPLOYMENT.md#storage-and-revision-requirements).
+Managed hosting permits at most ten open retained conversations and
 one active inference session; additional sessions must wait or the active turn must be aborted. Usage survives
 grant renewal and host restart. These are operational bounds, not exact billing reservations.
 
@@ -114,8 +119,10 @@ callbacks, and interrupted side effects must not be retried automatically. Closi
 inference and signals the owner on its next heartbeat; it does not delete retained data. Native lifecycle
 operations belong to the connected Copilot client rather than the managed-session API.
 
-Runtime catalog locking, Azure storage semantics, revision drain/replacement, and actual CLI/runtime compatibility
-remain deployment qualification gates. This implementation is not a multi-customer host or a general runtime
+The native Azure relay and conversation resume after replacement have been exercised, but the synthetic SQLite
+WAL probe failed on Azure Files and Single mode required manual old-revision deactivation. See the
+[dated qualification evidence](DEPLOYMENT.md#native-qualification-evidence); these storage/revision gates remain
+open. This implementation is not a multi-customer host or a general runtime
 administration authorization layer. [Security](SECURITY.md#experimental-host-boundaries) owns those limits.
 
 ## Job execution

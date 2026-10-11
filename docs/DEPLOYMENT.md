@@ -30,7 +30,8 @@ on the existing Foundry account you name. The deployment never creates, modifies
 
 ## Prerequisites and permissions
 
-- Azure CLI signed in to the right tenant (`az login --tenant <tenant-id>`), Docker running, Node.js and pnpm.
+- Azure CLI signed in to the right tenant (`az login --tenant <tenant-id>`), Docker running, Node.js, pnpm,
+  and the .NET 10 SDK for the local Aspire hosting integration.
 - Permission to create resources and **role assignments** in the target subscription (Owner, or Contributor plus
   User Access Administrator), and to create role assignments on the Foundry account.
 - A Foundry/Azure OpenAI deployment serving the OpenAI v1 chat completions API with available quota.
@@ -174,6 +175,10 @@ A clean CLI 1.0.92 profile used during qualification returned `Error: --relay is
 client feature eligibility/configuration prerequisite, not something the app enables by weakening authentication
 or forcing feature flags. Use the supported enabled client/build before presenting an interactive demo.
 
+On October 8, 2026, the signed-in Windows CLI 1.0.92 passed this gate in an interactive terminal and
+queried the requested environment. This does not establish eligibility for clean profiles or other accounts.
+Non-interactive `-p` is not a relay check: this CLI requires an interactive terminal for `--relay`.
+
 ### Native qualification evidence
 
 Local evidence collected on October 5, 2026:
@@ -185,14 +190,47 @@ Local evidence collected on October 5, 2026:
 | Interactive CLI 1.0.92 with a clean profile | Rejected `--relay` as not enabled; interactive end-to-end attachment still requires a normally enabled client |
 | Azure deployment and Azure Files | Not deployed or qualified by these local runs |
 
+Azure staging evidence collected on October 9, 2026:
+
+| Surface | Result and limit |
+| --- | --- |
+| Published/deployed native host | Online in West US 2 with private ingress, `minReplicas: 1`, `maxReplicas: 1`, and an explicit Azure Files SMB mount |
+| Interactive relay and Copilot inference | Signed-in Windows CLI 1.0.92 attached and completed a synthetic prompt without feature overrides |
+| Real conversation after image/revision replacement | Same Mission Control environment; resumed the same conversation and correctly recalled a synthetic marker from the previous turn |
+| Azure Files permissions, atomic write, advisory lock | Execution uid/modes and supervisor environment denial passed; atomic file replacement and competing advisory lock exclusion passed, including successful acquisition after release |
+| Azure Files SQLite qualification | **Failed:** a fresh Python SQLite database returned `database is locked` on `PRAGMA journal_mode=WAL`, including with a five-second busy timeout. The storage durability gate remains open despite the successful conversation resume. No `nobrl` workaround was applied. |
+| SQLite failure isolation | SMB accepted the shared byte-range lock but rejected its upgrade to an exclusive lock with `EACCES`; the same sequence passed on the container's local disk. Both default rollback-journal writes and WAL setup failed on SMB. The runtime's own `session-store.db` remained zero bytes, so successful JSONL conversation resume did not establish healthy session indexing. |
+| Lock-preserving candidate | A separate synthetic database using SQLite's `unix-excl` VFS created and committed WAL data on the same SMB mount. This does not change the released CLI's VFS or qualify crash recovery, process contention, or a custom runtime build. |
+| Revision replacement | Single mode reactivated the previous revision during deployment; the new owner failed closed with lease conflict until the old revision was explicitly deactivated again. Final state was one active revision/replica. Automatic rolling replacement is not qualified. |
+
+The corrected storage probe was also run directly in the existing Azure container through its authenticated
+exec terminal. Its final diagnostic-only image update was blocked when local Docker Desktop became unavailable;
+the prior working host revision was reactivated. Rebuild before using the packaged probe to reproduce the latest
+checks. Do not present this environment as fully qualified durable Azure hosting until the SQLite failure is
+resolved and the complete storage/restart procedure passes.
+
+SQLite documents the exclusive VFS and its locking behavior in [VFS](https://sqlite.org/vfs.html#standard_unix_vfses);
+its [WAL guidance](https://sqlite.org/wal.html) requires all database users to be on the same host.
+Do not replace the runtime's default VFS, move its database to ephemeral storage, or treat the candidate as
+a durable-storage fix without an explicit runtime design and end-to-end recovery qualification.
+
+An October 10 follow-up still showed `maxReplicas: 1`, but Azure listed two replicas in the active revision:
+one ready/running owner and a second waiting replica with repeated restarts. Treat the configured maximum
+as a scale setting, not proof of a single process during platform replacement; inspect replica state and retain
+the host lease/catalog fences. This follow-up did not change the deployed runtime or revision mode.
+
 The opt-in native test is `tests/integration/github-native-host.test.ts`. It creates and removes its own
 Mission Control environment; it does not authorize deleting an existing deployment's environment.
 
 ### Storage and revision requirements
 
-The AppHost mounts a named volume at `/data`; Azure publishing maps persistent volume storage through the
-Container Apps integration. Preserve both the volume and PostgreSQL. The database is not a backup of runtime
-history or the working tree.
+Locally the AppHost mounts the named `demo-host-data` volume at `/data`. In Azure, the host's local hosting
+integration explicitly provisions a Standard LRS storage account, a 10-GiB-quota SMB share named `host-state`,
+and the environment storage binding `demo-host-data`, then mounts it at `/data`. The host depends on that
+binding, which depends on the share. These resources live in the host Bicep module rather than relying on
+Aspire 13.6's implicit volume output: first enabling that volume on an existing deployment failed with
+`No output for volumes_agent_host_0 on resource aca`. Preserve both the volume and PostgreSQL.
+The database is not a backup of runtime history or the working tree.
 Native state lives under `/data/github-native`; managed state lives under `/data/execution`. Switching profiles
 does not convert or merge their conversations. Native conversations are managed through the connected CLI,
 not the managed-session budget/close endpoints.
@@ -201,10 +239,23 @@ Review the generated storage resources and qualify the actual Azure mount's perm
 atomic writes, and restart integrity. A working local Docker volume is not proof of Azure Files compatibility.
 If that storage cannot satisfy the runtime's requirements, do not claim durable Azure support.
 
-The current TypeScript Aspire scale API exposes `minReplicas`, not `maxReplicas`. The host lease and catalog
-reject concurrent owners; they are not an autoscaling strategy. Set the Azure host's maximum replicas to one
-in the reviewed deployment configuration. Do not use normal rolling traffic splitting against one catalog:
+The AppHost's local [hosting integration](../deploy/CopilotAgent.Hosting/HostDeploymentExtensions.cs)
+emits `minReplicas: 1`, `maxReplicas: 1`, and `activeRevisionsMode: Single` for every enabled host profile.
+This uses Aspire's supported local C# integration mechanism because its built-in TypeScript scale API exposes
+only `minReplicas`. The integration is referenced by `aspire.config.json`; do not edit generated `.aspire` files
+or rely on a one-time portal override.
+
+Azure Files uses mount-level ownership rather than per-file POSIX `chown`/`chmod`. The host's SMB mount uses
+`uid=10001,gid=10001,dir_mode=0700,file_mode=0600,cache=strict`. Byte-range locking remains enabled;
+do not add `nobrl` to suppress locking failures. These settings are not proof of runtime durability.
+
+The host lease and catalog reject concurrent owners; they are not an autoscaling strategy. A replica limit
+is per revision, and even Single revision mode can overlap old/new replicas during rollout.
+Do not use normal rolling traffic splitting against one catalog:
 deactivate/drain the previous host revision before starting its replacement. Reconnect clients afterward.
+Single mode can reactivate that previous revision during deployment: inspect **all** revisions afterward,
+deactivate any reactivated old revision, and require exactly one active replica plus healthy native registration.
+The lease must remain fail-closed while an old owner is active; do not bypass it to complete deployment.
 Do not delete the host volume during an upgrade.
 
 Changing the expected account is not a supported in-place ownership reassignment. A different numeric account
@@ -212,6 +263,46 @@ ID cannot acquire the existing host, including when a login name is reused. A le
 pinned numeric identity requires an explicit operator-reviewed migration rather than automatic adoption.
 
 For operator and client steps, see [Demo agent host](USER-GUIDE.md#demo-agent-host).
+
+### Qualify the deployed native host
+
+Use a quiet staging target with `github` transport, its normal owner credential, and an eligible interactive
+CLI. Do not run the Docker integration suite against the deployed database; its fixture truncates tables.
+
+1. Publish and review the host template. Check private ingress, one replica, the `/data` Azure Files mount,
+   and the mount options above. Deploy, then check `GET /v1/host` through the authenticated API for
+   `execution: "github-native"`, `online: true`, and a nonempty `environmentId`.
+2. Run the storage probe from an interactive PowerShell terminal using a fresh ID:
+
+   ```powershell
+   $probe = [guid]::NewGuid()
+   .\deploy\Test-HostStorage.ps1 -ResourceGroup $rg -Subscription $subscription -Phase write -ProbeId $probe
+   ```
+
+   Require the JSON result `"result": "passed"`; an Azure exec connection alone is not a pass.
+   The probe runs as uid 10001, checks private mount permissions and supervisor environment denial,
+   atomic file replacement, competing advisory/SQLite write locks, WAL integrity, and recovery of an
+   uncommitted write after process exit. It uses only its uniquely named synthetic probe directory.
+3. Attach with `pnpm host:connect --target azure --transport github`. Send a synthetic prompt, approve a
+   harmless workspace file write, retain the session ID, disconnect, and reconnect to that session.
+4. With no active turn, stop the host revision and wait for all its replicas to stop before reactivation:
+
+   ```powershell
+   $revision = az containerapp show -g $rg -n agent-host --subscription $subscription --query properties.latestReadyRevisionName -o tsv
+   az containerapp revision deactivate -g $rg -n agent-host --subscription $subscription --revision $revision
+   az containerapp replica list -g $rg -n agent-host --subscription $subscription --revision $revision -o table
+   # Wait for the replica list to be empty before activating.
+   az containerapp revision activate -g $rg -n agent-host --subscription $subscription --revision $revision
+   .\deploy\Test-HostStorage.ps1 -ResourceGroup $rg -Subscription $subscription -Phase read -ProbeId $probe
+   ```
+
+5. Require the same environment identity, a healthy host, successful `read` probe, and a resumed CLI
+   conversation that retains the prior synthetic context/file and completes another inference turn.
+   Finally run the probe's `cleanup` phase with the same ID. Never delete runtime catalogs or an existing
+   Mission Control environment as test cleanup.
+
+Record storage and relay/session outcomes separately. A generic SQLite probe does not establish that the
+runtime's own catalog/history survives restart; the resumed conversation is required evidence too.
 
 ## Tear down
 
@@ -241,3 +332,11 @@ separately.
 - **Lockfile changes after `aspire run`.** The CLI installs the AppHost with `pnpm install --ignore-workspace`.
   Keep lockfile-affecting settings out of `pnpm-workspace.yaml` (see the note there) so frozen image installs keep
   working.
+- **Native owner credential rejected after deployment.** Validate the saved credential and its expected owner
+  without printing the token, then confirm the deployed secret matches. Aspire's persisted Production parameters
+  can retain an older value instead of the current environment input. Refresh only the protected owner-credential
+  parameter through an operator-reviewed repair of that CLI version's protected deployment state. This
+  qualification required updating its migration sidecar as well as the legacy state; changing only the legacy
+  JSON was overwritten. Back up state before repair, never print credential values, and do not clear all state
+  or rotate unrelated service keys. Use a separate `--environment` for synthetic publish qualification so placeholder credentials cannot enter
+  the live deployment state.

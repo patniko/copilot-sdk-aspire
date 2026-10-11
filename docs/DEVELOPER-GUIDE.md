@@ -25,6 +25,7 @@ and model setup; this guide owns the implementation workflow.
 | [`examples/customer-config`](../examples/customer-config) | Committed seed harnesses and policy; editable copies live in the ignored customer workspace |
 | [`configurator`](../configurator) | Local React/Vite UI and companion server for authoring and operations |
 | [`deploy/Dockerfile`](../deploy/Dockerfile) | Control-plane images and executor toolchain |
+| [`deploy/CopilotAgent.Hosting`](../deploy/CopilotAgent.Hosting) | Local Aspire C# integration for singleton host scale and Azure Files mount settings |
 | [`tests`](../tests), [`configurator/test`](../configurator/test) | Unit and integration coverage |
 
 The job store is shared by the API and dispatcher. "Dispatcher owns attempts" does not mean that the API forwards
@@ -57,6 +58,11 @@ so tests do not consume stale compiled dependencies.
 If AppHost type-checking cannot resolve its generated modules, first initialize it through the documented
 [local Aspire run](USER-GUIDE.md#run-locally-without-the-configurator). Do not hand-edit `.aspire` output.
 Use [configurator development mode](CONFIGURATOR.md#developing-the-configurator) for UI hot reload.
+
+The AppHost also builds a small .NET 10 hosting integration referenced by `aspire.config.json`.
+After changing it, run `dotnet build deploy\CopilotAgent.Hosting\CopilotAgent.Hosting.csproj` and
+`aspire restore --apphost apphost.mts` before AppHost type-checking. The integration analyzers are enabled
+and warnings are errors. Its generated methods are not hand-maintained.
 
 For a focused test run after building:
 
@@ -166,6 +172,22 @@ the same explicit GitHub credential variables, and `copilot-aspire-agent-host:na
 `DEMO_GITHUB_HOST_TEST_IMAGE`). It exercises the actual native container, Mission Control registration,
 replacement with the same environment identity, and retained workspace. It does not claim CLI feature
 eligibility or send model prompts. Temporary environment IDs created by the test are removed after shutdown.
+
+Validate the **generated native host template**, not a text copy of the AppHost, after publishing with
+`Parameters__demo-host-transport=github` and the normal deployment inputs:
+
+```powershell
+az bicep build --file .\artifacts\deployment\agent-host\agent-host.bicep --outfile .\artifacts\host-template.json
+$env:DEMO_HOST_TEMPLATE = (Resolve-Path .\artifacts\host-template.json).Path
+pnpm exec vitest run --project unit tests\unit\host-deployment.test.ts
+Remove-Item Env:DEMO_HOST_TEMPLATE
+```
+
+This opt-in test checks emitted singleton scale, Single revision mode, private ingress, credential references,
+explicit storage/share/binding dependencies, and the execution-uid Azure Files mount options.
+Without `DEMO_HOST_TEMPLATE`, it is skipped, not evidence of
+deployment correctness. The [deployed qualification procedure](DEPLOYMENT.md#qualify-the-deployed-native-host)
+owns the real storage/restart/relay checks; its storage probe never opens the runtime's own databases.
 
 ## Add a harness or tool
 

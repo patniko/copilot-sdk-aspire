@@ -15,6 +15,7 @@ For a local stack you need:
 | Node.js 24 recommended; 22.12+ on the 22.x line also supported | Builds and runs the TypeScript services; see [package engines](../package.json) |
 | pnpm 10 | Installs this workspace; use the `packageManager` version in [package.json](../package.json) |
 | Aspire CLI 13.6 | Orchestrates local services and Azure deployment |
+| .NET 10 SDK | Builds the AppHost's local Azure hosting integration |
 | Docker running with Linux containers | Hosts PostgreSQL and the executor, including on Windows |
 | Azure CLI, signed in to the correct tenant | Supplies the gateway's local model identity |
 | An existing Azure AI Foundry / Azure OpenAI deployment | Must serve OpenAI v1 chat completions and have available quota |

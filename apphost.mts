@@ -69,10 +69,10 @@ if (jobEventDetail !== 'sanitized' && jobEventDetail !== 'full') {
 // ---------------------------------------------------------------------------
 // Infrastructure
 // ---------------------------------------------------------------------------
-builder.addAzureContainerAppEnvironment('aca');
+const environment = await builder.addAzureContainerAppEnvironment('aca');
 
-const postgres = builder.addAzurePostgresFlexibleServer('postgres').runAsContainer();
-const jobsDb = postgres.addDatabase('jobsdb');
+const postgres = await builder.addAzurePostgresFlexibleServer('postgres').runAsContainer();
+const jobsDb = await postgres.addDatabase('jobsdb');
 
 // ---------------------------------------------------------------------------
 // Services
@@ -105,7 +105,7 @@ function service(name: Stage) {
     .withEnvironment('PLATFORM_ROOT', repoRoot);
 }
 
-const dispatcher = service('job-dispatcher')
+const dispatcher = await service('job-dispatcher')
   .withReference(jobsDb)
   .waitFor(jobsDb)
   .withEnvironment('EXECUTOR_KEY', executorKey)
@@ -115,7 +115,7 @@ const dispatcher = service('job-dispatcher')
 // Reference endpoints (not resources) so the same wiring works for Node apps and containers.
 const dispatcherEndpoint = await dispatcher.getEndpoint('http');
 
-const gateway = service('inference-gateway')
+const gateway = await service('inference-gateway')
   .withReference(dispatcherEndpoint)
   .withEnvironment('GATEWAY_KEY', gatewayKey)
   .withEnvironment('CAPABILITY_SIGNING_KEY', signingKey)
@@ -127,10 +127,10 @@ if (isPublish) {
   const foundryAccount = builder.addParameter('foundry-account');
   const foundryResourceGroup = builder.addParameter('foundry-resource-group');
   const foundry = builder.addAzureOpenAI('foundry').asExisting(foundryAccount, { resourceGroup: foundryResourceGroup });
-  gateway.withCognitiveServicesRoleAssignments(foundry, [AzureOpenAIRole.CognitiveServicesOpenAIUser]);
+  await gateway.withCognitiveServicesRoleAssignments(foundry, [AzureOpenAIRole.CognitiveServicesOpenAIUser]);
 }
 
-const api = service('agent-api')
+const api = await service('agent-api')
   .withReference(jobsDb)
   .waitFor(jobsDb)
   .waitFor(dispatcher)
@@ -143,16 +143,16 @@ if (demoHostTransport !== 'disabled') {
   const connectionToken = direct
     ? await builder.addParameterWithGeneratedValue('demo-host-connection-token', generated, { secret: true, persist: true })
     : undefined;
-  dispatcher
+  await dispatcher
     .withEnvironment('DEMO_HOST_KEY', hostKey)
     .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
     .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport)
     .withEnvironment('DEMO_HOST_HARNESS', demoHostHarness);
-  api
+  await api
     .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
     .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport);
   const hostStage = direct && demoHostRuntimeDirectory ? 'agent-host-runtime' : 'agent-host';
-  const host = builder
+  const host = await builder
     .addDockerfile('agent-host', '.', {
       dockerfilePath: 'deploy/Dockerfile',
       stage: hostStage,
@@ -168,7 +168,6 @@ if (demoHostTransport !== 'disabled') {
         await ctx.targetPlatform.set(ContainerTargetPlatform.LinuxAmd64);
       }
     })
-    .withVolume('/data', { name: 'demo-host-data' })
     .withHttpEndpoint({ targetPort: 8080, env: 'PORT' })
     .withHttpHealthCheck({ path: '/health' })
     .withReference(dispatcherEndpoint)
@@ -177,23 +176,21 @@ if (demoHostTransport !== 'disabled') {
     .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
     .withEnvironment('DEMO_HOST_HARNESS', demoHostHarness)
     .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport)
-    .publishAsAzureContainerApp(async (_infra, app) => {
-      await app.configureScale({ minReplicas: 1 });
-    });
-  if (direct) host.withExternalHttpEndpoints();
+    .publishAsSingletonHost(environment);
+  if (direct) await host.withExternalHttpEndpoints();
   if (direct && connectionToken) {
-    host.withEnvironment('DEMO_HOST_CONNECTION_TOKEN', connectionToken)
+    await host.withEnvironment('DEMO_HOST_CONNECTION_TOKEN', connectionToken)
       .withReference(await gateway.getEndpoint('http'))
       .waitFor(gateway);
   }
   if (demoHostTransport === 'github' || demoHostTransport === 'both') {
     const githubToken = await builder.addParameter('demo-host-github-token', { secret: true });
-    host.withEnvironment('DEMO_HOST_GITHUB_TOKEN', githubToken);
+    await host.withEnvironment('DEMO_HOST_GITHUB_TOKEN', githubToken);
   }
 }
 
 // The executor holds no database, Azure, or provider credentials: only its dispatcher key.
-builder
+await builder
   .addDockerfile('agent-executor', '.', { dockerfilePath: 'deploy/Dockerfile', stage: 'agent-executor' })
   .withBuildArg('NPM_REGISTRY', npmRegistry)
   .withBuildArg('PIP_INDEX_URL', pipIndexUrl)
