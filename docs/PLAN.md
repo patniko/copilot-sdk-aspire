@@ -10,6 +10,10 @@ For the current checkout, start at the [documentation hub](README.md), [product 
 [current architecture](ARCHITECTURE.md), and [security gap register](SECURITY.md#known-gaps).
 This plan preserves rationale and historical verification; the current guides own setup and runtime behavior.
 
+The follow-on [CLI-first hybrid hosting demonstrator plan](HYBRID-HOSTING-PLAN.md) proposes a shared
+in-process main loop, on-demand container delegation, both CLI connection destinations, and a visual
+topology page. It is a separate, not-yet-implemented expansion of the original scope below.
+
 ## 1. Product goal
 
 Enable a developer to configure a Copilot SDK harness, put the resulting application in their own repository, implement their tools, run the system locally, and deploy a secure agent service into their own Azure subscription.
