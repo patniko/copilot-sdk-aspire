@@ -1,0 +1,50 @@
+import * as fs from "node:fs/promises";
+import { dirname, join, posix } from "node:path";
+import type { SessionFsProvider } from "@github/copilot-sdk";
+
+/** Disk-backed fixture for exercising virtual paths; not a production storage or isolation implementation. */
+export function fixtureFilesystem(root: string): SessionFsProvider {
+  const physical = (virtual: string) => {
+    if (!posix.isAbsolute(virtual) || virtual.includes("\\") || virtual.includes("\0") || virtual.split("/").includes("..")) {
+      throw new Error("Invalid virtual filesystem path.");
+    }
+    return join(root, ...virtual.split("/").filter(Boolean));
+  };
+  const write = async (virtual: string, content: string, append: boolean) => {
+    const destination = physical(virtual);
+    await fs.mkdir(dirname(destination), { recursive: true });
+    if (append) await fs.appendFile(destination, content, "utf8");
+    else await fs.writeFile(destination, content, "utf8");
+  };
+  return {
+    readFile: (path) => fs.readFile(physical(path), "utf8"),
+    writeFile: (path, content) => write(path, content, false),
+    appendFile: (path, content) => write(path, content, true),
+    exists: async (path) => {
+      try {
+        await fs.stat(physical(path));
+        return true;
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+        throw error;
+      }
+    },
+    stat: async (path) => {
+      const info = await fs.stat(physical(path));
+      return {
+        isFile: info.isFile(), isDirectory: info.isDirectory(), size: info.size,
+        mtime: info.mtime.toISOString(), birthtime: info.birthtime.toISOString(),
+      };
+    },
+    mkdir: async (path, recursive) => { await fs.mkdir(physical(path), { recursive }); },
+    readdir: (path) => fs.readdir(physical(path)),
+    readdirWithTypes: async (path) => (await fs.readdir(physical(path), { withFileTypes: true })).map((entry) => ({
+      name: entry.name, type: entry.isDirectory() ? "directory" as const : "file" as const,
+    })),
+    rm: (path, recursive, force) => fs.rm(physical(path), { recursive, force }),
+    rename: async (source, destination) => {
+      await fs.mkdir(dirname(physical(destination)), { recursive: true });
+      await fs.rename(physical(source), physical(destination));
+    },
+  };
+}

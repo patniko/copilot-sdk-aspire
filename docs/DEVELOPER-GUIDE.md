@@ -51,6 +51,7 @@ so tests do not consume stale compiled dependencies.
 | `pnpm lint` | Current ESLint script checks `apphost.mts`, not the entire repository |
 | `pnpm test:unit` | Unit tests plus configurator tests; no Docker, Azure, or model needed |
 | `pnpm test:integration` | Real services/store against disposable PostgreSQL, fake runner, and fake model upstream |
+| `pnpm test:runtime` | Experimental shared-runtime primitives against the test SDK's bundled native runtime and synthetic loopback inference; no Docker or credentials |
 | `pnpm test` | Unit and integration projects together |
 | `pnpm --filter @copilot-agent/configurator typecheck` | UI and companion-server TypeScript |
 | `pnpm --filter @copilot-agent/configurator build` | Vite production UI build |
@@ -166,6 +167,25 @@ JavaScript; it does not qualify a production image or change runtime authenticat
 A Docker/store test does not prove Azure Files behavior, direct CLI compatibility, or Mission Control
 attachment. Collect those results separately and keep the [known compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate)
 explicit until the matching runtime/client artifact is qualified.
+
+### Hybrid runtime qualification
+
+`pnpm test:runtime` uses a separate Vitest configuration and is not part of the ordinary unit/integration
+suites. It exercises an in-process runtime, independent provider-backed session state, and separate AHP
+catalogs on one runtime. The test SDK version in `tests/package.json` is deliberately independent of the
+existing batch/host packages; passing this suite does not upgrade a deployed service.
+
+The fixtures use temporary files and synthetic loopback inference without GitHub or provider credentials.
+They do not prove real-model behavior, CLI attachment, or cross-account authorization. Those remain the
+first delivery gate in the [hybrid hosting plan](HYBRID-HOSTING-PLAN.md#4-cli-connection-contract-first-engineering-gate).
+The `koffi` dependency build is allowed for the native in-process transport; existing batch execution
+continues to use its existing runtime configuration.
+
+The published bundle currently fails the virtual-workspace AHP publication assertion on Windows.
+This separate, opt-in gate intentionally returns a failure rather than skipping the unsupported requirement.
+See the [qualification record](HYBRID-HOSTING-PLAN.md#13-qualification-record) for the passing controls,
+exact failure, and remaining runtime/host work. Ordinary `pnpm test`, unit, and integration selections
+do not include this native-runtime suite.
 
 The separate `tests/integration/github-native-host.test.ts` opt-in uses `DEMO_GITHUB_HOST_TESTS=1`,
 the same explicit GitHub credential variables, and `copilot-aspire-agent-host:native-demo` (or

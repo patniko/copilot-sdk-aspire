@@ -7,9 +7,7 @@ packages:
 # Build scripts are allowed only for packages that need them.
 onlyBuiltDependencies:
   - esbuild
-
-# koffi backs the SDK's experimental in-process runtime host, which is not used (stdio runtime only).
-ignoredBuiltDependencies:
+  # Required by the opt-in in-process runtime qualification suite.
   - koffi
 
 # Note: keep lockfile-affecting settings out of this file. `aspire run`/`aspire deploy` install the

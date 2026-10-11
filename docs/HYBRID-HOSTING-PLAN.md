@@ -430,3 +430,48 @@ batch job; a general workflow engine; uninterrupted multi-hour attempts; and pro
 
 Progress is tracked by delivered evidence, not the presence of this plan. At creation, no stage beyond
 documentation is marked implemented or qualified.
+
+## 13. Qualification record
+
+### 2026-10-11: native session support works; virtual-workspace AHP publication is blocked
+
+The first code slice adds an independently runnable `pnpm test:runtime` gate. It uses test SDK `1.0.19`,
+bundled runtime `1.0.95` (source `f5ba50575c25c247798fb12ded26c48b421577ce`), and synthetic loopback
+inference on Windows. Existing service SDK pins and deployment behavior are unchanged.
+
+| Probe | Result | Limit |
+| --- | --- | --- |
+| Two sessions sharing one in-process client, separate provider namespaces, concurrent turns and resume | Passed | Synthetic inference; filesystem callbacks use a temporary disk-backed fixture, not production storage |
+| AHP publication with a normal local-filesystem session | Passed | Control case; no CLI identity authentication |
+| Two compute-scoped AHP listeners on the same runtime | Passed | Empty catalogs; listener separation is not account authorization |
+| Publication of virtual-workspace sessions into independent AHP catalogs | Failed | `Request host.publishSession failed with message: session publication failed` |
+| Real CLI attachment by two distinct identities | Not run | Virtual-workspace publication is unresolved; no explicit two-account test credentials configured |
+| Linux/container execution | Not run | Docker's Linux engine was unavailable on this machine |
+
+The published runtime's `publish_host_session` projects the session working directory into
+`HostRegisterSessionRequest` and drops the inner registration error. The pinned hosting library
+(`copilot-host` revision `97f78fedf34bc7186639269a3d8b20f7596820b3`) represents that directory as a host
+`PathBuf`, requires an absolute host path, and resolves it through the host's workspace roots in
+`CopilotBackend::publish_application_session`. It does not carry the provider path conventions or a
+session-filesystem authority in that publication metadata. The `/workspace` virtual path used by this
+fixture is not an absolute Windows host path.
+
+This proves a Windows compatibility failure for that virtual-workspace publication path, not that every
+host/provider/platform combination is impossible. The local-filesystem control rules out a general
+in-process publication failure. Additional host changes or a qualified, explicitly designed virtual
+workspace bridge are needed; creating arbitrary host directories or widening host roots is not evidence
+that CLI file access and owner isolation work.
+
+Next gate work must address publication and cold resume, CLI workspace/file operations, per-account catalog
+access, and managed factories together. Do not enable shared CLI hosting based only on the three passing
+primitive probes. The existing directly attachable container destination remains untouched.
+
+Recorded commands:
+
+| Command | Result |
+| --- | --- |
+| `pnpm build` | Passed |
+| `pnpm typecheck:tests` | Passed |
+| `pnpm exec vitest run --project unit tests\unit\demo-host.test.ts tests\unit\session-capability.test.ts` | Passed: 10 tests |
+| `pnpm test:runtime` | Failed: 3 passed, 1 failed at virtual-workspace publication |
+| `pnpm install --frozen-lockfile --lockfile-only --offline` | Passed |
