@@ -215,9 +215,17 @@ Do not replace the runtime's default VFS, move its database to ephemeral storage
 a durable-storage fix without an explicit runtime design and end-to-end recovery qualification.
 
 An October 10 follow-up still showed `maxReplicas: 1`, but Azure listed two replicas in the active revision:
-one ready/running owner and a second waiting replica with repeated restarts. Treat the configured maximum
+one ready/running owner and a second waiting replica repeatedly rejected by the host lease with HTTP 409.
+Treat the configured maximum
 as a scale setting, not proof of a single process during platform replacement; inspect replica state and retain
 the host lease/catalog fences. This follow-up did not change the deployed runtime or revision mode.
+
+On the healthy replica, a synthetic `unix-excl` database also passed WAL writes/checkpoint/truncate,
+competing-process exclusion (both `unix` and `unix-excl` contenders), lock acquisition after owner close,
+abrupt-process-exit recovery with committed rows retained and an uncommitted row discarded, and repeated
+reopen/integrity checks. The uniquely named test directory was removed. This is **single-replica synthetic
+evidence**, not a qualified runtime build, container replacement, or multi-host locking test. The released
+CLI still uses its default VFS and its session-store initialization failure remains unresolved.
 
 The opt-in native test is `tests/integration/github-native-host.test.ts`. It creates and removes its own
 Mission Control environment; it does not authorize deleting an existing deployment's environment.
