@@ -513,6 +513,23 @@ Local artifacts are staged in versioned ignored directories so a loaded Windows 
 overwritten in place. The qualified owner-guard pair is under
 `.runtime-artifacts/runtime-e646441b31f-host-33d3a92/`; verify copied launcher/library hashes together.
 
+### Per-host scope integration
+
+The local hosting library now accepts an explicit expected account per host and persists the account
+binding with the catalog (hosting commit `31d73a9`). Runtime/SDK `host.start` adds typed
+`workingDirectory` and `expectedOwner` options; all six SDK projections were regenerated. The Node
+host client has regression coverage for forwarding the new fields without changing other lifecycle behavior.
+
+Against the built local native candidate, the application host-scope probe passed: two independent
+workspace/catalog hosts share one in-process runtime, cross-workspace publication is rejected, a catalog
+cannot reopen unbound or as a different account, and its original account can reopen it. The compiled
+expected-owner negative probe also passed. These tests use synthetic account IDs and no GitHub
+authentication; they do not establish actual two-account CLI behavior or provider-backed AHP file operations.
+The pure virtual-workspace publication requirement remains failing and the shared launcher remains disabled.
+
+The candidate artifacts are under `.runtime-artifacts/host-scope-candidate-31d73a9/`.
+This directory records a local trial, not a deployable release or a substitute for the remaining gates.
+
 ### Configurator topology foundation
 
 The configurator now has a lazy-loaded **Hosting** page with current-stack and hybrid-proposal maps,
