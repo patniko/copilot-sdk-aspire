@@ -38,8 +38,8 @@ export function hostingTopology(architecture: HostingArchitecture, transport: De
   const native = transport === "github";
   const hostEnabled = transport !== "disabled";
   const nodes: HostingNode[] = [
-    { id: "cli", title: "Copilot CLI", caption: "Choose a destination", x: 40, y: 110,
-      purpose: "Keep the same CLI experience while choosing a shared coordinator or an interactive container host.",
+    { id: "cli", title: "Clients", caption: "Copilot CLI / job API", x: 40, y: 110,
+      purpose: "Copilot CLI uses the configured interactive host. API clients submit batch jobs. The proposal adds a shared coordinator as another CLI destination.",
       limitation: "Shared-host attachment is a qualification gate, not an available launcher yet." },
     { id: "entry", title: "Agent API", caption: "Admission & provisioning", x: 270, y: 110, resource: "agent-api",
       purpose: "Authenticate callers, admit jobs, and provision protected connection material for the configured host.",
@@ -72,7 +72,7 @@ export function hostingTopology(architecture: HostingArchitecture, transport: De
       limitation: "The current dispatcher schedules attempt slots; it does not provision containers per job." };
   nodes.push(dispatcher);
   const edges: HostingEdge[] = [
-    { from: "cli", to: "entry", label: "Provision / jobs", points: [[230, 157], [270, 157]], labelAt: [250, 220] },
+    { from: "cli", to: "entry", label: "Provision / API jobs", points: [[230, 157], [270, 157]], labelAt: [250, 220] },
     { from: "cli", to: "transport", label: "Selected transport", points: [[135, 205], [135, 385]], labelAt: [135, 294] },
     { from: "transport", to: "container", label: "Container session", points: [[230, 432], [270, 432]], labelAt: [250, 530] },
     { from: dispatcher.id, to: "executors", label: hybrid ? "Allocate" : "Claim / heartbeat", points: [[920, 157], [960, 157]], labelAt: [940, 245], proposed: hybrid },
@@ -121,7 +121,7 @@ export function hostingPlacement(node: HostingNode, target: TryTarget): string {
   if (node.id === "ledger") return target === "local" ? "Local PostgreSQL container" : "Azure Database for PostgreSQL";
   if (node.id === "container" || node.id === "executors") return target === "local" ? "Linux container" : "Azure Container App";
   if (node.resource) return target === "local" ? "Host Node.js process" : "Azure Container App";
-  if (node.id === "cli") return "User's machine";
+  if (node.id === "cli") return "User's machine or API caller";
   if (node.id === "transport") return "Configured AHP connection path";
   return "External model service";
 }
