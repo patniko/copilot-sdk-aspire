@@ -50,12 +50,15 @@ export class SharedSessionRuntime {
     private readonly maximumSessions = 16,
   ) {
     if (!Number.isSafeInteger(maximumSessions) || maximumSessions < 1 || maximumSessions > 100) throw new Error("Invalid shared runtime capacity.");
+    if (process.env.COPILOT_AHP_FACTORY_PROFILE !== "managed") {
+      throw new Error("Set COPILOT_AHP_FACTORY_PROFILE=managed before starting the in-process shared runtime; AHP identity must not replace application provider configuration.");
+    }
     this.#client = new CopilotClient({
       connection: RuntimeConnection.forInProcess(),
       mode: "empty",
       baseDirectory: join(root, "runtime"),
       useLoggedInUser: false,
-      logLevel: "error",
+      logLevel: process.env.LOG_LEVEL === "debug" ? "debug" : "error",
       sessionFs: {
         initialCwd: join(root, "anchors"),
         sessionStatePath: join(root, "session-state"),

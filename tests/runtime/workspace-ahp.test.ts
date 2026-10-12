@@ -1,4 +1,3 @@
-import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -15,24 +14,13 @@ import { expect, it } from "vitest";
 import { SessionWorkspace } from "../../src/session-host/src/workspace.js";
 import { fixtureFilesystem } from "./filesystem.js";
 import { localRuntimeArtifacts } from "./artifacts.js";
+import { testGitHubAccount } from "./account.js";
 
 const enabled = process.env.HYBRID_RESOURCE_AUTH_TESTS === "1";
 
 it.skipIf(!enabled)("routes authenticated AHP resources through the local SDK provider without touching anchors", async () => {
   await localRuntimeArtifacts();
-  const credential = process.env.HYBRID_USE_GH_ACCOUNT === "1"
-    ? execFileSync("gh", ["auth", "token", "--hostname", "github.com"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim()
-    : process.env.DEMO_TEST_GITHUB_TOKEN;
-  if (!credential) throw new Error("Provide DEMO_TEST_GITHUB_TOKEN or explicitly opt in to HYBRID_USE_GH_ACCOUNT=1.");
-  const identityResponse = await fetch("https://api.github.com/user", {
-    headers: { authorization: `Bearer ${credential}`, accept: "application/vnd.github+json" },
-    redirect: "error", signal: AbortSignal.timeout(15_000),
-  });
-  if (!identityResponse.ok) throw new Error(`GitHub identity validation failed (${identityResponse.status}).`);
-  const identity: unknown = await identityResponse.json();
-  if (!identity || typeof identity !== "object" || !("id" in identity) || typeof identity.id !== "number" || !Number.isSafeInteger(identity.id)) {
-    throw new Error("GitHub returned an invalid account identity.");
-  }
+  const { credential, id: githubUserId } = await testGitHubAccount();
   const root = await mkdtemp(join(tmpdir(), "copilot-workspace-ahp-"));
   const anchor = join(root, "anchor");
   const storage = fixtureFilesystem(join(root, "provider"), process.platform === "win32" ? "windows" : "posix");
@@ -54,7 +42,7 @@ it.skipIf(!enabled)("routes authenticated AHP resources through the local SDK pr
     await storage.writeFile(join(anchor, "sentinel.txt"), "provider-sentinel");
     await runtime.start();
     host = await runtime.startAhpHost({
-      computeId: randomUUID(), expectedOwner: { githubApiUrl: "https://api.github.com", userId: identity.id },
+      computeId: randomUUID(), expectedOwner: { githubApiUrl: "https://api.github.com", userId: githubUserId },
       workingDirectory: anchor, localServer: { hostname: "127.0.0.1", port: 0 },
       onWorkspaceResource: workspace.onResource,
       createSession: async () => { throw new Error("Resource-only qualification does not create conversations."); },

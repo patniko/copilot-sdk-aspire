@@ -605,3 +605,26 @@ denial, and same-conversation resume after runtime replacement. This uses synthe
 calls; it is not the real CLI gate. Returned raw listener material is for internal provisioning only.
 Public tickets/key distribution, model budgets, turn scheduling, idle eviction and container delegation
 remain separate required integrations. The existing container-host route is unchanged.
+
+### Actual CLI conversation
+
+The local Windows ARM64 CLI now authenticates to a published shared conversation, submits a prompt,
+and displays the synthetic model's reply. The owning process uses one in-process SDK client and
+PostgreSQL session files; the native workspace anchor remains empty. The test checks that the
+intended user prompt reached the loopback model, rather than merely observing a connected listener.
+It uses the explicitly approved GitHub account, an independently pinned local host key, and the
+CLI's session-only trust choice for its generated temporary folder. No paid model provider is used.
+
+Two integration details were necessary: the CLI requires explicit
+`--ahp-authenticate-with-github` consent, and the shared owning process requires
+`COPILOT_AHP_FACTORY_PROFILE=managed` so AHP identity does not replace application inference settings.
+Actual attachment also exposed a Windows workspace fence mismatch: the AHP catalog canonicalizes
+`C:\...` to `\\?\C:\...`, while the provider-backed session retains the former spelling.
+Both runtime resume fences now use safe `dunce::simplified` absolute-path comparison, without
+following symlinks or treating meaningful trailing-dot/reserved-name paths as interchangeable.
+
+`tests/integration/shared-cli.test.ts` passed against the local full CLI and the shared native
+candidate `.runtime-artifacts/cli-workspace-fix/`, incorporating host provider policy `b20e188`.
+The independent shared-runtime replacement case and 18 provider/existing-host unit cases also passed.
+This records one real-account CLI conversation, not two-account authorization, a public shared
+service, a cost/TTFT result, or model-driven container delegation. Those gates remain open.

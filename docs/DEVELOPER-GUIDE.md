@@ -217,6 +217,9 @@ creating arbitrary sessions through AHP. Returned listener tokens are private pr
 a public service must still supply authenticated one-time tickets and independently trusted server keys.
 The library does not yet implement the public session API, inference-budget grants, turn scheduling,
 idle eviction, or container delegation, and is not wired into the deployed AppHost.
+Set `COPILOT_AHP_FACTORY_PROFILE=managed` on the hosting process before initialization. An in-process
+runtime cannot use the child-runtime `env` option; this existing managed profile keeps AHP identity
+credentials separate from the application's model provider. The library refuses to start without it.
 
 The opt-in integration `tests/integration/shared-session-runtime.test.ts` requires
 `HYBRID_SESSION_RUNTIME_TESTS=1`, a local native pair, and disposable PostgreSQL.
@@ -236,6 +239,25 @@ Supply `DEMO_TEST_GITHUB_TOKEN` explicitly, or set `HYBRID_USE_GH_ACCOUNT=1` to 
 account already signed in through `gh`. It authenticates a task-owned loopback host and checks provider
 resource read/write behavior without model calls. It never prints or persists the credential.
 Do not enable either option for an unattended run without permission to use that account.
+
+`tests/integration/shared-cli.test.ts` is a separate real-CLI gate, enabled with `HYBRID_CLI_TESTS=1`.
+Build the matching local CLI first, set `HYBRID_CLI_PATH` to its absolute `dist-cli/index.js` path,
+and supply the local native pair, managed hosting profile, disposable PostgreSQL, and explicitly
+authorized GitHub account described above. The test loads `node-pty` from that CLI worktree,
+authenticates to a task-owned loopback host with an explicitly pinned server key, and drives the
+interactive CLI against synthetic loopback inference. `--ahp-authenticate-with-github` is required
+to consent to sharing GitHub identity with this host; it is not a model-provider credential.
+This gate does not contact a paid model provider or qualify two-account operation. For example:
+
+```powershell
+# Use the actual paths to your locally built, matching artifacts.
+$env:COPILOT_CLI_PATH = 'C:\projects\copilot-agent-runtime-hybrid\dist-cli\prebuilds\win32-arm64\copilot-runtime.exe'
+$env:HYBRID_CLI_PATH = 'C:\projects\copilot-agent-runtime-hybrid\dist-cli\index.js'
+$env:COPILOT_AHP_FACTORY_PROFILE = 'managed'
+$env:HYBRID_CLI_TESTS = '1'
+$env:HYBRID_USE_GH_ACCOUNT = '1' # Explicit approval to use the account signed in through gh.
+pnpm exec vitest run --project integration tests\integration\shared-cli.test.ts
+```
 
 The separate `tests/integration/github-native-host.test.ts` opt-in uses `DEMO_GITHUB_HOST_TESTS=1`,
 the same explicit GitHub credential variables, and `copilot-aspire-agent-host:native-demo` (or
