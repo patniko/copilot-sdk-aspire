@@ -1,10 +1,16 @@
 import * as fs from "node:fs/promises";
-import { dirname, join, posix } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 import type { SessionFsProvider } from "@github/copilot-sdk";
 
 /** Disk-backed fixture for exercising virtual paths; not a production storage or isolation implementation. */
-export function fixtureFilesystem(root: string): SessionFsProvider {
+export function fixtureFilesystem(root: string, conventions: "posix" | "windows" = "posix"): SessionFsProvider {
   const physical = (virtual: string) => {
+    if (conventions === "windows") {
+      if (!win32.isAbsolute(virtual) || !/^[A-Za-z]:[\\/]/.test(virtual) || virtual.includes("\0") || virtual.split(/[/\\]/).includes("..")) {
+        throw new Error("Invalid virtual filesystem path.");
+      }
+      return join(root, virtual[0]!.toLowerCase(), ...virtual.slice(3).split(/[/\\]/).filter(Boolean));
+    }
     if (!posix.isAbsolute(virtual) || virtual.includes("\\") || virtual.includes("\0") || virtual.split("/").includes("..")) {
       throw new Error("Invalid virtual filesystem path.");
     }

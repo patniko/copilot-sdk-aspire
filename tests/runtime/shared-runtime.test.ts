@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { CopilotClient, RuntimeConnection, type CopilotSession, type SessionConfig } from "@github/copilot-sdk";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { fixtureFilesystem } from "./filesystem.js";
+import { localRuntimeArtifacts } from "./artifacts.js";
 
 describe("shared runtime primitives (real runtime, synthetic inference, no CLI identity qualification)", () => {
   let root: string;
@@ -50,12 +51,7 @@ describe("shared runtime primitives (real runtime, synthetic inference, no CLI i
   });
 
   beforeAll(async () => {
-    const runtimePath = process.env.COPILOT_CLI_PATH;
-    if (!runtimePath || !isAbsolute(runtimePath)) {
-      throw new Error("Set COPILOT_CLI_PATH to the absolute path of the locally built runtime launcher, with its matching runtime.node beside it. Published-runtime fallback is not a local qualification.");
-    }
-    await access(runtimePath);
-    await access(join(dirname(runtimePath), "runtime.node"));
+    await localRuntimeArtifacts();
     root = await mkdtemp(join(tmpdir(), "copilot-shared-runtime-test-"));
     await new Promise<void>((resolve, reject) => {
       upstream.once("error", reject);
@@ -160,6 +156,61 @@ describe("shared runtime primitives (real runtime, synthetic inference, no CLI i
       expect((await hosts[1].listSessions()).sessions).toEqual([]);
     } finally {
       await Promise.all(hosts.reverse().map((host) => host.dispose()));
+    }
+  });
+
+  it("separates provider content from native-path AHP anchors (control, not an authorization qualification)", async () => {
+    const anchorRoot = join(process.cwd(), ".runtime-artifacts", `ahp-anchor-test-${randomUUID()}`);
+    const conventions = process.platform === "win32" ? "windows" as const : "posix" as const;
+    const statePath = join(anchorRoot, "state");
+    const candidate = new CopilotClient({
+      connection: RuntimeConnection.forInProcess(),
+      mode: "empty",
+      baseDirectory: join(root, "native-path-provider"),
+      useLoggedInUser: false,
+      logLevel: "error",
+      sessionFs: { initialCwd: anchorRoot, sessionStatePath: statePath, conventions },
+    });
+    const sessions: CopilotSession[] = [];
+    const hosts: Awaited<ReturnType<CopilotClient["startAhpHost"]>>[] = [];
+    try {
+      await mkdir(anchorRoot, { recursive: true });
+      await candidate.start();
+      for (let index = 0; index < 2; index++) {
+        const anchor = join(anchorRoot, `namespace-${index}`);
+        await mkdir(anchor);
+        const sessionId = randomUUID();
+        const stored = fixtureFilesystem(join(root, "anchored-providers", sessionId), conventions);
+        await stored.mkdir(anchor, true);
+        const session = await candidate.createSession({
+          ...sessionConfig(),
+          sessionId,
+          workingDirectory: anchor,
+          createSessionFsProvider: () => stored,
+        });
+        sessions.push(session);
+        await session.sendAndWait({ prompt: `Synthetic native-path provider namespace ${index}. Reply briefly.` }, 30_000);
+        const host = await candidate.startAhpHost({ computeId: randomUUID(), localServer: { hostname: "127.0.0.1", port: 0 } });
+        hosts.push(host);
+        const publication = await host.publishSession(session.sessionId);
+        expect((await host.listSessions()).sessions.map((entry) => entry.resource)).toEqual([publication.sessionUri]);
+        expect(await readdir(anchor)).toEqual([]);
+        expect(await stored.readFile(join(statePath, "events.jsonl"))).toContain(`provider namespace ${index}`);
+      }
+    } finally {
+      try {
+        await Promise.all(hosts.map((host) => host.dispose()));
+      } finally {
+        try {
+          await Promise.all(sessions.map((session) => session.disconnect()));
+        } finally {
+          try {
+            expect(await candidate.stop()).toEqual([]);
+          } finally {
+            await rm(anchorRoot, { recursive: true, force: true });
+          }
+        }
+      }
     }
   });
 

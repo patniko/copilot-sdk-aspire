@@ -495,6 +495,24 @@ server if it retained the earlier symlink-permission failure. A standalone file-
 The native build uses the runtime repository's vendored Bazel wrapper. No signature verification or
 Windows privilege check was disabled.
 
+The native pair subsequently built successfully. The managed-factory handoff integration was corrected
+for upstream's new envelope, and its two native regression tests passed. Runtime commit `e646441b31f`
+records that integration and the Windows test-build fix. Hosting commit `33d3a92` ports expected-owner
+enforcement into the compiled library; its six owner tests and existing identity-wiring regression passed.
+An ignored Bazel repository override linked that exact local source into the native pair, and the
+application's real expected-owner negative probe passed against the newly staged pair.
+
+A further control shows that native directory anchors can coexist with provider-only session content:
+two sessions publish into separate AHP catalogs while their anchor directories remain empty and their
+histories stay in the filesystem provider. This does not qualify the design. AHP resource operations
+still use host filesystem semantics, account/workspace scopes must be per host, and pure virtual POSIX
+workspace publication on Windows still fails. The test deliberately retains that failed requirement.
+Do not promote the control to a shared-host workaround without resolving those surfaces.
+
+Local artifacts are staged in versioned ignored directories so a loaded Windows native library is never
+overwritten in place. The qualified owner-guard pair is under
+`.runtime-artifacts/runtime-e646441b31f-host-33d3a92/`; verify copied launcher/library hashes together.
+
 ### Configurator topology foundation
 
 The configurator now has a lazy-loaded **Hosting** page with current-stack and hybrid-proposal maps,
