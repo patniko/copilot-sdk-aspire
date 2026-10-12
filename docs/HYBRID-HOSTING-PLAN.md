@@ -494,3 +494,16 @@ Windows Developer Mode is a native build prerequisite. After enabling it, restar
 server if it retained the earlier symlink-permission failure. A standalone file-symlink probe then succeeded.
 The native build uses the runtime repository's vendored Bazel wrapper. No signature verification or
 Windows privilege check was disabled.
+
+### Configurator topology foundation
+
+The configurator now has a lazy-loaded **Hosting** page with current-stack and hybrid-proposal maps,
+local/Azure placement, selectable component explanations, and the existing container-host CLI launchers.
+Native Copilot inference and managed Foundry inference are displayed separately. The page is read-only:
+shared attachment, on-demand allocation, measurements, and future controls are explicitly unavailable.
+It is not the live integration required to complete stage 3.
+
+The UI typecheck/build and seven focused topology tests passed. An Edge browser pass using synthetic
+API fixtures exercised current/hybrid maps, native/managed routes, node and keyboard selection, and
+desktop/dark/mobile layouts, with no external or mutating requests. These are UI observations, not
+evidence of a deployed shared runtime or successful real CLI attachment.
