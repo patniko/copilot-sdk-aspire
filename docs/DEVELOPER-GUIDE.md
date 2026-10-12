@@ -182,6 +182,9 @@ Follow its native build instructions and build the Node SDK from `src/sdk/nodejs
 native launcher and its matching library together; set `COPILOT_CLI_PATH` to the launcher's absolute path
 before running `pnpm test:runtime`. The suite refuses a missing local artifact rather than downloading
 or falling back to a published runtime. Local native builds and their SDK outputs are not committed here.
+Leave `COPILOT_AHP_FACTORY_PROFILE` unset for this primitive suite: it includes default-host controls
+without application factories. The shared-owner integration tests below explicitly require the managed
+profile instead; imposing that profile on factory-free controls correctly makes their startup fail.
 
 The fixtures use temporary files and synthetic loopback inference without GitHub or provider credentials.
 They do not prove real-model behavior, CLI attachment, or cross-account authorization. Those remain the
@@ -247,7 +250,10 @@ authorized GitHub account described above. The test loads `node-pty` from that C
 authenticates to a task-owned loopback host with an explicitly pinned server key, and drives the
 interactive CLI against synthetic loopback inference. `--ahp-authenticate-with-github` is required
 to consent to sharing GitHub identity with this host; it is not a model-provider credential.
-This gate does not contact a paid model provider or qualify two-account operation. For example:
+The test then stops the first CLI and shared runtime owner, reopens the retained PostgreSQL-backed
+conversation, and attaches a fresh CLI. It checks replayed history and prior-turn context in the next
+model request, with native anchors still empty. It does not contact a paid model provider or qualify
+two-account operation, process-crash recovery, or multi-replica failover. For example:
 
 ```powershell
 # Use the actual paths to your locally built, matching artifacts.

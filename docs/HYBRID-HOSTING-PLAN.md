@@ -628,3 +628,11 @@ candidate `.runtime-artifacts/cli-workspace-fix/`, incorporating host provider p
 The independent shared-runtime replacement case and 18 provider/existing-host unit cases also passed.
 This records one real-account CLI conversation, not two-account authorization, a public shared
 service, a cost/TTFT result, or model-driven container delegation. Those gates remain open.
+
+The follow-on CLI gate also passed after stopping and replacing the shared runtime owner.
+A fresh CLI replayed the first reply; its follow-up model request contained the original question,
+reply, and new question. PostgreSQL retained the first reply without the GitHub credential, and
+both activations left the native anchor empty. This exercises orderly owner replacement with the
+same retained roots, not process-crash recovery, multi-replica failover, or a second real identity.
+All eight native primitive/resource tests passed against this candidate as well, using their default
+host profile rather than imposing managed factories on factory-free control cases.
