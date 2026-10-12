@@ -636,3 +636,43 @@ both activations left the native anchor empty. This exercises orderly owner repl
 same retained roots, not process-crash recovery, multi-replica failover, or a second real identity.
 All eight native primitive/resource tests passed against this candidate as well, using their default
 host profile rather than imposing managed factories on factory-free control cases.
+
+## 14. Local deployment completion slice (2026-10-12)
+
+The next implementation scope is explicitly the local hybrid service, on-demand execution, and
+Linux packaging. Azure provisioning and the separately authorized second-account acceptance run
+are not prerequisites for writing these components, but remain prerequisites for their corresponding
+deployment and qualification claims. Keep this path opt-in and label its current evidence accurately.
+
+Implementation order and invariants:
+
+1. Package committed runtime/hosting sources and the matching Node SDK into a reproducible Linux
+   build input, with source revisions and artifact hashes. Build natively for the local Docker
+   architecture, preserve dependency verification, and exercise the resulting in-process runtime.
+   Do not copy Windows native modules or personal configuration into an image.
+2. Add a separate durable shared-session ledger rather than modifying the singleton demo host.
+   Bind API principals to operator-configured GitHub identities. Provision new/resumed conversations
+   through authenticated APIs and one-use, short-lived, activation-bound connection tickets;
+   never return the internal AHP listener token. Publish the trusted host key separately.
+3. Enforce bounded turn admission before inference grants, durable main/aggregate budgets, and
+   inactive-session eviction. Closure rejects new work; disconnection alone does not delete
+   conversation state. Recovery must not replay unknown model effects as successful work.
+4. Admit delegated jobs through existing harness/profile/policy validation. Atomically record
+   parent linkage, stable tool-operation deduplication, budget reservations, and the child job.
+   Preserve ordinary pool jobs; dedicated allocations may claim only their assigned job.
+5. Add an operator-owned Docker controller, separate from the runtime worker. Record allocations
+   before starting containers, count starting and running capacity, reconcile ambiguous starts,
+   use scoped executor credentials, and retire actual one-shot containers after terminal work.
+   No Docker socket or provisioning credential belongs in the shared loop or child runner.
+6. Materialize only selected immutable inputs; persist bounded output artifacts before accepting
+   successful completion. Deliver terminal results through a durable, deduplicated parent inbox
+   and bounded continuations, without polling inside an active model turn. Retained results must
+   remain readable after child container teardown.
+7. Wire the local AppHost and CLI provisioning path while leaving the direct-container destination
+   unchanged. Exercise zero-container chat, model-directed delegation, bounded spreading, returned
+   results, cancellation, orderly recovery, and zero remaining execution containers using synthetic
+   inference before any separately approved paid-model or Azure run.
+
+Update the API, architecture/security boundaries, runner/developer guides, deployment instructions,
+and diagrams as these behaviors land. A passing local run is not a two-account, Azure, production
+hardening, or measured cost/latency claim.
