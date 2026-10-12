@@ -199,6 +199,16 @@ already-bound namespace and never widen it. Optional session SQLite and director
 The package is excluded from the existing Docker build context until a dedicated shared-host image stages
 its local SDK/native artifacts. Existing container services continue building from their published SDK pins.
 
+`SessionFileStore` in `job-store` provides the prototype's PostgreSQL storage authority.
+Namespaces bind a principal to an expiring activation epoch; every filesystem read/write locks and checks
+that lease. Replacement epochs cannot act as the previous owner, and resuming cannot widen admitted
+storage quotas. The initial bounds are eight MiB per file, 64 MiB and 2,048 entries per namespace
+(lower namespace ceilings are accepted). Quota failures roll back both file and parent-directory writes.
+Metadata/listing queries do not load file payloads. This is bounded session storage, not the large-job artifact
+store; append rewrites a bounded file and needs measurement before high-volume transcript use.
+The `postgresSessionFilesystem` adapter supplies that storage to the shared-host library without native
+filesystem I/O. Windows provider keys are case-folded within their namespace.
+
 The initially probed published bundle could not publish pure virtual workspace paths on Windows.
 The selected design now uses tiny native directory anchors while keeping content in the provider.
 The suite verifies that unsupported virtual-only publication is rejected, separately from the working

@@ -581,3 +581,17 @@ The workspace unit suite passed eight tests; preserved host/topology checks also
 host client suite passed 45 tests and the runtime resource-routing filter passed four native tests.
 This qualifies the resource bridge for that local test, not real CLI conversation attachment,
 multi-account operation, persistent service recovery, or on-demand container delegation.
+
+### PostgreSQL session filesystem
+
+After Docker became available, the storage implementation uses PostgreSQL rather than a local SQLite
+substitute. `SessionFileStore` adds principal-bound namespaces with expiring activation epochs and
+transactional file/directory operations. Every read and write checks the lease; resumed activations
+retain data and cannot widen existing quotas. File, byte, entry, and path-depth limits bound the
+prototype, and failed quota checks roll back the complete operation.
+
+The SDK filesystem adapter and AHP bridge can share this store without accessing anchor contents.
+Six PostgreSQL integration cases passed for restart/lease fencing, cross-principal denial, concurrent
+append, quota rollback, directory lifecycle, Windows virtual-path mapping, and retained quota ceilings.
+The existing five host-store cases also passed. This qualifies storage primitives, not the session API,
+multi-replica routing, or a completed shared CLI service.

@@ -280,6 +280,9 @@ importers:
 
   src/session-host:
     dependencies:
+      '@copilot-agent/job-store':
+        specifier: workspace:*
+        version: link:../job-store
       '@github/copilot-sdk':
         specifier: link:../../../copilot-agent-runtime-hybrid/src/sdk/nodejs
         version: link:../../../copilot-agent-runtime-hybrid/src/sdk/nodejs
