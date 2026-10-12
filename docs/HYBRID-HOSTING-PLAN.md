@@ -676,3 +676,13 @@ Implementation order and invariants:
 Update the API, architecture/security boundaries, runner/developer guides, deployment instructions,
 and diagrams as these behaviors land. A passing local run is not a two-account, Azure, production
 hardening, or measured cost/latency claim.
+
+### Linux bundle evidence
+
+The native Linux ARM64 build and container-side qualification passed using runtime
+`0a32c39595f734b28cb1930f1af9cb7ead50091b`, hosting
+`b20e188cd895852d046f80ca9630480be82aff57`, and the runtime-pinned MXC source.
+The packaged Node SDK and launcher/library exercised one in-process owner, separate provider
+namespaces, two independently scoped provider-mode AHP hosts, and synthetic model replies.
+The exported bundle includes verified hashes and source/input provenance.
+This is a `fast` build, not a performance-qualified release image or a completed shared service.

@@ -186,6 +186,30 @@ Leave `COPILOT_AHP_FACTORY_PROFILE` unset for this primitive suite: it includes 
 without application factories. The shared-owner integration tests below explicitly require the managed
 profile instead; imposing that profile on factory-free controls correctly makes their startup fail.
 
+For a native Linux bundle, `deploy/build-hybrid-runtime.ps1` archives clean, committed runtime and
+hosting worktrees, builds/packs their matching Node SDK, and builds the native launcher/library inside
+Docker. Supply an MXC checkout at the exact revision in the runtime's `Cargo.toml`; the build does not
+forward personal Git configuration or credentials. Private hosting/MXC dependencies are supplied from
+those source snapshots with the runtime's unchanged generated Bazel definitions.
+
+```powershell
+.\deploy\build-hybrid-runtime.ps1 `
+  -RuntimeRepository C:\projects\copilot-agent-runtime-hybrid `
+  -HostingRepository C:\projects\copilot-host-hybrid `
+  -MxcRepository C:\projects\mxc-pinned `
+  -OutputDirectory C:\projects\copilot-sdk-aspire-hybrid\.runtime-artifacts\hybrid-linux
+```
+
+The output directory must be absent or empty. It contains `copilot-runtime`, `runtime.node`, `sdk.tgz`,
+`provenance.json` (source revisions and input hashes), and verified `SHA256SUMS`. The Docker engine's
+native Linux architecture is used; no emulated amd64 target is imposed on ARM64. The default `fast`
+configuration is a large, unoptimized qualification build; use `-Configuration release` for an optimized
+candidate and qualify it separately before comparative performance claims. `-NpmRegistry` supports the
+same operator-selected registry/proxy pattern as the existing deployment build.
+The build must pass a Linux in-process/provider-filesystem/two-host synthetic-inference probe before
+exporting the bundle. This packaging probe does not authenticate real accounts or qualify the complete
+shared service, and exported native bundles remain ignored rather than committed.
+
 The fixtures use temporary files and synthetic loopback inference without GitHub or provider credentials.
 They do not prove real-model behavior, CLI attachment, or cross-account authorization. Those remain the
 first delivery gate in the [hybrid hosting plan](HYBRID-HOSTING-PLAN.md#4-cli-connection-contract-first-engineering-gate).
