@@ -209,6 +209,20 @@ store; append rewrites a bounded file and needs measurement before high-volume t
 The `postgresSessionFilesystem` adapter supplies that storage to the shared-host library without native
 filesystem I/O. Windows provider keys are case-folded within their namespace.
 
+`SharedSessionRuntime` is a local prototype owner over one in-process client. It publishes one
+account/workspace-scoped AHP listener per admitted conversation, backed by PostgreSQL session files.
+Opening is bounded, storage leases renew during activation, and deactivation retains the conversation.
+New conversations are application-provisioned; the CLI attaches to the published session rather than
+creating arbitrary sessions through AHP. Returned listener tokens are private provisioning material:
+a public service must still supply authenticated one-time tickets and independently trusted server keys.
+The library does not yet implement the public session API, inference-budget grants, turn scheduling,
+idle eviction, or container delegation, and is not wired into the deployed AppHost.
+
+The opt-in integration `tests/integration/shared-session-runtime.test.ts` requires
+`HYBRID_SESSION_RUNTIME_TESTS=1`, a local native pair, and disposable PostgreSQL.
+It checks independent published conversations, capacity, ownership, unchanged configuration on resume,
+and runtime replacement without model calls or real-account authentication.
+
 The initially probed published bundle could not publish pure virtual workspace paths on Windows.
 The selected design now uses tiny native directory anchors while keeping content in the provider.
 The suite verifies that unsupported virtual-only publication is rejected, separately from the working

@@ -595,3 +595,13 @@ Six PostgreSQL integration cases passed for restart/lease fencing, cross-princip
 append, quota rollback, directory lifecycle, Windows virtual-path mapping, and retained quota ceilings.
 The existing five host-store cases also passed. This qualifies storage primitives, not the session API,
 multi-replica routing, or a completed shared CLI service.
+
+### Shared conversation owner prototype
+
+`SharedSessionRuntime` now publishes independently account/workspace-scoped conversations from a single
+in-process SDK client, with PostgreSQL filesystem leases and retained configuration. The local integration
+passed for two concurrent owned conversations, activation capacity, principal denial, configuration-change
+denial, and same-conversation resume after runtime replacement. This uses synthetic owners and no model
+calls; it is not the real CLI gate. Returned raw listener material is for internal provisioning only.
+Public tickets/key distribution, model budgets, turn scheduling, idle eviction and container delegation
+remain separate required integrations. The existing container-host route is unchanged.
