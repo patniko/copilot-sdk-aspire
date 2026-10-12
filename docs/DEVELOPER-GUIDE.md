@@ -51,7 +51,7 @@ so tests do not consume stale compiled dependencies.
 | `pnpm lint` | Current ESLint script checks `apphost.mts`, not the entire repository |
 | `pnpm test:unit` | Unit tests plus configurator tests; no Docker, Azure, or model needed |
 | `pnpm test:integration` | Real services/store against disposable PostgreSQL, fake runner, and fake model upstream |
-| `pnpm test:runtime` | Experimental shared-runtime primitives against the test SDK's bundled native runtime and synthetic loopback inference; no Docker or credentials |
+| `pnpm test:runtime` | Experimental shared-runtime primitives against a locally built SDK/native runtime and synthetic loopback inference; no Docker or credentials |
 | `pnpm test` | Unit and integration projects together |
 | `pnpm --filter @copilot-agent/configurator typecheck` | UI and companion-server TypeScript |
 | `pnpm --filter @copilot-agent/configurator build` | Vite production UI build |
@@ -172,8 +172,15 @@ explicit until the matching runtime/client artifact is qualified.
 
 `pnpm test:runtime` uses a separate Vitest configuration and is not part of the ordinary unit/integration
 suites. It exercises an in-process runtime, independent provider-backed session state, and separate AHP
-catalogs on one runtime. The test SDK version in `tests/package.json` is deliberately independent of the
-existing batch/host packages; passing this suite does not upgrade a deployed service.
+catalogs on one runtime. On the experimental hybrid branch, `tests/package.json` links the Node SDK in the
+sibling `copilot-agent-runtime-hybrid` worktree. Build that SDK before restoring this application's
+dependencies. Existing batch/host package pins remain independent; this link does not upgrade a deployed service.
+
+The runtime worktree tracks `patniko/aspire-ahp-runtime-patches` and preserves the existing proposals.
+Follow its native build instructions and build the Node SDK from `src/sdk/nodejs`. Stage the resulting
+native launcher and its matching library together; set `COPILOT_CLI_PATH` to the launcher's absolute path
+before running `pnpm test:runtime`. The suite refuses a missing local artifact rather than downloading
+or falling back to a published runtime. Local native builds and their SDK outputs are not committed here.
 
 The fixtures use temporary files and synthetic loopback inference without GitHub or provider credentials.
 They do not prove real-model behavior, CLI attachment, or cross-account authorization. Those remain the
@@ -181,7 +188,7 @@ first delivery gate in the [hybrid hosting plan](HYBRID-HOSTING-PLAN.md#4-cli-co
 The `koffi` dependency build is allowed for the native in-process transport; existing batch execution
 continues to use its existing runtime configuration.
 
-The published bundle currently fails the virtual-workspace AHP publication assertion on Windows.
+The initially probed published bundle failed the virtual-workspace AHP publication assertion on Windows.
 This separate, opt-in gate intentionally returns a failure rather than skipping the unsupported requirement.
 See the [qualification record](HYBRID-HOSTING-PLAN.md#13-qualification-record) for the passing controls,
 exact failure, and remaining runtime/host work. Ordinary `pnpm test`, unit, and integration selections

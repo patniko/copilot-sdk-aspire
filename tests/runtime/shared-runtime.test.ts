@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { CopilotClient, RuntimeConnection, type CopilotSession, type SessionConfig } from "@github/copilot-sdk";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -50,6 +50,12 @@ describe("shared runtime primitives (real runtime, synthetic inference, no CLI i
   });
 
   beforeAll(async () => {
+    const runtimePath = process.env.COPILOT_CLI_PATH;
+    if (!runtimePath || !isAbsolute(runtimePath)) {
+      throw new Error("Set COPILOT_CLI_PATH to the absolute path of the locally built runtime launcher, with its matching runtime.node beside it. Published-runtime fallback is not a local qualification.");
+    }
+    await access(runtimePath);
+    await access(join(dirname(runtimePath), "runtime.node"));
     root = await mkdtemp(join(tmpdir(), "copilot-shared-runtime-test-"));
     await new Promise<void>((resolve, reject) => {
       upstream.once("error", reject);

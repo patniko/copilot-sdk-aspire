@@ -475,3 +475,22 @@ Recorded commands:
 | `pnpm exec vitest run --project unit tests\unit\demo-host.test.ts tests\unit\session-capability.test.ts` | Passed: 10 tests |
 | `pnpm test:runtime` | Failed: 3 passed, 1 failed at virtual-workspace publication |
 | `pnpm install --frozen-lockfile --lockfile-only --offline` | Passed |
+
+### Local-source continuation
+
+The user approved locally built runtime/SDK dependencies rather than waiting for a release.
+The runtime worktree is `copilot-agent-runtime-hybrid`, on the existing pushed
+`patniko/aspire-ahp-runtime-patches` branch. It was fast-forwarded through the existing local fixes and
+merged with upstream `33071185b5a` in merge commit `5ba434564e3`, without rewriting history.
+The original runtime worktree remains on its previous branch. A separate hosting-library worktree starts
+at the runtime's pinned dependency revision.
+
+The local Node SDK builds. The application test package now links that SDK; the runtime gate requires an
+explicit matching local launcher/library pair through `COPILOT_CLI_PATH`. Neither a successful SDK build
+nor the dependency link qualifies the native host. Native build and virtual-workspace/identity work remain
+pending, and the existing service SDK pins and direct-container host are unchanged.
+
+Windows Developer Mode is a native build prerequisite. After enabling it, restart the task-owned Bazel
+server if it retained the earlier symlink-permission failure. A standalone file-symlink probe then succeeded.
+The native build uses the runtime repository's vendored Bazel wrapper. No signature verification or
+Windows privilege check was disabled.
