@@ -17,6 +17,7 @@ and model setup; this guide owns the implementation workflow.
 | [`src/job-store/src`](../src/job-store/src) | Shared transactional PostgreSQL ledger, migrations, event notifications |
 | [`src/agent-executor/src`](../src/agent-executor/src) | Executor slots, uid isolation, runner lifecycle, protocol and result validation |
 | [`src/agent-host/src`](../src/agent-host/src) | Experimental long-lived SDK owner, AHP ingress, connection provisioning, and host supervision |
+| [`src/session-host/src`](../src/session-host/src) | Experimental native-anchor workspace bridge for a future shared host; library only, not an enabled deployment service |
 | [`src/inference-gateway/src`](../src/inference-gateway/src) | Model route checks, capability authorization, upstream identity, usage reporting |
 | [`src/harness-hosting/src`](../src/harness-hosting/src) | TypeScript Copilot SDK runner, session mapping, permission handlers, tool bindings |
 | [`src/service-defaults/src`](../src/service-defaults/src) | Shared HTTP, auth, logging, Postgres, configuration, and registry helpers |
@@ -188,6 +189,16 @@ first delivery gate in the [hybrid hosting plan](HYBRID-HOSTING-PLAN.md#4-cli-co
 The `koffi` dependency build is allowed for the native in-process transport; existing batch execution
 continues to use its existing runtime configuration.
 
+The experimental `session-host` package also links the local SDK. `SessionWorkspace` gives the runtime
+filesystem provider and the AHP resource callback one per-activation operation lane. Its AHP side accepts
+only file URIs under the bound native anchor; content is read/written through the supplied storage provider,
+never through the anchor's native files. It supports bounded binary/text files and byte-position writes,
+and serializes create-only/etag checks with SDK file mutations. It does not provide cross-worker fencing
+or durable storage itself; the owning application must supply both. Access requests confirm only the
+already-bound namespace and never widen it. Optional session SQLite and directory copying are unsupported.
+The package is excluded from the existing Docker build context until a dedicated shared-host image stages
+its local SDK/native artifacts. Existing container services continue building from their published SDK pins.
+
 The initially probed published bundle could not publish pure virtual workspace paths on Windows.
 The selected design now uses tiny native directory anchors while keeping content in the provider.
 The suite verifies that unsupported virtual-only publication is rejected, separately from the working
@@ -195,6 +206,12 @@ anchor controls and per-account host scopes. Passing these primitive checks does
 remaining CLI resource bridge or real multi-account attachment.
 See the [qualification record](HYBRID-HOSTING-PLAN.md#13-qualification-record).
 Ordinary `pnpm test`, unit, and integration selections do not include this native-runtime suite.
+
+`tests/runtime/workspace-ahp.test.ts` is additionally opt-in with `HYBRID_RESOURCE_AUTH_TESTS=1`.
+Supply `DEMO_TEST_GITHUB_TOKEN` explicitly, or set `HYBRID_USE_GH_ACCOUNT=1` to authorize using the
+account already signed in through `gh`. It authenticates a task-owned loopback host and checks provider
+resource read/write behavior without model calls. It never prints or persists the credential.
+Do not enable either option for an unattended run without permission to use that account.
 
 The separate `tests/integration/github-native-host.test.ts` opt-in uses `DEMO_GITHUB_HOST_TESTS=1`,
 the same explicit GitHub credential variables, and `copilot-aspire-agent-host:native-demo` (or

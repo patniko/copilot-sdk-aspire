@@ -12,6 +12,8 @@ artifacts
 docs
 tests
 !tests/package.json
+# Local SDK prototype; existing production image stages do not deploy this package.
+src/session-host
 NuGet.config
 *.md
 !.copilot-agent-workspace/harnesses/**/*.md

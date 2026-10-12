@@ -556,3 +556,28 @@ The UI typecheck/build and seven focused topology tests passed. An Edge browser 
 API fixtures exercised current/hybrid maps, native/managed routes, node and keyboard selection, and
 desktop/dark/mobile layouts, with no external or mutating requests. These are UI observations, not
 evidence of a deployed shared runtime or successful real CLI attachment.
+
+### Authenticated workspace resource bridge
+
+The host now routes typed AHP resource operations through its supervising runtime to the owning SDK
+callback. The runtime binds the host identity, limits request/response size and in-flight calls, and
+stops a host whose callback transport fails or times out rather than treating an ambiguous mutation as
+success. Provider-mode catalogs cannot reopen with native filesystem fallback.
+
+The experimental application `session-host` library supplies `SessionWorkspace`: SDK file operations
+and the AHP callback share one serialized lane over the same storage provider. File URIs are confined
+to the session's native anchor, binary content is exact, create-only/etag preconditions are checked in
+that lane, and file/list/queue sizes are bounded. Durable storage and cross-worker activation fencing
+remain the owning service's responsibility; this is not yet a deployed session service.
+
+On 2026-10-11, an explicitly approved loopback test authenticated with the user's GitHub account and
+completed AHP resource reads/writes through the local runtime and SDK. A native sentinel at the same
+anchor path remained unchanged, while provider content changed and was immediately visible through the
+SDK filesystem interface. Unauthenticated access, an outside URI, a missing resource, and a native
+watch request were rejected. No model request was made, and no token was logged or persisted.
+The tested pair is `.runtime-artifacts/resource-bridge-registered-bad61b0/`.
+
+The workspace unit suite passed eight tests; preserved host/topology checks also passed. The Node SDK
+host client suite passed 45 tests and the runtime resource-routing filter passed four native tests.
+This qualifies the resource bridge for that local test, not real CLI conversation attachment,
+multi-account operation, persistent service recovery, or on-demand container delegation.

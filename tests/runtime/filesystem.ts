@@ -24,6 +24,12 @@ export function fixtureFilesystem(root: string, conventions: "posix" | "windows"
   };
   return {
     readFile: (path) => fs.readFile(physical(path), "utf8"),
+    readFileBytes: (path) => fs.readFile(physical(path)),
+    writeFileBytes: async (path, content) => {
+      const destination = physical(path);
+      await fs.mkdir(dirname(destination), { recursive: true });
+      await fs.writeFile(destination, content);
+    },
     writeFile: (path, content) => write(path, content, false),
     appendFile: (path, content) => write(path, content, true),
     exists: async (path) => {
@@ -47,7 +53,15 @@ export function fixtureFilesystem(root: string, conventions: "posix" | "windows"
     readdirWithTypes: async (path) => (await fs.readdir(physical(path), { withFileTypes: true })).map((entry) => ({
       name: entry.name, type: entry.isDirectory() ? "directory" as const : "file" as const,
     })),
-    rm: (path, recursive, force) => fs.rm(physical(path), { recursive, force }),
+    rm: async (path, recursive, force) => {
+      try {
+        if (!recursive && (await fs.stat(physical(path))).isDirectory()) await fs.rmdir(physical(path));
+        else await fs.rm(physical(path), { recursive, force });
+      } catch (error) {
+        if (force && error instanceof Error && "code" in error && error.code === "ENOENT") return;
+        throw error;
+      }
+    },
     rename: async (source, destination) => {
       await fs.mkdir(dirname(physical(destination)), { recursive: true });
       await fs.rename(physical(source), physical(destination));
