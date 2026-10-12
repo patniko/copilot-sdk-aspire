@@ -162,6 +162,14 @@ Changing destinations creates or resumes a session at that destination; it is no
 
 ## 5. Session, storage, and recovery model
 
+**Selected bridge approach (2026-10-11): native directory anchors.** The user chose small, empty
+per-session native directories for AHP path compatibility, with actual workspace content and runtime
+history remaining in `sessionFs`. This replaces the earlier assumption that a pure virtual POSIX path
+must be publishable on Windows. It does not replace or relax the shared-compute and ownership requirements.
+CLI resource operations must be routed to the same provider, never silently read/write the empty anchors.
+Host terminal, project, and administrative operations that bypass the managed tool boundary must be
+explicitly restricted on the shared destination. Keep the ordinary container destination unchanged.
+
 Separate durable identity from runtime residency:
 
 | Record | Owns |
@@ -529,6 +537,12 @@ The pure virtual-workspace publication requirement remains failing and the share
 
 The candidate artifacts are under `.runtime-artifacts/host-scope-candidate-31d73a9/`.
 This directory records a local trial, not a deployable release or a substitute for the remaining gates.
+
+The runtime/SDK contract is committed as `9b5cb028db3`, with all generated projections.
+Its native workspace-scope regression passed. The user then selected native directory anchors as
+the bridge design. The prior pure-virtual publication assertion is now a negative boundary test rather
+than a required unsupported capability. Provider-backed CLI resource routing, restricted host-only
+operations, real-account CLI attachment, and on-demand execution remain required work.
 
 ### Configurator topology foundation
 

@@ -188,11 +188,13 @@ first delivery gate in the [hybrid hosting plan](HYBRID-HOSTING-PLAN.md#4-cli-co
 The `koffi` dependency build is allowed for the native in-process transport; existing batch execution
 continues to use its existing runtime configuration.
 
-The initially probed published bundle failed the virtual-workspace AHP publication assertion on Windows.
-This separate, opt-in gate intentionally returns a failure rather than skipping the unsupported requirement.
-See the [qualification record](HYBRID-HOSTING-PLAN.md#13-qualification-record) for the passing controls,
-exact failure, and remaining runtime/host work. Ordinary `pnpm test`, unit, and integration selections
-do not include this native-runtime suite.
+The initially probed published bundle could not publish pure virtual workspace paths on Windows.
+The selected design now uses tiny native directory anchors while keeping content in the provider.
+The suite verifies that unsupported virtual-only publication is rejected, separately from the working
+anchor controls and per-account host scopes. Passing these primitive checks does not qualify the
+remaining CLI resource bridge or real multi-account attachment.
+See the [qualification record](HYBRID-HOSTING-PLAN.md#13-qualification-record).
+Ordinary `pnpm test`, unit, and integration selections do not include this native-runtime suite.
 
 The separate `tests/integration/github-native-host.test.ts` opt-in uses `DEMO_GITHUB_HOST_TESTS=1`,
 the same explicit GitHub credential variables, and `copilot-aspire-agent-host:native-demo` (or

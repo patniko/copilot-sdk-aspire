@@ -214,10 +214,9 @@ describe("shared runtime primitives (real runtime, synthetic inference, no CLI i
     }
   });
 
-  it("requires virtual-workspace publication into separate AHP catalogs before enabling shared CLI hosting", async () => {
+  it("rejects virtual-only publication outside the native AHP workspace boundary", async () => {
     const sessions: CopilotSession[] = [];
     const hosts: Awaited<ReturnType<CopilotClient["startAhpHost"]>>[] = [];
-    const publications: string[] = [];
     try {
       for (let index = 0; index < 2; index++) {
         const session = await client.createSession(sessionConfig());
@@ -229,11 +228,11 @@ describe("shared runtime primitives (real runtime, synthetic inference, no CLI i
           resumeSession: async () => { throw new Error("Resume sessions through the application qualification fixture."); },
         });
         hosts.push(host);
-        publications.push((await host.publishSession(session.sessionId)).sessionUri);
+        await expect(host.publishSession(session.sessionId)).rejects.toThrow(/publication/i);
       }
       expect(hosts[0].url).not.toBe(hosts[1].url);
-      for (const [index, host] of hosts.entries()) {
-        expect((await host.listSessions()).sessions.map((entry) => entry.resource)).toEqual([publications[index]]);
+      for (const host of hosts) {
+        expect((await host.listSessions()).sessions).toEqual([]);
       }
     } finally {
       try {
