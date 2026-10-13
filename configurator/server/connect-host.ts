@@ -5,23 +5,29 @@ import { hostConnection } from "./host-client.js";
 import { Settings } from "./settings.js";
 import { StatusService } from "./status.js";
 import { TryService } from "./try.js";
+import { sharedConnection } from "./shared-client.js";
 
 async function main(): Promise<void> {
   const { values } = parseArgs({
     options: {
       target: { type: "string", default: "local" },
       transport: { type: "string", default: "direct" },
+      destination: { type: "string", default: "container" },
       cli: { type: "string", default: "copilot" },
       resume: { type: "string" },
       help: { type: "boolean", short: "h" },
     },
   });
   if (values.help) {
-    console.log("pnpm host:connect --target local|azure --transport direct|github [--cli <executable>] [--resume <AHP-session-id>]");
+    console.log("pnpm host:connect --destination container|shared --target local|azure --transport direct|github [--cli <executable>] [--resume <session-id>]");
     return;
   }
   if (values.target !== "local" && values.target !== "azure") throw new Error("Target must be local or azure.");
   if (values.transport !== "direct" && values.transport !== "github") throw new Error("Transport must be direct or github.");
+  if (values.destination !== "container" && values.destination !== "shared") throw new Error("Destination must be container or shared.");
+  if (values.destination === "shared" && (values.target !== "local" || values.transport !== "direct")) {
+    throw new Error("Shared hosting currently supports local direct connections only. Azure and relay qualification remain open.");
+  }
   if (values.resume && !/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(values.resume)) throw new Error("Invalid AHP session ID.");
   const root = resolve(import.meta.dirname, "..", "..");
   let extraEnv: Record<string, string> = {};
@@ -31,24 +37,33 @@ async function main(): Promise<void> {
   if (nuget) extraEnv = { ASPIRE_CLI_NUGET_SERVICE_INDEX: nuget };
   const status = new StatusService({ root, aspireEnv });
   const jobs = new TryService(root, settings, status);
-  const { info, endpoint } = await hostConnection(values.target, values.transport, { settings, status, jobs });
   const env = { ...process.env };
   for (const name of ["DEMO_HOST_GITHUB_TOKEN", "DEMO_TEST_GITHUB_TOKEN", "Parameters__demo-host-github-token"]) delete env[name];
   const args = ["--experimental"];
-  if (values.transport === "direct") {
-    const url = new URL(endpoint!);
-    url.searchParams.set("tkn", info.token!);
-    env.COPILOT_AHP_SERVER_KEY = JSON.stringify({ endpoint, ...info.serverKey });
-    args.push("--ahp", url.href);
-    if (values.resume) args.push("--resume", values.resume);
-    console.log("Connecting to the demo host with a provisioned key and one-time ticket.");
+  if (values.destination === "shared") {
+    const connection = await sharedConnection(await jobs.connection("local"), values.resume);
+    const url = new URL(connection.url);
+    env.COPILOT_AHP_SERVER_KEY = JSON.stringify({ endpoint: url.href, ...connection.serverKey });
+    url.searchParams.set("tkn", connection.token);
+    args.push("--ahp", url.href, "--ahp-authenticate-with-github", "--resume", connection.sessionId);
+    console.log(`Connecting to shared conversation ${connection.sessionId} with a one-use ticket. This explicitly authorizes GitHub identity authentication to the provisioned host.`);
   } else {
-    delete env.COPILOT_AHP_SERVER_KEY;
-    args.push("--relay", "--environment-id", info.environmentId!);
-    if (values.resume) args.push("--resume", values.resume);
-    console.log(info.execution === "github-native"
-      ? "Connecting through Mission Control using Copilot's models, permissions, and billing."
-      : "Connecting through Mission Control to the managed host.");
+    const { info, endpoint } = await hostConnection(values.target, values.transport, { settings, status, jobs });
+    if (values.transport === "direct") {
+      const url = new URL(endpoint!);
+      url.searchParams.set("tkn", info.token!);
+      env.COPILOT_AHP_SERVER_KEY = JSON.stringify({ endpoint, ...info.serverKey });
+      args.push("--ahp", url.href);
+      if (values.resume) args.push("--resume", values.resume);
+      console.log("Connecting to the demo host with a provisioned key and one-time ticket.");
+    } else {
+      delete env.COPILOT_AHP_SERVER_KEY;
+      args.push("--relay", "--environment-id", info.environmentId!);
+      if (values.resume) args.push("--resume", values.resume);
+      console.log(info.execution === "github-native"
+        ? "Connecting through Mission Control using Copilot's models, permissions, and billing."
+        : "Connecting through Mission Control to the managed host.");
+    }
   }
   await new Promise<void>((resolveExit, reject) => {
     const script = /\.(?:cjs|mjs|js)$/i.test(values.cli);

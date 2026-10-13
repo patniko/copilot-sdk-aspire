@@ -15,18 +15,19 @@ export function HostingView() {
   const deployment = settings?.targets.find((entry) => entry.name === settings.selectedTarget);
   const host = target === "local" ? settings?.local.demoHost : deployment?.demoHost;
   const transport = host?.transport ?? "disabled";
-  const topology = hostingTopology(architecture, transport);
+  const topology = hostingTopology(architecture, transport, target === "local");
   const node = topology.nodes.find((entry) => entry.id === selected) ?? topology.nodes[0]!;
   const observedAzure = azure?.target === deployment?.name ? azure : undefined;
   const hostEnabled = transport !== "disabled";
+  const sharedObserved = target === "local" && local?.resources.some((resource) => resource.name === "session-host");
   return (
     <div className="space-y-6">
       <PageHeader title="Hosting & topology" leading={<GitBranch size={24} />}
-        description="Explore the current container stack and the proposed shared-coordinator architecture. Execution destination and connection transport are separate choices." />
+        description="Explore the default container stack and experimental local hybrid architecture. Execution destination and connection transport are separate choices." />
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="flex gap-2" role="group" aria-label="Architecture view">
           <button type="button" className={architecture === "current" ? "btn-primary" : "btn-secondary"} aria-pressed={architecture === "current"} onClick={() => setArchitecture("current")}>Current stack</button>
-          <button type="button" className={architecture === "hybrid" ? "btn-primary" : "btn-secondary"} aria-pressed={architecture === "hybrid"} onClick={() => setArchitecture("hybrid")}>Hybrid proposal</button>
+          <button type="button" className={architecture === "hybrid" ? "btn-primary" : "btn-secondary"} aria-pressed={architecture === "hybrid"} onClick={() => setArchitecture("hybrid")}>Hybrid architecture</button>
         </div>
         <label className="text-sm">
           Configuration target
@@ -37,9 +38,11 @@ export function HostingView() {
         </label>
       </div>
       <div className="flash">
-        <Badge tone={architecture === "hybrid" ? "amber" : "neutral"}>{architecture === "hybrid" ? "Proposal / not deployed" : "Configured architecture"}</Badge>
+        <Badge tone={architecture === "hybrid" ? "amber" : "neutral"}>{architecture === "hybrid" ? target === "local" ? "Experimental / local opt-in" : "Azure proposal / unqualified" : "Default pool architecture"}</Badge>
         <p className="mt-2 text-sm">{architecture === "hybrid"
-          ? "The shared CLI destination and on-demand container controller are not enabled. This preview does not deploy resources or change settings; * marks proposed connections."
+          ? target === "local"
+            ? "The local hybrid path has protected shared CLI sessions and actual one-shot job containers. This map does not enable it, deploy resources, or report live allocation counts."
+            : "The Azure hybrid execution adapter is not qualified. This preview does not deploy resources or change settings; * marks proposed connections."
           : "This is a component map, not live telemetry. Resource observations may be stale and do not establish CLI readiness."}</p>
         <p className="mt-1 text-xs fg-muted">Boxes describe responsibilities, not enforced network or cross-customer isolation.</p>
       </div>
@@ -57,12 +60,14 @@ export function HostingView() {
         {target === "azure" && azureError && <p className="mt-2 fg-danger" role="alert">Azure observation unavailable: {azureError}</p>}
       </section>
       <div className="grid gap-4 xl:grid-cols-2">
-        <Card title={<span className="flex items-center gap-2"><TerminalSquare /> Connect Copilot CLI</span>} subtitle="Keep direct container attachment independent of the proposed shared loop.">
+        <Card title={<span className="flex items-center gap-2"><TerminalSquare /> Connect Copilot CLI</span>} subtitle="Direct container attachment is independent of the experimental shared loop.">
           <div className="space-y-4">
             <div>
-              <h3 className="font-semibold">Shared coordinator <Badge tone="amber">Blocked by runtime qualification</Badge></h3>
-              <p className="mt-1 text-sm fg-muted">In-process execution and session FS do not yet provide a qualified multi-account CLI host.</p>
-              <button type="button" className="btn-secondary mt-2" disabled>Shared CLI launcher unavailable</button>
+              <h3 className="font-semibold">Shared coordinator <Badge tone="amber">{sharedObserved ? "Local service observed" : "Local opt-in required"}</Badge></h3>
+              <p className="mt-1 text-sm fg-muted">Use the matching qualified CLI and an operator-bound GitHub account. Two-real-account and Azure qualification remain open.</p>
+              {sharedObserved
+                ? <CopyButton label="Copy shared CLI launcher" text="pnpm host:connect --destination shared --target local --transport direct" />
+                : <button type="button" className="btn-secondary mt-2" disabled>Shared CLI launcher unavailable</button>}
             </div>
             <div className="border-t border-muted pt-4">
               <h3 className="font-semibold">Container agent <Badge>{hostEnabled ? "Configured" : "Not configured"}</Badge></h3>
@@ -77,7 +82,7 @@ export function HostingView() {
         </Card>
         <Card title="Performance & allocation controls" subtitle="Measure the architecture rather than animate a claim.">
           <p>First-token latency, active-container counts, and compute cost are <strong>not measured here yet</strong>.</p>
-          <p className="mt-2 text-sm fg-muted">The next integration adds real allocation events and backend-enforced concurrency, warm-capacity, retirement, and budget controls. No preview control silently changes the deployment.</p>
+          <p className="mt-2 text-sm fg-muted">Local limits are enforced by the backend and configured through Aspire's hybrid parameters. This page does not yet display the allocation ledger or edit those settings. Warm pooling is not implemented; one-shot containers retire after work.</p>
           <p className="mt-2 text-sm fg-muted">Compare the same model/provider where possible, and report shared service costs separately from execution containers and the optional direct host.</p>
         </Card>
       </div>

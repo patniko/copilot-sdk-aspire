@@ -70,7 +70,8 @@ repository if it must be shared or audited.
 
 ## Hosting and topology
 
-**Hosting** shows a selectable component map for the current stack and an explicitly labeled hybrid proposal.
+**Hosting** shows selectable maps for the default pool stack, experimental local hybrid path, and the
+separately labeled, unqualified Azure hybrid proposal.
 Choose local or the selected Azure target, select a node to inspect its responsibility and limitations, or
 expand the text connection map. Keyboard selection, horizontal scrolling, and light/dark themes are supported.
 
@@ -79,10 +80,13 @@ without treating missing data as a running or stopped service. Those observation
 The preview does not deploy resources or modify settings, and planned nodes are visibly marked.
 Native container-host inference is shown separately from the managed Foundry route.
 
-The connection card preserves the existing container CLI launchers. The shared coordinator launcher remains
-unavailable until the [hybrid runtime gate](HYBRID-HOSTING-PLAN.md#4-cli-connection-contract-first-engineering-gate)
-passes. First-token measurements, allocation counts, cost estimates, and future pool controls are not fabricated;
-they remain unavailable until their backend integration is implemented.
+The connection card preserves existing container CLI launchers and shows the shared launcher when the
+local `session-host` resource is observed. Use the matching qualified CLI; service observation alone is
+not account/client readiness. The backend enforces local scheduling, budgets and one-shot container
+limits configured through [Aspire hybrid parameters](DEPLOYMENT.md#hybrid-controls).
+This page does not edit those settings or display live allocations yet. First-token measurements and
+cost estimates remain unavailable rather than fabricated; Azure and two-real-account qualification
+are still open.
 
 ## Experimental demo host
 
