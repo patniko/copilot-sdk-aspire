@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { capture } from "./process.js";
+import { capture, stripAnsi } from "./process.js";
 import type { DeployTarget, LocalSettings, SettingsInfo } from "./types.js";
 
 export class SettingsError extends Error {}
@@ -13,6 +13,7 @@ const httpsUrl = z
   .string()
   .url()
   .refine((value) => {
+    if (!URL.canParse(value)) return false;
     const url = new URL(value);
     return url.protocol === "https:" && !url.username && !url.password && !url.search && !url.hash;
   }, "Use an https:// URL without credentials, query strings, or fragments.");
@@ -81,7 +82,7 @@ export class Settings {
     return join(this.root, ".configurator", "settings.json");
   }
 
-  async secretsPath(): Promise<string | undefined> {
+  async secretsPath(): Promise<string> {
     if (this.#secretsPath) {
       return this.#secretsPath;
     }
@@ -90,31 +91,49 @@ export class Settings {
       env: this.aspireEnv(),
       timeoutMs: 60_000,
     });
-    const path = result.stdout
+    if (result.code !== 0 || result.timedOut) {
+      throw new SettingsError(
+        "Could not locate the AppHost user secrets file. Check that the Aspire CLI is available and 'aspire secret path --apphost apphost.mts' succeeds.",
+      );
+    }
+    const path = stripAnsi(result.stdout)
       .split(/\r?\n/)
       .map((line) => line.trim())
       .find((line) => line.endsWith("secrets.json"));
+    if (!path) {
+      throw new SettingsError("The Aspire CLI did not return a user secrets path. Run 'aspire secret path --apphost apphost.mts' to check it.");
+    }
     this.#secretsPath = path;
     return path;
   }
 
   async #readSecrets(): Promise<Record<string, unknown>> {
     const path = await this.secretsPath();
-    if (!path) {
-      return {};
-    }
+    let content: string;
     try {
-      return JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
-    } catch {
-      return {};
+      content = await readFile(path, "utf8");
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        return {};
+      }
+      throw new SettingsError("Could not read the AppHost user secrets file. Check its file permissions and try again.");
     }
+    let secrets: unknown;
+    try {
+      // Aspire/.NET may write UTF-8 with a BOM, which JSON.parse does not accept.
+      secrets = JSON.parse(content.replace(/^\uFEFF/, ""));
+    } catch {
+      throw new SettingsError("The AppHost user secrets file is not valid JSON. Repair it before saving settings; its contents have not been changed.");
+    }
+    const parsed = z.record(z.string(), z.unknown()).safeParse(secrets);
+    if (!parsed.success) {
+      throw new SettingsError("The AppHost user secrets file must contain a JSON object. Repair it before saving settings; its contents have not been changed.");
+    }
+    return parsed.data;
   }
 
   async #writeSecrets(updates: Record<string, string | undefined>): Promise<void> {
     const path = await this.secretsPath();
-    if (!path) {
-      throw new SettingsError("Could not locate the AppHost user secrets file (is the Aspire CLI installed?).");
-    }
     const secrets = await this.#readSecrets();
     for (const [key, value] of Object.entries(updates)) {
       if (value === undefined || value === "") {

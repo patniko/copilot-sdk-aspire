@@ -125,6 +125,21 @@ tool, implement it in the runners and add its binding to the profiles (see [RUNN
 For policy, profile, or tool changes, follow the [publication rules](DEVELOPER-GUIDE.md#configuration-publication):
 **Reload harnesses** restarts only the API, not every configuration consumer.
 
+### Local API key troubleshooting
+
+**Try it** and **Copy API key** read the generated caller key from the AppHost user secrets file located by
+`aspire secret path --apphost .\apphost.mts`. The reader supports UTF-8 JSON with or without the byte-order mark
+that Aspire/.NET may write. Only a genuinely missing file or key is treated as not yet generated.
+
+If the CLI cannot locate the file, the file cannot be read, or its JSON is invalid, the configurator reports that
+error instead of treating existing secrets as empty. Saving local parameters stops before writing if the existing
+secrets cannot be read, preserving generated keys and unrelated settings. Do not delete the secrets file to
+resolve a connection error.
+
+After updating configurator server code, restart **only the configurator** (Ctrl+C in its terminal, then
+`pnpm configure`) and reopen the newly printed URL. A healthy Aspire stack can stay running; **Reload harnesses**
+does not reload the configurator server.
+
 ## Security
 
 The companion server can edit files and run commands, so it is locked down:
