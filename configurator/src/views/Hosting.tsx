@@ -1,7 +1,7 @@
 import { useId, useState } from "react";
 import type { TryTarget } from "../../server/types";
-import { HostingDiagram } from "../components/HostingDiagram";
-import { GitBranch, TerminalSquare } from "../components/icons";
+import { HostingDiagram, HostingNodeIcon } from "../components/HostingDiagram";
+import { CircleDot, GitBranch, ShieldCheck, TerminalSquare } from "../components/icons";
 import { Badge, Card, CopyButton, PageHeader } from "../components/ui";
 import { hostingObservation, hostingPlacement, hostingTopology, type HostingArchitecture, type HostingNodeId } from "../hosting";
 import { useApp } from "../state";
@@ -20,41 +20,77 @@ export function HostingView() {
   const observedAzure = azure?.target === deployment?.name ? azure : undefined;
   const hostEnabled = transport !== "disabled";
   return (
-    <div className="space-y-6">
-      <PageHeader title="Hosting & topology" leading={<GitBranch size={24} />}
-        description="Explore the current container stack and the proposed shared-coordinator architecture. Execution destination and connection transport are separate choices." />
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex gap-2" role="group" aria-label="Architecture view">
-          <button type="button" className={architecture === "current" ? "btn-primary" : "btn-secondary"} aria-pressed={architecture === "current"} onClick={() => setArchitecture("current")}>Current stack</button>
-          <button type="button" className={architecture === "hybrid" ? "btn-primary" : "btn-secondary"} aria-pressed={architecture === "hybrid"} onClick={() => setArchitecture("hybrid")}>Hybrid proposal</button>
+    <div className="space-y-6 hosting-page">
+      <PageHeader
+        title="Your hosting architecture"
+        leading={<GitBranch size={24} />}
+        description="See where every responsibility runs, how requests and state move through the platform, and which hybrid components are still proposals."
+      />
+      <section className="hosting-control-bar" aria-label="Topology controls">
+        <div>
+          <span className="hosting-control-label">Architecture</span>
+          <div className="hosting-segmented" role="group" aria-label="Architecture view">
+            <button type="button" data-active={architecture === "current"} aria-pressed={architecture === "current"} onClick={() => setArchitecture("current")}>
+              Current stack
+            </button>
+            <button type="button" data-active={architecture === "hybrid"} aria-pressed={architecture === "hybrid"} onClick={() => setArchitecture("hybrid")}>
+              Hybrid proposal
+            </button>
+          </div>
         </div>
-        <label className="text-sm">
-          Configuration target
-          <select className="input mt-1" value={target} onChange={(event) => setTarget(event.target.value === "azure" ? "azure" : "local")}>
-            <option value="local">Local</option>
-            <option value="azure" disabled={!deployment}>{deployment ? `Azure: ${deployment.name}` : "Azure: no target selected"}</option>
+        <label>
+          <span className="hosting-control-label">Configuration target</span>
+          <select className="input" value={target} onChange={(event) => setTarget(event.target.value === "azure" ? "azure" : "local")}>
+            <option value="local">Local workstation</option>
+            <option value="azure" disabled={!deployment}>{deployment ? `Azure · ${deployment.name}` : "Azure · no target selected"}</option>
           </select>
         </label>
-      </div>
-      <div className="flash">
-        <Badge tone={architecture === "hybrid" ? "amber" : "neutral"}>{architecture === "hybrid" ? "Proposal / not deployed" : "Configured architecture"}</Badge>
-        <p className="mt-2 text-sm">{architecture === "hybrid"
-          ? "The shared CLI destination and on-demand container controller are not enabled. This preview does not deploy resources or change settings; * marks proposed connections."
-          : "This is a component map, not live telemetry. Resource observations may be stale and do not establish CLI readiness."}</p>
-        <p className="mt-1 text-xs fg-muted">Boxes describe responsibilities, not enforced network or cross-customer isolation.</p>
-      </div>
-      <section className="card overflow-hidden" aria-label="Hosting architecture">
-        <HostingDiagram topology={topology} selected={node.id} onSelect={setSelected} detailId={detailId} />
+        <div className="hosting-control-summary">
+          <Badge tone={architecture === "hybrid" ? "amber" : "green"}>
+            {architecture === "hybrid" ? "Proposal · not deployed" : "Configured architecture"}
+          </Badge>
+          <span>{architecture === "hybrid" ? "Planned components and routes are dashed." : "Resource state is observational, not live telemetry."}</span>
+        </div>
       </section>
-      <section className="card card-pad" id={detailId} aria-live="polite" aria-label="Component details">
-        <div className="flex flex-wrap items-center gap-3">
-          <h2 className="text-lg">{node.title}</h2>
+      <section className="hosting-architecture-shell" aria-label="Hosting architecture">
+        <div className="hosting-architecture-heading">
+          <div>
+            <h2>{architecture === "hybrid" ? "Shared coordinator with on-demand execution" : "Current container-backed service"}</h2>
+            <p>{architecture === "hybrid"
+              ? "A low-cost shared main loop delegates privileged or long-running work into isolated container capacity."
+              : "The API admits work into durable orchestration, container execution, and gateway-managed model access."}</p>
+          </div>
+          <span className="hosting-readonly"><ShieldCheck size={14} /> Read-only architecture view</span>
+        </div>
+        <HostingDiagram topology={topology} selected={node.id} onSelect={setSelected} detailId={detailId} />
+        <p className="hosting-boundary-note">
+          Diagram zones describe placement and responsibility. They do not claim enforced network egress or cross-customer isolation beyond the controls documented by this repository.
+        </p>
+      </section>
+      <section className="hosting-inspector" id={detailId} aria-live="polite" aria-label="Component details">
+        <div className="hosting-inspector-heading">
+          <span className="hosting-inspector-icon"><HostingNodeIcon node={node.id} size={27} /></span>
+          <div>
+            <span className="hosting-inspector-kicker">Selected component</span>
+            <h2>{node.title}</h2>
+          </div>
           <Badge tone={node.proposed ? "amber" : "neutral"}>{hostingObservation(node, target, local, observedAzure)}</Badge>
         </div>
-        <p className="mt-2 text-xs fg-muted">Configured placement: {hostingPlacement(node, target)}</p>
-        <p className="mt-2">{node.purpose}</p>
-        <p className="mt-2 text-sm fg-muted"><strong>Boundary:</strong> {node.limitation}</p>
-        {target === "azure" && azureError && <p className="mt-2 fg-danger" role="alert">Azure observation unavailable: {azureError}</p>}
+        <div className="hosting-inspector-grid">
+          <div>
+            <h3>Responsibility</h3>
+            <p>{node.purpose}</p>
+          </div>
+          <div>
+            <h3>Placement</h3>
+            <p>{hostingPlacement(node, target)}</p>
+          </div>
+          <div className="hosting-inspector-boundary">
+            <h3><CircleDot size={14} /> Boundary to keep explicit</h3>
+            <p>{node.limitation}</p>
+          </div>
+        </div>
+        {target === "azure" && azureError && <p className="mt-3 fg-danger" role="alert">Azure observation unavailable: {azureError}</p>}
       </section>
       <div className="grid gap-4 xl:grid-cols-2">
         <Card title={<span className="flex items-center gap-2"><TerminalSquare /> Connect Copilot CLI</span>} subtitle="Keep direct container attachment independent of the proposed shared loop.">

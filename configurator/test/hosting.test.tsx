@@ -68,12 +68,15 @@ describe("hosting topology", () => {
     expect(html).toContain('aria-pressed="true"');
     expect(html).toContain('tabindex="0"');
     expect(html).toContain("Text connection map");
-    expect(html).toContain("Shared coordinator to Execution controller: Delegate job (proposed)");
+    expect(html).toContain("Shared coordinator to Execution controller: delegate (proposed)");
+    expect(html).toContain("Platform control plane");
+    expect(html).toContain("hosting-node-icon");
+    expect(html).toContain("hosting-edge-label");
   });
 
   it("preserves the container launcher and blocks the unqualified shared destination", () => {
     const html = renderToStaticMarkup(<HostingView />);
-    expect(html).toContain("Hosting &amp; topology");
+    expect(html).toContain("Your hosting architecture");
     expect(html).toContain("Copy GitHub CLI launcher");
     expect(html).toContain('disabled="">Shared CLI launcher unavailable');
     expect(html).toContain("not measured here yet");
