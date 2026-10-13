@@ -17,6 +17,7 @@ and model setup; this guide owns the implementation workflow.
 | [`src/job-store/src`](../src/job-store/src) | Shared transactional PostgreSQL ledger, migrations, event notifications |
 | [`src/agent-executor/src`](../src/agent-executor/src) | Executor slots, uid isolation, runner lifecycle, protocol and result validation |
 | [`src/agent-host/src`](../src/agent-host/src) | Experimental long-lived SDK owner, AHP ingress, connection provisioning, and host supervision |
+| [`src/session-host/src`](../src/session-host/src) | Experimental native-anchor workspace bridge for a future shared host; library only, not an enabled deployment service |
 | [`src/inference-gateway/src`](../src/inference-gateway/src) | Model route checks, capability authorization, upstream identity, usage reporting |
 | [`src/harness-hosting/src`](../src/harness-hosting/src) | TypeScript Copilot SDK runner, session mapping, permission handlers, tool bindings |
 | [`src/service-defaults/src`](../src/service-defaults/src) | Shared HTTP, auth, logging, Postgres, configuration, and registry helpers |
@@ -51,6 +52,7 @@ so tests do not consume stale compiled dependencies.
 | `pnpm lint` | Current ESLint script checks `apphost.mts`, not the entire repository |
 | `pnpm test:unit` | Unit tests plus configurator tests; no Docker, Azure, or model needed |
 | `pnpm test:integration` | Real services/store against disposable PostgreSQL, fake runner, and fake model upstream |
+| `pnpm test:runtime` | Experimental shared-runtime primitives against a locally built SDK/native runtime and synthetic loopback inference; no Docker or credentials |
 | `pnpm test` | Unit and integration projects together |
 | `pnpm --filter @copilot-agent/configurator typecheck` | UI and companion-server TypeScript |
 | `pnpm --filter @copilot-agent/configurator build` | Vite production UI build |
@@ -167,6 +169,157 @@ A Docker/store test does not prove Azure Files behavior, direct CLI compatibilit
 attachment. Collect those results separately and keep the [known compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate)
 explicit until the matching runtime/client artifact is qualified.
 
+### Hybrid runtime qualification
+
+`pnpm test:runtime` uses a separate Vitest configuration and is not part of the ordinary unit/integration
+suites. It exercises an in-process runtime, independent provider-backed session state, and separate AHP
+catalogs on one runtime. On the experimental hybrid branch, `tests/package.json` links the Node SDK in the
+sibling `copilot-agent-runtime-hybrid` worktree. Build that SDK before restoring this application's
+dependencies. Existing batch/host package pins remain independent; this link does not upgrade a deployed service.
+
+The runtime worktree tracks `patniko/aspire-ahp-runtime-patches` and preserves the existing proposals.
+Follow its native build instructions and build the Node SDK from `src/sdk/nodejs`. Stage the resulting
+native launcher and its matching library together; set `COPILOT_CLI_PATH` to the launcher's absolute path
+before running `pnpm test:runtime`. The suite refuses a missing local artifact rather than downloading
+or falling back to a published runtime. Local native builds and their SDK outputs are not committed here.
+Leave `COPILOT_AHP_FACTORY_PROFILE` unset for this primitive suite: it includes default-host controls
+without application factories. The shared-owner integration tests below explicitly require the managed
+profile instead; imposing that profile on factory-free controls correctly makes their startup fail.
+
+For a native Linux bundle, `deploy/build-hybrid-runtime.ps1` archives clean, committed runtime and
+hosting worktrees, builds/packs their matching Node SDK, and builds the native launcher/library inside
+Docker. Supply an MXC checkout at the exact revision in the runtime's `Cargo.toml`; the build does not
+forward personal Git configuration or credentials. Private hosting/MXC dependencies are supplied from
+those source snapshots with the runtime's unchanged generated Bazel definitions.
+
+```powershell
+.\deploy\build-hybrid-runtime.ps1 `
+  -RuntimeRepository C:\projects\copilot-agent-runtime-hybrid `
+  -HostingRepository C:\projects\copilot-host-hybrid `
+  -MxcRepository C:\projects\mxc-pinned `
+  -OutputDirectory C:\projects\copilot-sdk-aspire-hybrid\.runtime-artifacts\hybrid-linux
+```
+
+The output directory must be absent or empty. It contains `copilot-runtime`, `runtime.node`, `sdk.tgz`,
+`provenance.json` (source revisions and input hashes), and verified `SHA256SUMS`. The Docker engine's
+native Linux architecture is used; no emulated amd64 target is imposed on ARM64. The default `fast`
+configuration is a large, unoptimized qualification build; use `-Configuration release` for an optimized
+candidate and qualify it separately before comparative performance claims. `-NpmRegistry` supports the
+same operator-selected registry/proxy pattern as the existing deployment build.
+The build must pass a Linux in-process/provider-filesystem/two-host synthetic-inference probe before
+exporting the bundle. This packaging probe does not authenticate real accounts or qualify the complete
+shared service, and exported native bundles remain ignored rather than committed.
+
+The fixtures use temporary files and synthetic loopback inference without GitHub or provider credentials.
+They do not prove real-model behavior, CLI attachment, or cross-account authorization. Those remain the
+first delivery gate in the [hybrid hosting plan](HYBRID-HOSTING-PLAN.md#4-cli-connection-contract-first-engineering-gate).
+The `koffi` dependency build is allowed for the native in-process transport; existing batch execution
+continues to use its existing runtime configuration.
+
+The experimental `session-host` package also links the local SDK. `SessionWorkspace` gives the runtime
+filesystem provider and the AHP resource callback one per-activation operation lane. Its AHP side accepts
+only file URIs under the bound native anchor; content is read/written through the supplied storage provider,
+never through the anchor's native files. It supports bounded binary/text files and byte-position writes,
+and serializes create-only/etag checks with SDK file mutations. It does not provide cross-worker fencing
+or durable storage itself; the owning application must supply both. Access requests confirm only the
+already-bound namespace and never widen it. Optional session SQLite and directory copying are unsupported.
+The package is excluded from the existing Docker build context until a dedicated shared-host image stages
+its local SDK/native artifacts. Existing container services continue building from their published SDK pins.
+
+`SessionFileStore` in `job-store` provides the prototype's PostgreSQL storage authority.
+Namespaces bind a principal to an expiring activation epoch; every filesystem read/write locks and checks
+that lease. Replacement epochs cannot act as the previous owner, and resuming cannot widen admitted
+storage quotas. The initial bounds are eight MiB per file, 64 MiB and 2,048 entries per namespace
+(lower namespace ceilings are accepted). Quota failures roll back both file and parent-directory writes.
+Metadata/listing queries do not load file payloads. This is bounded session storage, not the large-job artifact
+store; append rewrites a bounded file and needs measurement before high-volume transcript use.
+The `postgresSessionFilesystem` adapter supplies that storage to the shared-host library without native
+filesystem I/O. Windows provider keys are case-folded within their namespace.
+
+`SharedSessionRuntime` is a local prototype owner over one in-process client. It publishes one
+account/workspace-scoped AHP listener per admitted conversation, backed by PostgreSQL session files.
+Opening is bounded, storage leases renew during activation, and deactivation retains the conversation.
+New conversations are application-provisioned; the CLI attaches to the published session rather than
+creating arbitrary sessions through AHP. Returned listener tokens are private provisioning material:
+`SharedSessionService` supplies the authenticated one-time tickets and independently provisioned server
+keys instead of exposing that internal return value.
+The surrounding `SharedSessionService` supplies protected provisioning, durable turn/budget admission,
+idle eviction and application tools; the local AppHost enables it explicitly. `execution-controller`
+reconciles on-demand containers outside the runtime process. These are local experimental integrations,
+not the Azure deployment path.
+Set `COPILOT_AHP_FACTORY_PROFILE=managed` on the hosting process before initialization. An in-process
+runtime cannot use the child-runtime `env` option; this existing managed profile keeps AHP identity
+credentials separate from the application's model provider. The library refuses to start without it.
+
+The opt-in integration `tests/integration/shared-session-runtime.test.ts` requires
+`HYBRID_SESSION_RUNTIME_TESTS=1`, a local native pair, and disposable PostgreSQL.
+It checks independent published conversations, capacity, ownership, unchanged configuration on resume,
+and runtime replacement without model calls or real-account authentication.
+
+The initially probed published bundle could not publish pure virtual workspace paths on Windows.
+The selected design now uses tiny native directory anchors while keeping content in the provider.
+The suite verifies that unsupported virtual-only publication is rejected, separately from the working
+anchor controls and per-account host scopes. Passing these primitive checks does not qualify the
+complete public service or real multi-account attachment; the resource and CLI cases below provide
+separate evidence for those paths.
+See the [qualification record](HYBRID-HOSTING-PLAN.md#13-qualification-record).
+Ordinary `pnpm test`, unit, and integration selections do not include this native-runtime suite.
+
+`tests/runtime/workspace-ahp.test.ts` is additionally opt-in with `HYBRID_RESOURCE_AUTH_TESTS=1`.
+Supply `DEMO_TEST_GITHUB_TOKEN` explicitly, or set `HYBRID_USE_GH_ACCOUNT=1` to authorize using the
+account already signed in through `gh`. It authenticates a task-owned loopback host and checks provider
+resource read/write behavior without model calls. It never prints or persists the credential.
+Do not enable either option for an unattended run without permission to use that account.
+
+`tests/integration/shared-cli.test.ts` is a separate real-CLI gate, enabled with `HYBRID_CLI_TESTS=1`.
+Build the matching local CLI first, set `HYBRID_CLI_PATH` to its absolute `dist-cli/index.js` path,
+and supply the local native pair, managed hosting profile, disposable PostgreSQL, and explicitly
+authorized GitHub account described above. The test loads `node-pty` from that CLI worktree,
+authenticates to a task-owned loopback host with an explicitly pinned server key, and drives the
+interactive CLI against synthetic loopback inference. `--ahp-authenticate-with-github` is required
+to consent to sharing GitHub identity with this host; it is not a model-provider credential.
+The test then stops the first CLI and shared runtime owner, reopens the retained PostgreSQL-backed
+conversation, and attaches a fresh CLI. It checks replayed history and prior-turn context in the next
+model request, with native anchors still empty. It does not contact a paid model provider or qualify
+two-account operation, process-crash recovery, or multi-replica failover. For example:
+
+```powershell
+# Use the actual paths to your locally built, matching artifacts.
+$env:COPILOT_CLI_PATH = 'C:\projects\copilot-agent-runtime-hybrid\dist-cli\prebuilds\win32-arm64\copilot-runtime.exe'
+$env:HYBRID_CLI_PATH = 'C:\projects\copilot-agent-runtime-hybrid\dist-cli\index.js'
+$env:COPILOT_AHP_FACTORY_PROFILE = 'managed'
+$env:HYBRID_CLI_TESTS = '1'
+$env:HYBRID_USE_GH_ACCOUNT = '1' # Explicit approval to use the account signed in through gh.
+pnpm exec vitest run --project integration tests\integration\shared-cli.test.ts
+```
+
+`HYBRID_SESSION_RUNTIME_TESTS=1` also enables `shared-service.test.ts`: protected API provisioning,
+one-use tickets, real native inference through the reservation-backed gateway, completion history
+deduplication and idle eviction. `shared-store.test.ts` and `delegations.test.ts` use disposable
+PostgreSQL without a native runtime and cover atomic admission, scopes, quotas, usage recovery and artifacts.
+
+For the complete local CLI/container gate, build `copilot-hybrid-executor:local`, set the matching
+native/CLI paths and explicit account opt-in above, then run:
+
+```powershell
+$env:HYBRID_DEPLOYMENT_TESTS = '1'
+pnpm exec vitest run --project integration tests\integration\hybrid-deployment.test.ts
+```
+
+This drives real tool calls from a synthetic model through the actual CLI and shared host, checks that
+lightweight chat allocates no container, runs both TypeScript and Python jobs with uid isolation,
+downloads retained outputs after teardown, and receives completion in the same CLI conversation.
+It also exercises queued/running cancellation, two-container spreading after a controller restart,
+and orphan cleanup. Terminal assertions use a headless terminal emulator rather than concatenating
+ANSI-stripped repaint fragments.
+It uses a disposable database and uniquely labeled containers; it does not use a paid model or Azure.
+`HYBRID_CONTAINER_TESTS=1` enables the artifact-safety image probe and `shared-image.test.ts`.
+The latter runs the packaged worker as its unprivileged Linux user against disposable PostgreSQL,
+including one-use tickets, an in-process model turn and retained conversation replacement.
+Failed automatic notifications are inspectable through the session jobs API. Standalone deployment,
+configuration, Linux-image commands and the two CLI destinations are documented in
+[local hybrid deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment).
+
 The separate `tests/integration/github-native-host.test.ts` opt-in uses `DEMO_GITHUB_HOST_TESTS=1`,
 the same explicit GitHub credential variables, and `copilot-aspire-agent-host:native-demo` (or
 `DEMO_GITHUB_HOST_TEST_IMAGE`). It exercises the actual native container, Mission Control registration,
@@ -213,7 +366,7 @@ Follow the complete feature path rather than changing only a schema or an editor
 | --- | --- |
 | [Harness contract](../contracts/src/harness.ts) and [profile/policy contract](../contracts/src/profile.ts) | Validation, defaults, policy ceilings, and required runner capability |
 | [Registry](../src/service-defaults/src/registry.ts) | File representation, resolved snapshot, digest behavior |
-| [Admission](../src/agent-api/src/admission.ts) | Supported profile/bindings/options rejected before queuing if unavailable |
+| [Admission](../src/service-defaults/src/admission.ts) | Shared API/delegation validation rejects unsupported profile/bindings/options before queuing |
 | [Executor](../src/agent-executor/src/attempt.ts) and [wire contract](../contracts/src/runner-protocol.ts) | Capability check on `hello`, lifecycle, bounded messages, output validation |
 | [TypeScript session mapping](../src/harness-hosting/src/session-config.ts) | SDK options, tool exposure, agent/skill mapping |
 | [Python runner](../execution-profiles/python-agent/runner.py) | Equivalent `session_options()` behavior with snake_case SDK fields |

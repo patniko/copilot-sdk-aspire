@@ -14,6 +14,7 @@
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
+    "test:runtime": "vitest run --config vitest.runtime.config.ts",
     "typecheck:tests": "tsc -p tests/tsconfig.json",
     "configure": "pnpm -r --filter ./contracts --filter ./src/service-defaults run build && pnpm --filter @copilot-agent/configurator start",
     "host:connect": "tsx configurator/server/connect-host.ts",

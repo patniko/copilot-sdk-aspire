@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1100" viewBox="0 0 1280 1100" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1400" viewBox="0 0 1280 1400" role="img" aria-labelledby="title description">
   <title id="title">Copilot SDK and Aspire service architecture</title>
-  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The executor runs an unprivileged SDK runner using the inference gateway. The optional host retains conversations and a workspace. Its GitHub-native profile uses Mission Control and GitHub Copilot inference. Its managed profile uses a harness and session-scoped Foundry capabilities and awaits runtime qualification. Outbound network isolation is not enforced.</desc>
+  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The default executor pool runs unprivileged SDK runners using the inference gateway. The optional direct container host remains separate. Experimental local hybrid mode adds protected CLI provisioning and a shared in-process coordinator with PostgreSQL session files; an operator-owned Docker controller starts one-shot execution containers and durable completion returns results to the coordinator. Azure hybrid and two-real-account qualification remain open. Outbound network isolation is not enforced.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#576574"/>
@@ -15,7 +15,7 @@
       .edge { fill: none; stroke: #576574; stroke-width: 2; marker-end: url(#arrow); }
     </style>
   </defs>
-  <rect width="1280" height="1100" fill="#ffffff"/>
+  <rect width="1280" height="1400" fill="#ffffff"/>
   <text x="32" y="42" class="title">Batch jobs and optional hosted conversations</text>
   <text x="32" y="70" class="body">Current implementation | service responsibilities and credential boundaries</text>
 
@@ -107,8 +107,34 @@
   <text x="1060" y="733" class="label" text-anchor="middle">native: Copilot inference</text>
   <text x="44" y="919" class="small">Native mode uses Copilot billing/permissions. Managed mode needs runtime qualification. Neither is per-customer isolation.</text>
 
-  <rect x="24" y="960" width="1231" height="115" rx="12" fill="#fff4df" stroke="#b7791f"/>
-  <text x="44" y="991" class="heading">Boundary limitation: outbound network access is not enforced.</text>
-  <text x="44" y="1020" class="body">Arrows show the intended inference path, not a firewall. Batch runners have no provider, database, or service credentials.</text>
-  <text x="44" y="1048" class="body">The configurator operates the AppHost and customer workspace; it is not in the deployed request path. See docs/SECURITY.md.</text>
+  <rect x="24" y="960" width="1231" height="275" rx="12" fill="#f6f8fa" stroke="#8250df"/>
+  <text x="44" y="991" class="heading">Experimental local hybrid mode: shared conversation, on-demand execution</text>
+  <rect x="44" y="1020" width="240" height="96" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
+  <text x="164" y="1048" class="heading" text-anchor="middle">CLI + agent-api</text>
+  <text x="164" y="1073" class="body" text-anchor="middle">Principal-bound provisioning</text>
+  <text x="164" y="1097" class="body" text-anchor="middle">One-use ticket + pinned key</text>
+  <rect x="334" y="1020" width="260" height="96" rx="10" fill="#f0eaff" stroke="#8250df"/>
+  <text x="464" y="1048" class="heading" text-anchor="middle">session-host</text>
+  <text x="464" y="1073" class="body" text-anchor="middle">One shared in-process runtime</text>
+  <text x="464" y="1097" class="body" text-anchor="middle">Leased session FS + budgets</text>
+  <rect x="644" y="1020" width="260" height="96" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
+  <text x="774" y="1048" class="heading" text-anchor="middle">execution-controller</text>
+  <text x="774" y="1073" class="body" text-anchor="middle">Operator-owned Docker access</text>
+  <text x="774" y="1097" class="body" text-anchor="middle">Bounded allocations + teardown</text>
+  <rect x="954" y="1020" width="276" height="96" rx="10" fill="#fff4df" stroke="#b7791f"/>
+  <text x="1092" y="1048" class="heading" text-anchor="middle">One-shot Linux executors</text>
+  <text x="1092" y="1073" class="body" text-anchor="middle">Scoped job + isolated runner</text>
+  <text x="1092" y="1097" class="body" text-anchor="middle">Selected inputs; retained outputs</text>
+  <path d="M 284 1068 H 334" class="edge"/>
+  <path d="M 594 1068 H 644" class="edge"/>
+  <path d="M 904 1068 H 954" class="edge"/>
+  <text x="774" y="1143" class="label" text-anchor="middle">Model delegates; admission commits before allocation.</text>
+  <path d="M 1092 1116 V 1176 H 464 V 1116" class="edge"/>
+  <text x="785" y="1165" class="label" text-anchor="middle">Durable completion inbox + immutable artifact manifests</text>
+  <text x="44" y="1215" class="small">PostgreSQL owns state; the gateway owns inference credentials. No idle job pool. Azure and two-real-account gates remain open.</text>
+
+  <rect x="24" y="1260" width="1231" height="115" rx="12" fill="#fff4df" stroke="#b7791f"/>
+  <text x="44" y="1291" class="heading">Boundary limitation: outbound network access is not enforced.</text>
+  <text x="44" y="1320" class="body">Arrows show the intended inference path, not a firewall. Batch runners have no provider, database, or service credentials.</text>
+  <text x="44" y="1348" class="body">The configurator operates the AppHost and customer workspace; it is not in the deployed request path. See docs/SECURITY.md.</text>
 </svg>

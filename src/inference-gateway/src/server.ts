@@ -10,6 +10,7 @@ export interface GatewayDependencies {
   upstreamToken: () => Promise<string>;
   introspect: (jti: string) => Promise<CapabilityIntrospection>;
   reportUsage: (report: UsageReport) => Promise<void>;
+  beginRequest?: (jti: string, requestId: string) => Promise<void>;
   maxInFlightPerCapability?: number;
   maxInFlightTotal?: number;
   upstreamTimeoutMs?: number;
@@ -98,12 +99,26 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
       return openAiError(reply, 429, "concurrency_limited", "Too many concurrent inference requests.");
     }
 
+    const requestId = randomUUID();
+    const reserved = status.reservationRequired === true;
+    if (reserved) {
+      if (!deps.beginRequest) return openAiError(reply, 503, "reservation_unavailable", "Durable inference admission is unavailable.");
+      try { await deps.beginRequest(claims.jti, requestId); }
+      catch (error) {
+        request.log.warn({ err: error, ...correlation }, "inference reservation refused");
+        return openAiError(reply, 409, "reservation_refused", "The conversation cannot start another inference request.");
+      }
+    }
     let upstreamToken: string | undefined;
     if (route.auth === "entra") {
       try {
         upstreamToken = await deps.upstreamToken();
       } catch (error) {
         request.log.error({ err: error }, "upstream credential unavailable");
+        if (reserved) {
+          await deps.reportUsage({ requestId, jti: claims.jti, model: body.model, inputTokens: 0, outputTokens: 0, usageKnown: true })
+            .catch((failure) => request.log.error({ err: failure, ...correlation }, "inference reservation settlement pending"));
+        }
         return openAiError(reply, 502, "upstream_auth_unavailable", "The gateway could not authenticate upstream.");
       }
     }
@@ -114,7 +129,17 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
       upstreamBody.stream_options = { ...(body.stream_options ?? {}), include_usage: true };
     }
 
-    inFlight.set(claims.jti, current + 1);
+    // Reservation and upstream credential calls yield; recheck before taking local capacity.
+    const admittedInFlight = inFlight.get(claims.jti) ?? 0;
+    if (admittedInFlight >= perCapabilityLimit || totalInFlight >= totalLimit) {
+      if (reserved) {
+        await deps.reportUsage({ requestId, jti: claims.jti, model: body.model, inputTokens: 0, outputTokens: 0, usageKnown: true })
+          .catch((error) => request.log.error({ err: error, ...correlation }, "inference reservation settlement pending"));
+      }
+      reply.header("retry-after", "1");
+      return openAiError(reply, 429, "concurrency_limited", "Too many concurrent inference requests.");
+    }
+    inFlight.set(claims.jti, admittedInFlight + 1);
     totalInFlight++;
     const abort = new AbortController();
     const timer = setTimeout(() => abort.abort(new Error("upstream timeout")), timeoutMs);
@@ -126,6 +151,7 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
     request.raw.on("close", onClientClose);
     const started = Date.now();
     let usage = { input: 0, output: 0 };
+    let usageKnown = false;
 
     try {
       const headers: Record<string, string> = {
@@ -174,7 +200,8 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
             const line = pending.slice(0, index).trim();
             pending = pending.slice(index + 1);
             if (line.startsWith("data:") && line.includes('"usage"')) {
-              usage = extractUsage(line.slice(5).trim()) ?? usage;
+              const measured = extractUsage(line.slice(5).trim());
+              if (measured) { usage = measured; usageKnown = true; }
             }
           }
         } else if (buffered.length < 4 * 1024 * 1024) {
@@ -182,7 +209,8 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
         }
       }
       if (!isEventStream && upstream.ok) {
-        usage = extractUsage(buffered) ?? usage;
+        const measured = extractUsage(buffered);
+        if (measured) { usage = measured; usageKnown = true; }
       }
       reply.raw.end();
       request.log.info(
@@ -218,10 +246,11 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
       } else {
         inFlight.set(claims.jti, remaining);
       }
-      if (usage.input > 0 || usage.output > 0) {
-        deps
-          .reportUsage({ requestId: randomUUID(), jti: claims.jti, model: body.model, inputTokens: usage.input, outputTokens: usage.output })
-          .catch((error) => request.log.error({ err: error, ...correlation }, "usage report lost"));
+      if (reserved || usage.input > 0 || usage.output > 0) {
+        await deps
+          .reportUsage({ requestId, jti: claims.jti, model: body.model, inputTokens: usage.input, outputTokens: usage.output,
+            ...(reserved ? { usageKnown } : {}) })
+          .catch((error) => request.log.error({ err: error, ...correlation }, reserved ? "inference reservation settlement pending" : "usage report lost"));
       }
     }
   });
@@ -237,7 +266,11 @@ function extractUsage(json: string): { input: number; output: number } | undefin
     if (!parsed.usage) {
       return undefined;
     }
-    return { input: parsed.usage.prompt_tokens ?? 0, output: parsed.usage.completion_tokens ?? 0 };
+    const input = parsed.usage.prompt_tokens;
+    const output = parsed.usage.completion_tokens;
+    if (typeof input !== "number" || typeof output !== "number"
+      || ![input, output].every((value) => Number.isSafeInteger(value) && value >= 0 && value <= 10_000_000)) return undefined;
+    return { input, output };
   } catch {
     return undefined;
   }

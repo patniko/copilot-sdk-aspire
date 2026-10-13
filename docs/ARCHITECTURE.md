@@ -8,15 +8,17 @@ network isolation than the implementation provides.
 
 ## System overview
 
-![Current architecture showing the caller API, shared PostgreSQL ledger, dispatcher, executor and runner, and gateway-owned Foundry access](images/architecture.svg)
+![Default jobs and optional hosts, plus the local hybrid shared coordinator, PostgreSQL state, on-demand controller and retained job results](images/architecture.svg)
 
 | Component | Owns | Source |
 | --- | --- | --- |
-| `agent-api` | Caller authentication, admission, job queries/mutations, SSE, approvals, static console | [API server](../src/agent-api/src/server.ts), [admission](../src/agent-api/src/admission.ts) |
+| `agent-api` | Caller authentication, admission, job queries/mutations, SSE, approvals, static console | [API server](../src/agent-api/src/server.ts), [shared admission](../src/service-defaults/src/admission.ts) |
 | `job-dispatcher` | Executor eligibility, attempt claims/heartbeats/completion, capability minting/introspection/usage, lease recovery | [Dispatcher](../src/job-dispatcher/src/server.ts), [startup/reaper](../src/job-dispatcher/src/main.ts) |
 | PostgreSQL + `job-store` | Durable jobs, attempts, events, input requests, capability state, transactional transitions | [Store](../src/job-store/src/store.ts), [migrations](../src/job-store/src/migrate.ts) |
 | `agent-executor` | Polling slots, runner uid/workspace isolation, protocol validation, deadlines/cancellation, result validation | [Main](../src/agent-executor/src/main.ts), [attempt](../src/agent-executor/src/attempt.ts), [isolation](../src/agent-executor/src/isolation.ts) |
 | `agent-host` (opt-in, experimental) | Long-lived SDK owner, AHP transports, retained conversations/workspace, execution-grant renewal | [Supervisor](../src/agent-host/src/main.ts), [owner](../src/agent-host/src/owner.ts) |
+| `session-host` (local hybrid opt-in) | Shared in-process runtime, protected session provisioning, turn scheduling, provider-backed files, eviction and completion delivery | [Service](../src/session-host/src/service.ts), [scheduler](../src/session-host/src/scheduler.ts) |
+| `execution-controller` (local hybrid opt-in) | Durable allocation admission, operator-owned Docker lifecycle, orphan reconciliation and teardown | [Controller](../src/execution-controller/src/controller.ts), [allocation store](../src/job-store/src/allocations.ts) |
 | Runner | One SDK attempt with harness tools, skills, sub-agents, and permission handlers | [TypeScript](../src/harness-hosting/src/runner.ts), [Python](../execution-profiles/python-agent/runner.py) |
 | `inference-gateway` | Approved chat-completions route, capability checks, upstream identity, token-usage reporting | [Gateway](../src/inference-gateway/src/server.ts), [routes](../src/inference-gateway/src/routes.ts) |
 | Configurator | Customer-workspace authoring plus platform build/run/deploy controls; not part of the deployed request path | [Companion server](../configurator/server/app.ts) |
@@ -34,7 +36,7 @@ workspace; they do not silently deploy the shipped examples.
 
 ## Local and Azure topology
 
-![The same AppHost runs Node control-plane processes plus PostgreSQL and executor containers locally, and Container Apps plus managed PostgreSQL in Azure](images/local-and-azure.svg)
+![Default local and Azure placements, plus experimental local hybrid services and the explicit unqualified Azure hybrid boundary](images/local-and-azure.svg)
 
 Locally, the gateway uses the developer's Azure CLI identity. In Azure, its managed identity receives model
 access on an existing Foundry account. The deployed API and dispatcher use Entra-authenticated PostgreSQL access.
@@ -42,9 +44,11 @@ By default, only `agent-api` has external service ingress; the executor always h
 Enabling the experimental host's direct transport adds an authenticated WebSocket ingress.
 GitHub-only hosting uses outbound Mission Control/WPS connections, not public host ingress.
 
-The executor is always a Linux container, including during local development. It launches each concurrent slot's
+The executor is always a Linux container, including during local development. In default pool mode it launches each concurrent slot's
 runner under a separate unprivileged uid, with a private workspace and minimal environment. It is **not** one
 Container App or virtual machine per job. See [Deployment](DEPLOYMENT.md) for supporting resources and costs.
+The opt-in local hybrid mode instead starts one-shot Linux containers under a separate host-side controller;
+it does not deploy that Docker controller to Azure. Publishing with hybrid mode enabled is rejected.
 
 ## Concurrency and durability
 
@@ -62,6 +66,58 @@ are ephemeral: reconnecting to a job view does not restore an ended conversation
 one hour by the contracts; queueing and retries can extend total job lifetime without providing continuous
 multi-hour execution. Checkpointed sessions, suspended waits, retained files, and cross-job workflows are proposed
 product layers, not properties of the current lease mechanism.
+The experimental shared conversation and bounded on-demand artifact lifecycle below are separate from
+this default batch-session behavior.
+
+## Local hybrid hosting
+
+`Parameters:hybrid-hosting=true` adds a shared coordinator and execution controller while removing the
+always-on executor pool. Existing direct-container `agent-host` remains separately selectable.
+The local AppHost runs both new services as Node processes; a separately packaged Linux shared-worker
+image uses the same code and qualified native runtime. Neither arrangement creates a runtime process per user.
+
+```mermaid
+flowchart LR
+    CLI["Copilot CLI"] -->|"API principal"| API["agent-api"]
+    API -->|"Protected provisioning"| Shared["session-host: one in-process owner"]
+    CLI -->|"One-use ticket + pinned key + GitHub account"| Shared
+    Shared -->|"Session files, epochs, turns"| DB[("PostgreSQL")]
+    Shared -->|"Model delegate_job: atomic child admission"| DB
+    Controller["Operator Docker controller"] -->|"Allocation ledger"| DB
+    Controller -->|"Create / reconcile / remove"| Child["One-shot Linux executor"]
+    Child -->|"Scoped claim and attempt reports"| Dispatcher["job-dispatcher"]
+    Dispatcher --> DB
+    Shared -->|"Reserved turn capability"| Gateway["inference-gateway"]
+    Child -->|"Reserved job capability"| Gateway
+    Gateway -->|"Provider identity"| Foundry["Foundry"]
+    Child -->|"Immutable output publication"| Dispatcher
+    DB -->|"Durable completion inbox"| Shared
+```
+
+The shared worker owns one SDK connection, a provider namespace and storage lease per active conversation,
+and a small account/workspace-scoped AHP listener per resident session. Empty native directories anchor AHP
+paths; content/history stays in PostgreSQL. Lease epochs fence writes and grants. Tickets expose only the
+protected proxy, not private listeners. FIFO turn admission limits global and principal concurrency, with
+one active turn per conversation. Idle eviction retains the conversation; interrupted work is not automatically replayed.
+
+Delegation records, child jobs, input snapshots and aggregate budget reservations commit atomically.
+SDK tool-call identity deduplicates acceptance. Completion-driven turns cannot create nested delegations.
+The controller persists allocation identity before Docker calls, uses deterministic names and immutable
+image IDs, counts starting/running/retiring allocations, and only removes containers with its namespace labels.
+A replacement controller reconciles existing allocations. Each container receives only its allocation
+credential and can claim one assigned job, not arbitrary queued work. Runner uid isolation and existing
+policy/output validation are preserved for TypeScript and Python.
+
+Inputs are selected copies, never a shared writable session mount. Linux directory-descriptor-relative
+output collection rejects symlinks, hard links, nonregular files, aliases and oversized trees. Successful
+artifacts commit before job completion; one-use containers can then disappear without losing results.
+The completion inbox delivers a bounded system message to the original conversation. Durable history
+markers suppress repeated accepted notifications; ambiguous delivery goes to review rather than blindly
+replaying a model turn. Closing prevents continuations and optionally requests child cancellation.
+
+This is local demonstrator evidence, not hostile multi-customer isolation, transparent failover, or exact
+spending enforcement. See [Security](SECURITY.md#local-hybrid-boundaries), [API](API.md#experimental-shared-conversations),
+and [local deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment).
 
 ## Optional demo agent host
 

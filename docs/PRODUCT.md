@@ -48,6 +48,13 @@ and approver currently share one API-key principal.
 
 ## Supported today
 
+The experimental **local hybrid** path additionally provides a shared in-process coordinator with
+PostgreSQL session files, account-bound CLI provisioning, scheduling/budgets/idle eviction, and
+model-directed one-shot container jobs with retained outputs and completion delivery. The same
+TypeScript/Python execution profiles are preserved. See [local scope and evidence](DEPLOYMENT.md#experimental-local-hybrid-deployment).
+This does not claim Azure hybrid support, two-real-account qualification, exact spend enforcement,
+or improved latency/cost without measurement.
+
 The experimental demo host offers a GitHub-native Mission Control profile using Copilot's own inference,
 permissions, and billing. It requires a normally enabled relay client and suitable persistent storage.
 Managed direct/both profiles have separate runtime prerequisites and remain deferred to the engineering
@@ -96,10 +103,10 @@ isolation or compliance claims. Historical live-run evidence is recorded in
 | Entra ID caller auth and a separate approver role | API-key principals govern caller access and approvals |
 | MCP integrations | A schema term or planned placement is not a working local/remote MCP connector |
 | Copilot-authenticated inference route | The implemented production route is Foundry with gateway-owned Entra identity |
-| General artifact/file persistence or repository automation | Attempt files are temporary; coding jobs do not automatically check out, commit, or push a repository |
+| General artifact/file persistence or repository automation | Local on-demand jobs retain bounded `outputs/` files; other attempt files remain temporary. No automatic checkout, commit, push, or general blob store |
 | Resuming batch jobs as chat | Retrying a job starts a fresh attempt; the separate experimental demo host has its own retained-session lifecycle and qualification gates |
 | Proactive steering, suspended waits, or continuous multi-hour attempts | Interaction is agent-requested; waiting uses an executor slot and attempt time; the current attempt maximum is one hour |
-| Cross-job workflows, triggers, and completion webhooks | Sub-agents run within one attempt; an external workflow engine or client must coordinate jobs |
+| General cross-job workflows, triggers, and completion webhooks | Local hybrid coordinators can delegate approved children and receive bounded continuations; this is not a general workflow engine |
 | Integrated experiments and scoring | Version labels, digests, raw results, and partial provenance do not provide datasets, trials, scorers, or regression comparisons |
 | Complete execution provenance or billing-grade measurement | Public job views omit some stored evidence; asynchronous reported usage is not complete request accounting or a hard spend cap |
 | Managed customer configuration repository | The workspace is local and gitignored; teams must back it with their own repository or configuration delivery process |

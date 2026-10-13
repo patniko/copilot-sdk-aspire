@@ -23,6 +23,7 @@ const app = buildGateway({
   routes,
   upstreamToken: () => tokens.token(),
   introspect: (jti) => dispatcher.introspect(jti),
+  beginRequest: (jti, requestId) => dispatcher.beginRequest(jti, requestId),
   reportUsage: (report) => dispatcher.reportUsage(report),
 });
 

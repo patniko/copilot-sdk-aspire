@@ -1,5 +1,5 @@
 import { policyFor } from "@copilot-agent/contracts";
-import { HostStore, JobStore, migrate } from "@copilot-agent/job-store";
+import { AllocationStore, DelegationStore, HostStore, JobStore, SharedStore, migrate } from "@copilot-agent/job-store";
 import {
   createPostgresPool,
   listen,
@@ -18,6 +18,7 @@ const policy = policies.base;
 const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);
 const store = new JobStore(pool);
+const sharedStore = new SharedStore(pool);
 const hostStore = new HostStore(pool);
 const hostOwner = optionalEnv("DEMO_HOST_OWNER", "").toLowerCase();
 const hostExecution = optionalEnv("DEMO_HOST_TRANSPORT", "direct") === "github" ? "github-native" : "managed";
@@ -32,6 +33,11 @@ const app = buildDispatcher({
   gatewayKey: requireEnv("GATEWAY_KEY"),
   signingKey: requireEnv("CAPABILITY_SIGNING_KEY"),
   hostStore,
+  ...(process.env.SHARED_WORKER_KEY ? {
+    shared: { store: sharedStore, key: requireEnv("SHARED_WORKER_KEY") },
+    allocations: new AllocationStore(pool, sharedStore),
+    delegations: new DelegationStore(pool, sharedStore, store),
+  } : {}),
   ...(hostOwner ? {
     host: {
       store: hostStore, key: requireEnv("DEMO_HOST_KEY"), owner: hostOwner,

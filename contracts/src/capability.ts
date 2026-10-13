@@ -35,6 +35,8 @@ export interface CapabilityIntrospection {
   active: boolean;
   reason?: "revoked" | "attempt_inactive" | "budget_exhausted" | "unknown";
   remainingTokens: number;
+  /** Requires durable per-request reservation and usage settlement before another request. */
+  reservationRequired?: boolean;
 }
 
 export interface UsageReport {
@@ -43,4 +45,6 @@ export interface UsageReport {
   model: string;
   inputTokens: number;
   outputTokens: number;
+  /** False when usage is unknown; reservation-backed callers retain a conservative charge. */
+  usageKnown?: boolean;
 }

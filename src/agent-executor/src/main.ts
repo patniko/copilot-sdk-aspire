@@ -12,7 +12,7 @@ import {
   serviceUrl,
 } from "@copilot-agent/service-defaults";
 import { runAttempt } from "./attempt.js";
-import { DispatcherClient, NotEligibleError } from "./dispatcher-client.js";
+import { AllocationCompleteError, DispatcherClient, NotEligibleError } from "./dispatcher-client.js";
 import { probeIsolation } from "./isolation.js";
 
 const logger = createLogger("agent-executor");
@@ -30,6 +30,10 @@ const gatewayBaseUrl = `${serviceUrl("inference-gateway")}/openai/v1/`;
 const workspaceRoot = optionalEnv("WORKSPACE_ROOT", join(tmpdir(), "agent-work"));
 const parallelism = Math.min(Math.max(intEnv("EXECUTOR_PARALLELISM", 2), 1), 8);
 const imageDigest = process.env.IMAGE_DIGEST;
+const allocationId = process.env.EXECUTOR_ALLOCATION_ID;
+const allocationDeadline = allocationId ? Date.parse(requireEnv("EXECUTOR_ALLOCATION_EXPIRES_AT")) : undefined;
+if (allocationId && (!/^[0-9a-f-]{36}$/i.test(allocationId) || !Number.isFinite(allocationDeadline) || parallelism !== 1
+  || process.env.EXECUTOR_ID !== allocationId)) throw new ConfigError("A one-shot allocation requires its bound identity, deadline, and exactly one runner slot.");
 const configuredEventDetail = optionalEnv("JOB_EVENT_DETAIL", "sanitized");
 if (configuredEventDetail !== "sanitized" && configuredEventDetail !== "full") {
   throw new ConfigError("JOB_EVENT_DETAIL must be 'sanitized' or 'full'.");
@@ -58,6 +62,11 @@ const active = new Set<Promise<void>>();
 async function slot(index: number): Promise<void> {
   let idleDelay = 1_000;
   while (!draining) {
+    if (allocationDeadline !== undefined && Date.now() >= allocationDeadline) {
+      logger.error({ allocation: allocationId }, "one-shot allocation expired before work completed");
+      process.exitCode = 1;
+      return;
+    }
     try {
       const claim = await dispatcher.claim(capabilities);
       if (!claim) {
@@ -75,6 +84,7 @@ async function slot(index: number): Promise<void> {
           retryable: true,
           uncertainEffects: false,
         });
+        if (allocationId) return;
         continue;
       }
       const outcome = await runAttempt({
@@ -101,7 +111,9 @@ async function slot(index: number): Promise<void> {
           "attempt finished",
         );
       }
+      if (allocationId) return;
     } catch (error) {
+      if (allocationId && error instanceof AllocationCompleteError) return;
       if (error instanceof NotEligibleError) {
         logger.error({ gaps: error.gaps }, "executor is not eligible under the execution policy; not claiming work");
         await sleep(30_000);

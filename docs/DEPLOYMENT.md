@@ -12,6 +12,10 @@ Review workspace contents before publishing because those files become the deplo
 
 ## What gets created
 
+The default Azure path below is unchanged. The optional
+[local hybrid deployment](#experimental-local-hybrid-deployment) uses a host-side Docker controller;
+Azure publication refuses that mode until an Azure execution adapter is qualified.
+
 In the target resource group:
 
 | Resource | Purpose |
@@ -65,6 +69,109 @@ PowerShell needs braces for variable names with hyphens:
 ```powershell
 ${env:Parameters__foundry-endpoint} = "https://<resource>.openai.azure.com/openai/v1"
 ```
+
+## Experimental local hybrid deployment
+
+This opt-in path keeps conversational work on one shared in-process runtime and starts Linux execution
+containers only for admitted jobs. The existing direct-container agent is independent. It requires the
+locally patched runtime/SDK/hosting sources and a matching CLI; see the
+[build and qualification instructions](DEVELOPER-GUIDE.md#hybrid-runtime-qualification).
+
+Build the executor once before starting the controller. This uses the workstation's native Docker
+architecture; add `NPM_REGISTRY`/`PIP_INDEX_URL` build arguments if approved proxies are required.
+
+```powershell
+pnpm install
+pnpm build
+docker build -f deploy\Dockerfile --target agent-executor `
+  --build-arg CUSTOMER_CONFIG_DIR=examples/customer-config `
+  -t copilot-hybrid-executor:local .
+
+aspire secret set "Parameters:hybrid-hosting" "true"
+aspire secret set "Parameters:hybrid-principals" '{"dev":12345}'
+aspire secret set "Parameters:hybrid-model" "<approved Foundry deployment>"
+aspire secret set "Parameters:hybrid-runtime-path" "C:\path\to\qualified\copilot-runtime.exe"
+aspire secret set "Parameters:hybrid-harnesses" "text-summarizer,copilot-coding-agent"
+aspire run --apphost .\apphost.mts
+```
+
+Replace `12345` with the numeric GitHub ID for the caller using the `dev` API key. This is an
+operator-controlled binding, not user-supplied identity. The model must be approved by the base policy
+and available through the configured gateway. Existing Foundry configuration is still required.
+The runtime launcher must match the **host** OS/architecture and have its matching library beside it;
+do not point a Windows Node worker at the Linux container bundle.
+
+The AppHost adds `session-host` and `execution-controller` Node services, a private worker key and
+allocation-signing key, and removes the always-on `agent-executor` resource. The controller starts
+one-shot instances of the prebuilt executor image, including for ordinary `/v1/jobs` submissions.
+They have no database, Docker socket, or provider credential. API/dispatcher/gateway and PostgreSQL
+remain shared; optional `agent-host` compute is additional and is not counted as idle execution capacity.
+The controller requires a local Docker socket/named pipe and never silently targets a remote daemon.
+
+Connect through the provisioned API path:
+
+```powershell
+pnpm host:connect --destination shared --target local --transport direct --cli C:\path\to\matching\dist-cli\index.js
+# Resume using the application session UUID printed by the first launcher:
+pnpm host:connect --destination shared --target local --transport direct --resume <session-uuid> --cli C:\path\to\matching\dist-cli\index.js
+```
+
+The shared launcher explicitly consents to GitHub identity authentication to the provisioned host.
+It does not expose the private listener token or request paid inference itself. Ordinary conversation
+and delegated work use your configured model and incur its normal cost.
+After idle eviction, obtain a new ticket with the resume command. Stop the AppHost to stop the shared
+service and retire its managed execution containers; closing only the CLI preserves the conversation.
+Set `hybrid-hosting=false` and restart to return to the existing executor-pool topology.
+For a parallel worktree, use `--isolated` with explicit environment inputs. The AppHost profile no
+longer pins the internal OTLP/resource-service ports, so isolated instances can use generated ports
+without colliding with another checkout. TypeScript AppHosts do not accept `--launch-profile`.
+
+### Hybrid controls
+
+All settings are validated server-side. Changing them through Aspire configuration requires a service
+restart; retained sessions keep their admitted definition rather than silently receiving new limits.
+
+| Parameter | Effect |
+| --- | --- |
+| `hybrid-worker-limits` | JSON matching `SharedWorkerLimits`: resident sessions, global/per-principal active turns, queue size/wait, retained-session count, global/per-principal containers |
+| `hybrid-session-limits` | JSON matching `SharedSessionLimits`: aggregate and per-turn tokens, turn deadline, idle time, total/parallel jobs, automatic continuation limit |
+| `hybrid-executor-image` | Prebuilt operator-selected image, resolved to an immutable local image ID before allocation |
+| `hybrid-harnesses` | Approved published child harnesses; version/digest snapshot retained on session creation |
+| `hybrid-principals` | API-principal to numeric GitHub account map; retained principals cannot be rebound |
+
+For example, `{"executionContainers":1,"activeTurns":2,"residentSessions":16}` limits child execution to
+one physical allocation while permitting two model turns. Starting and retiring allocations count too;
+failed deletion does not free capacity. Zero containers disables new allocation without discarding queued
+jobs. Warm pooling is deliberately not offered: the implemented mode retires one-shot containers.
+The exact defaults and ranges live in [`shared.ts`](../contracts/src/shared.ts).
+Controller CPU/memory/startup settings live in [`artifacts.ts`](../contracts/src/artifacts.ts) and can be
+supplied through `EXECUTION_CONTAINER_SETTINGS` when hosting that service directly.
+
+### Shared worker container
+
+The same worker is packaged independently; it is not the old singleton `agent-host` image.
+After building a verified native Linux bundle:
+
+```powershell
+docker build -f deploy\SessionHost.Dockerfile `
+  --build-context runtime=.runtime-artifacts\hybrid-linux-arm64-verified `
+  --build-context customer-config=.copilot-agent-workspace `
+  -t copilot-hybrid-session-host:local .
+```
+
+The separate `customer-config` context supplies reviewed harnesses/policy without editing shipped
+examples. Use `--build-context customer-config=examples/customer-config` only for a synthetic sample
+image. Do not put credentials in that context. Alternatively mount an operator-managed `/config`
+read-only and set `CONFIG_ROOT` at runtime. `PLATFORM_ROOT` remains `/platform`.
+Configure the same database, dispatcher/gateway URLs, worker key, principal/model/harness settings and
+`SHARED_PUBLIC_URL` as the Node service, and retain `/data`. The image runs unprivileged and contains
+the matching SDK plus native launcher/library and source provenance. It does not include the controller
+or receive Docker authority. Shared runtime catalog/anchors still need the retained `/data` root even
+though session content is PostgreSQL-backed.
+
+The local gate has exercised a real CLI, synthetic inference, TypeScript and Python jobs in real Linux
+containers, retained file outputs, completion return, and zero remaining containers. This is not a
+paid-model performance comparison, two-real-account qualification, or Azure rollout evidence.
 
 ## Deploy
 

@@ -33,14 +33,14 @@ export const HOSTING_HEIGHT = 770;
 export const HOSTING_NODE_WIDTH = 190;
 export const HOSTING_NODE_HEIGHT = 95;
 
-export function hostingTopology(architecture: HostingArchitecture, transport: DemoHostSettings["transport"]): HostingTopology {
+export function hostingTopology(architecture: HostingArchitecture, transport: DemoHostSettings["transport"], localHybrid = false): HostingTopology {
   const hybrid = architecture === "hybrid";
   const native = transport === "github";
   const hostEnabled = transport !== "disabled";
   const nodes: HostingNode[] = [
-    { id: "cli", title: "Copilot CLI", caption: "Choose a destination", x: 40, y: 110,
-      purpose: "Keep the same CLI experience while choosing a shared coordinator or an interactive container host.",
-      limitation: "Shared-host attachment is a qualification gate, not an available launcher yet." },
+    { id: "cli", title: "Clients", caption: "Copilot CLI / job API", x: 40, y: 110,
+      purpose: "Copilot CLI uses the configured interactive host. API clients submit batch jobs. The proposal adds a shared coordinator as another CLI destination.",
+      limitation: "Shared attachment is an experimental local path; Azure and two-real-account qualification remain open." },
     { id: "entry", title: "Agent API", caption: "Admission & provisioning", x: 270, y: 110, resource: "agent-api",
       purpose: "Authenticate callers, admit jobs, and provision protected connection material for the configured host.",
       limitation: "Connection provisioning is not a public SDK port or permission to access another principal's sessions." },
@@ -72,7 +72,7 @@ export function hostingTopology(architecture: HostingArchitecture, transport: De
       limitation: "The current dispatcher schedules attempt slots; it does not provision containers per job." };
   nodes.push(dispatcher);
   const edges: HostingEdge[] = [
-    { from: "cli", to: "entry", label: "Provision / jobs", points: [[230, 157], [270, 157]], labelAt: [250, 220] },
+    { from: "cli", to: "entry", label: "Provision / API jobs", points: [[230, 157], [270, 157]], labelAt: [250, 220] },
     { from: "cli", to: "transport", label: "Selected transport", points: [[135, 205], [135, 385]], labelAt: [135, 294] },
     { from: "transport", to: "container", label: "Container session", points: [[230, 432], [270, 432]], labelAt: [250, 530] },
     { from: dispatcher.id, to: "executors", label: hybrid ? "Allocate" : "Claim / heartbeat", points: [[920, 157], [960, 157]], labelAt: [940, 245], proposed: hybrid },
@@ -106,6 +106,34 @@ export function hostingTopology(architecture: HostingArchitecture, transport: De
   } else if (hostEnabled) {
     edges.push({ from: "container", to: "gateway", label: "Managed conversation grant", points: [[365, 480], [365, 565], [1010, 565], [1010, 480]], labelAt: [690, 565] });
   }
+  if (hybrid && localHybrid) {
+    for (const node of nodes) {
+      if (["shared", "scheduler", "executors", "session-fs"].includes(node.id)) node.proposed = false;
+      if (node.id === "shared") Object.assign(node, {
+        caption: "Local / in process", resource: "session-host",
+        purpose: "Share one in-process runtime across provider-backed conversations, with protected CLI tickets, budgets, turn scheduling and idle eviction.",
+        limitation: "One real-account CLI path is qualified. This is not two-account or hostile cross-customer isolation.",
+      });
+      if (node.id === "scheduler") Object.assign(node, {
+        caption: "Local Docker lifecycle", resource: "execution-controller",
+        purpose: "Admit actual one-shot containers under global, principal and conversation limits; reconcile starts and teardown using durable allocations.",
+        limitation: "Docker authority belongs only to this operator-owned process. The Azure adapter is not qualified.",
+      });
+      if (node.id === "executors") Object.assign(node, {
+        caption: "One-shot Linux containers",
+        limitation: "No idle pool in local hybrid mode. Allocation counts are not live telemetry on this page; inspect the controller and ledger.",
+      });
+      if (node.id === "session-fs") Object.assign(node, {
+        caption: "PostgreSQL / leased files",
+        limitation: "Empty native anchors carry paths, not file contents. Selected input snapshots and explicit output imports do not share writable files with jobs.",
+      });
+      if (node.id === "ledger") Object.assign(node, {
+        caption: "Sessions, jobs & artifacts",
+        limitation: "State is principal/epoch fenced. Retention is operator-managed; a closed conversation is not deleted.",
+      });
+    }
+    for (const edge of edges) edge.proposed = false;
+  }
   return { nodes, edges };
 }
 
@@ -119,9 +147,10 @@ export function hostingObservation(node: HostingNode, target: TryTarget, local?:
 export function hostingPlacement(node: HostingNode, target: TryTarget): string {
   if (node.proposed) return "Proposed; no deployed resource";
   if (node.id === "ledger") return target === "local" ? "Local PostgreSQL container" : "Azure Database for PostgreSQL";
+  if (node.id === "session-fs") return "Scoped files in PostgreSQL; empty native path anchors";
   if (node.id === "container" || node.id === "executors") return target === "local" ? "Linux container" : "Azure Container App";
   if (node.resource) return target === "local" ? "Host Node.js process" : "Azure Container App";
-  if (node.id === "cli") return "User's machine";
+  if (node.id === "cli") return "User's machine or API caller";
   if (node.id === "transport") return "Configured AHP connection path";
   return "External model service";
 }

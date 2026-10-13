@@ -14,7 +14,7 @@ import {
   type HarnessSnapshot,
 } from "@copilot-agent/contracts";
 import { canonicalJson, HttpError, loadHarnesses, loadPolicy, loadProfiles, sha256Hex } from "@copilot-agent/service-defaults";
-import { Admission } from "../../src/agent-api/src/admission.js";
+import { Admission } from "@copilot-agent/service-defaults";
 import { BUILTIN_AGENTS, buildSessionOptions, RESULT_CONTRACT } from "../../src/harness-hosting/src/session-config.js";
 
 const root = join(import.meta.dirname, "..", "..");

@@ -52,6 +52,7 @@ executor                         runner
    | `skills` | `skills[]` |
    | `builtin-tools` | `builtinTools[]` (Copilot's own file, shell, web or agent tools) |
    | `interactive` | `permissions` with any `ask` rule, or `permissions.questions` |
+   | `workspace-artifacts` | On-demand execution supplies selected file snapshots and retains output files |
 
 2. **start** carries one attempt:
 
@@ -75,6 +76,11 @@ executor                         runner
    - `workspace` is private to the attempt and deleted afterwards.
    - `eventDetail` is `sanitized` by default. An executor configured with `JOB_EVENT_DETAIL=full` requests
      bounded SDK event detail from the runner.
+   - Optional `artifacts` is `{ "inputDirectory": "inputs", "outputDirectory": "outputs", "inputs": [{ "path": "sample.txt", "sha256": "<digest>", "size": 123 }] }`.
+     The executor has already copied these snapshots under `<workspace>/files/inputs/`; the runner must
+     put deliverable files under `<workspace>/files/outputs/` before returning its result. Both shipped
+     runners describe these paths to the model. No file bytes or storage credentials are added to JSONL.
+     An older profile without `workspace-artifacts` is rejected for on-demand admission.
 
 3. **event** messages report allowlisted progress. These kinds are accepted:
    `agent.turn_started`, `agent.turn_completed`, `tool.started {tool}`, `tool.completed {tool, ok}`,
@@ -125,6 +131,12 @@ executor                         runner
    - `{"type":"failure","code":"…","message":"…","retryable":true,"uncertainEffects":false}` — codes:
      `invalid_input`, `invalid_output`, `cancelled`, `deadline_exceeded`, `inference_error`, `tool_error`,
      `unsupported`, `internal`. Set `uncertainEffects` when an external side effect may have happened.
+
+For on-demand jobs, runner success is not final job success until the executor safely collects and
+publishes output artifacts. Collection/publication failure becomes `artifact_failed`. Outputs are
+bounded to 16 files, one MiB per file and eight MiB total; only regular, unlinked files with portable
+relative paths are accepted. The attempt heartbeat remains active during publication. The same executor
+path handles both runner languages, and default pool jobs remain unchanged.
 
 A runner that exits without a terminal message fails the attempt with `runner_exited`, treated as an uncertain
 outcome: read-only harnesses are retried; others go to `needs_review`.

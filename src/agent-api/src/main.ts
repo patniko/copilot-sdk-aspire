@@ -1,4 +1,4 @@
-import { HostStore, JobEventListener, JobStore, migrate } from "@copilot-agent/job-store";
+import { DelegationStore, HostStore, JobEventListener, JobStore, SharedStore, migrate } from "@copilot-agent/job-store";
 import {
   ApiKeyAuthenticator,
   assertOverridesMatchHarnesses,
@@ -11,8 +11,9 @@ import {
   optionalEnv,
   readPostgresConnection,
   requireEnv,
+  serviceUrl,
 } from "@copilot-agent/service-defaults";
-import { Admission } from "./admission.js";
+import { Admission } from "@copilot-agent/service-defaults";
 import { buildApi } from "./server.js";
 
 const [harnesses, profiles, policies] = await Promise.all([loadHarnesses(), loadProfiles(), loadPolicySet()]);
@@ -22,6 +23,8 @@ const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);
 
 const store = new JobStore(pool);
+const execution = optionalEnv("EXECUTOR_MODE", "pool");
+if (execution !== "pool" && execution !== "on-demand") throw new Error("EXECUTOR_MODE must be pool or on-demand.");
 const hostOwner = optionalEnv("DEMO_HOST_OWNER", "").toLowerCase();
 const listener = new JobEventListener(pool);
 await listener.start();
@@ -34,6 +37,9 @@ const app = buildApi({
   harnesses,
   maxOpenJobsPerPrincipal: policy.maxQueuedJobsPerPrincipal,
   console: optionalEnv("CONSOLE_ENABLED", "true") !== "false",
+  execution: execution === "on-demand" ? "dedicated" : "pool",
+  delegations: new DelegationStore(pool, new SharedStore(pool), store),
+  ...(process.env.SHARED_WORKER_KEY ? { shared: { url: serviceUrl("session-host"), key: requireEnv("SHARED_WORKER_KEY") } } : {}),
   ...(hostOwner ? {
     host: {
       store: new HostStore(pool), owner: hostOwner, principal: "dev",

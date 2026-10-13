@@ -5,7 +5,7 @@ import { admitHostedHarness, loadHarnesses, loadPolicy, loadProfiles, signSessio
 import { randomUUID } from "node:crypto";
 import { buildSessionOptions, RESULT_CONTRACT } from "../../src/harness-hosting/src/session-config.js";
 import { hostPermissionHandler, hostToolGuard } from "../../src/agent-host/src/policy.js";
-import { Admission } from "../../src/agent-api/src/admission.js";
+import { Admission } from "@copilot-agent/service-defaults";
 import { OwnerConfiguration } from "../../src/agent-host/src/protocol.js";
 
 const root = join(import.meta.dirname, "..", "..");

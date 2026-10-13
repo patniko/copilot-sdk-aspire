@@ -10,9 +10,10 @@ belongs in the delivery plan, not in current feature claims.
 | --- | --- | --- |
 | Job user | [User guide](USER-GUIDE.md) | [Configurator](CONFIGURATOR.md) for authoring; [API](API.md) for client integration |
 | Developer | [Developer guide](DEVELOPER-GUIDE.md) | [Architecture](ARCHITECTURE.md), [runner protocol](RUNNER-PROTOCOL.md), [contribution workflow](../CONTRIBUTING.md) |
-| Product contributor | [Product guide](PRODUCT.md) | [Detailed product assessment](PRODUCT-OVERVIEW.md), [security limitations](SECURITY.md#known-gaps), then [historical plan](PLAN.md) |
+| Product contributor | [Product guide](PRODUCT.md) | [Detailed product assessment](PRODUCT-OVERVIEW.md), [security limitations](SECURITY.md#known-gaps), [hybrid hosting proposal](HYBRID-HOSTING-PLAN.md), then [historical plan](PLAN.md) |
 | Deployment operator | [Deployment guide](DEPLOYMENT.md) | [Security model](SECURITY.md) and [local/Azure topology](ARCHITECTURE.md#local-and-azure-topology) |
 | Interactive demo operator | [Demo agent host](USER-GUIDE.md#demo-agent-host) | [Hosting topology view](CONFIGURATOR.md#hosting-and-topology), [GitHub-native client eligibility](DEPLOYMENT.md#github-native-client-eligibility), [managed compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate), and [host boundaries](SECURITY.md#experimental-host-boundaries) |
+| Local hybrid operator | [Local hybrid deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment) | [Shared conversation API](API.md#experimental-shared-conversations), [architecture](ARCHITECTURE.md#local-hybrid-hosting), [boundaries](SECURITY.md#local-hybrid-boundaries), and [qualification](DEVELOPER-GUIDE.md#hybrid-runtime-qualification) |
 
 ## Canonical topic map
 
@@ -33,6 +34,7 @@ sequences, endpoint tables, or security guarantees.
 | [Product overview](PRODUCT-OVERVIEW.md) | Six-question capability assessment, comparison methodology, evidence limitations, and proposed enterprise delivery sequence |
 | [Documentation maintenance](MAINTAINING-DOCS.md) | Source-of-truth rules, change-to-document map, diagram editing, review checklist |
 | [Plan](PLAN.md) | Original proposals, design rationale, dated milestone and verification history |
+| [Hybrid hosting plan](HYBRID-HOSTING-PLAN.md) | Design/delivery record and qualification evidence; canonical architecture/deployment pages describe the implemented local path, while Azure and remaining gates stay explicit |
 
 ## Diagrams and images
 

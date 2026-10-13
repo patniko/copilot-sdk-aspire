@@ -693,7 +693,13 @@ async def run(start: dict[str, Any], cancelled: asyncio.Event, input_bridge: Inp
         watcher = asyncio.create_task(abort_on_cancel())
         prompt = (
             f"Job input (JSON):\n```json\n{json.dumps(start['input'], indent=2)}\n```\n\n"
-            "Complete the task using the available tools, then call submit_result."
+            + (
+                f"Workspace artifacts (JSON):\n```json\n{json.dumps(start['artifacts'])}\n```\n"
+                "Read the selected snapshots from inputs/. Put deliverable files in outputs/ before submitting the result. "
+                "Only outputs/ files are retained; other attempt files are temporary.\n\n"
+                if start.get("artifacts") is not None else ""
+            )
+            + "Complete the task using the available tools, then call submit_result."
         )
         try:
             for message in (prompt, "You have not submitted a valid result yet. Call submit_result now."):
@@ -747,6 +753,7 @@ async def main() -> None:
                 "skills",
                 "builtin-tools",
                 "interactive",
+                "workspace-artifacts",
             ],
         }
     )

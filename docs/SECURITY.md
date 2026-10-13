@@ -95,3 +95,40 @@ The storage gate remains open; see [qualification evidence](DEPLOYMENT.md#native
 Durable storage correctness, single-writer revision handling, account binding, permission arbitration, and
 real deployed transport behavior require explicit qualification. No production-hardening, multi-customer
 isolation, automatic retention/deletion, or uninterrupted failover is claimed.
+
+## Local hybrid boundaries
+
+The experimental shared coordinator is a separate trust model from the singleton demo host.
+API principals are bound to operator-configured GitHub numeric identities. The API forwards principal-bound
+control requests using a worker service key; ticket digests are one-use, short-lived and activation-bound.
+The CLI still needs trusted key provisioning and sealed GitHub authentication to its expected account.
+The runtime has been exercised with one real account; independent synthetic scopes and negative checks
+do not substitute for the remaining two-real-account qualification.
+
+The shared worker holds PostgreSQL access and its dispatcher grant key. Its agent sessions expose only
+registered application tools; native shell/project/terminal operations are restricted in provider mode.
+There is no Docker socket, provider credential, or allocation-signing key in the worker. Native anchors
+contain no agent content; filesystem callbacks and API operations are fenced by principal and lease epoch.
+In-process isolation is application isolation, not a hostile-code/OS boundary.
+
+The host-side controller alone has Docker authority. It accepts only operator image/settings, resolves
+images to immutable IDs, persists allocations before creation, and reconciles only its labeled containers.
+The bound namespace must remain stable for recovery. Docker contexts must use a local socket/named pipe.
+On-demand executors receive an allocation-scoped credential; dispatcher routes restrict it to the assigned
+job/attempt. Runner processes receive only inference capabilities, not executor, database, or provisioning
+credentials. The Docker capability set is narrowed but still supports uid switching and cleanup; egress
+is **not** enforced. Neither Docker labels nor separate containers establish cross-customer security.
+
+Turn/child reservations and stable request IDs prevent duplicated usage and unbounded fresh allowances.
+Unknown requests consume a conservative reservation; late excess usage remains counted. Provider calls
+already in flight can exceed remaining tokens. These are admission/accounting controls, not exact dollar caps.
+Historical session files, immutable snapshots and successful output artifacts need operator-managed
+retention: closing a session does not delete them.
+
+Output collection is Linux-only and descriptor-relative under the pinned output directory. It rejects
+symlinks, hard links, nonregular files and oversized trees. Only successful-attempt output artifacts are
+available to the job principal. Imports require explicit destination preconditions. Child outputs are
+untrusted model data; automatic completion turns are bounded and cannot delegate further jobs.
+Ambiguous completion delivery is visible through session/job notification status instead of being
+silently replayed. A public service, Azure adapter, robust hostile-tenant containment and crash/failover
+qualification remain outside the proven local scope.

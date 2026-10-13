@@ -15,7 +15,8 @@
     "@copilot-agent/job-store": "workspace:*",
     "@copilot-agent/service-defaults": "workspace:*",
     "ajv": "^8.17.1",
-    "fastify": "^5.4.0"
+    "fastify": "^5.4.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

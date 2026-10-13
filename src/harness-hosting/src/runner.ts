@@ -220,6 +220,7 @@ export async function runHarness(options: RunOptions): Promise<void> {
     const remainingMs = () => attemptDeadlineMs - Date.now() - 3_000;
     const prompt =
       `Job input (JSON):\n\`\`\`json\n${JSON.stringify(start.input, null, 2)}\n\`\`\`\n\n` +
+      (start.artifacts ? `Workspace artifacts (JSON):\n\`\`\`json\n${JSON.stringify(start.artifacts)}\n\`\`\`\nRead the selected snapshots from inputs/. Put deliverable files in outputs/ before submitting the result. Only outputs/ files are retained; other attempt files are temporary.\n\n` : "") +
       "Complete the task using the available tools, then call submit_result.";
 
     try {

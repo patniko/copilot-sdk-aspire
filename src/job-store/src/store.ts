@@ -50,6 +50,7 @@ export interface NewJob {
   tokenBudget: number;
   maxAttempts: number;
   safeToRetry: boolean;
+  execution?: "pool" | "dedicated";
   /** The effective policy that admitted the job. Omitted fields fall back to the dispatcher's base policy. */
   policy?: { digest: string; requirements: JobSecurityRequirements; retryBackoffSeconds: number };
 }
@@ -60,6 +61,7 @@ export interface ClaimOptions {
   leaseSeconds: number;
   maxConcurrentPerPrincipal: number;
   defaults: JobSecurityRequirements;
+  allocationId?: string;
 }
 
 export interface Claim {
@@ -131,10 +133,12 @@ interface JobRow {
   harness_digest: string;
   harness_snapshot: HarnessSnapshot;
   profile: string;
+  execution_mode: "pool" | "dedicated";
   model: string;
   input: unknown;
   max_duration_seconds: number;
   token_budget: number;
+  budget_tokens_used: string;
   max_attempts: number;
   safe_to_retry: boolean;
   attempts: number;
@@ -230,74 +234,57 @@ export class JobStore {
   async createJob(job: NewJob, maxOpenJobsPerPrincipal: number): Promise<{ view: JobView; created: boolean }> {
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        return await this.#tx(async (client) => {
-          if (job.idempotencyKey) {
-            const existing = await client.query<JobRow>(
-              `${JOB_VIEW_SELECT} WHERE j.principal = $1 AND j.idempotency_key = $2`,
-              [job.principal, job.idempotencyKey],
-            );
-            const row = existing.rows[0];
-            if (row) {
-              if (row.request_hash !== job.requestHash) {
-                throw new StoreError(
-                  "idempotency_conflict",
-                  "The idempotency key was already used with a different request.",
-                );
-              }
-              return { view: toView(row), created: false };
-            }
-          }
-          const open = await client.query<{ count: string }>(
-            `SELECT count(*)::text AS count FROM jobs
-             WHERE principal = $1 AND state IN ('queued','retry_wait','running','cancel_requested')`,
-            [job.principal],
-          );
-          if (Number(open.rows[0]?.count ?? 0) >= maxOpenJobsPerPrincipal) {
-            throw new StoreError("quota_exceeded", "Too many open jobs for this principal.");
-          }
-          const id = randomUUID();
-          const inserted = await client.query<JobRow>(
-            `INSERT INTO jobs (id, principal, idempotency_key, request_hash, state, harness_name, harness_version,
-               harness_digest, harness_snapshot, profile, model, input, max_duration_seconds, token_budget,
-               max_attempts, safe_to_retry, policy_digest, requires_uid_isolation, requires_egress_enforcement,
-               policy_acknowledged_gaps, retry_backoff_seconds)
-             VALUES ($1,$2,$3,$4,'queued',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
-             RETURNING *`,
-            [
-              id,
-              job.principal,
-              job.idempotencyKey ?? null,
-              job.requestHash,
-              job.harness.definition.name,
-              job.harness.definition.version,
-              job.harness.digest,
-              JSON.stringify(job.harness),
-              job.profile,
-              job.model,
-              JSON.stringify(job.input ?? null),
-              job.maxDurationSeconds,
-              job.tokenBudget,
-              job.maxAttempts,
-              job.safeToRetry,
-              job.policy?.digest ?? null,
-              job.policy?.requirements.requiresUidIsolation ?? null,
-              job.policy?.requirements.requiresEgressEnforcement ?? null,
-              job.policy?.requirements.acknowledgedGaps ?? null,
-              job.policy?.retryBackoffSeconds ?? null,
-            ],
-          );
-          await this.#event(client, id, job.policy ? { type: "job.queued", policyDigest: job.policy.digest } : { type: "job.queued" });
-          return { view: toView(inserted.rows[0]!), created: true };
-        });
+        return await this.#tx((client) => this.createJobInTransaction(client, job, maxOpenJobsPerPrincipal));
       } catch (error) {
         // A concurrent request with the same idempotency key won the insert; re-read it.
-        if (isUniqueViolation(error) && attempt === 0) {
-          continue;
-        }
+        if (isUniqueViolation(error) && attempt === 0) continue;
         throw error;
       }
     }
     throw new StoreError("idempotency_conflict", "Concurrent submission with the same idempotency key.");
+  }
+
+  /** Shares admission's transaction with delegation metadata and budget reservation. */
+  async createJobInTransaction(client: pg.PoolClient, job: NewJob, maxOpenJobsPerPrincipal: number): Promise<{ view: JobView; created: boolean }> {
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1,7310442003))", [job.principal]);
+    if (job.idempotencyKey) {
+      const existing = await client.query<JobRow>(
+        `${JOB_VIEW_SELECT} WHERE j.principal = $1 AND j.idempotency_key = $2`,
+        [job.principal, job.idempotencyKey],
+      );
+      const row = existing.rows[0];
+      if (row) {
+        if (row.request_hash !== job.requestHash || row.execution_mode !== (job.execution ?? "pool")) {
+          throw new StoreError("idempotency_conflict", "The idempotency key was already used with a different request.");
+        }
+        return { view: toView(row), created: false };
+      }
+    }
+    const open = await client.query<{ count: string }>(
+      `SELECT count(*)::text AS count FROM jobs
+       WHERE principal = $1 AND state IN ('queued','retry_wait','running','cancel_requested')`, [job.principal]);
+    if (Number(open.rows[0]?.count ?? 0) >= maxOpenJobsPerPrincipal) {
+      throw new StoreError("quota_exceeded", "Too many open jobs for this principal.");
+    }
+    const id = randomUUID();
+    const inserted = await client.query<JobRow>(
+      `INSERT INTO jobs (id, principal, idempotency_key, request_hash, state, harness_name, harness_version,
+         harness_digest, harness_snapshot, profile, model, input, max_duration_seconds, token_budget,
+         max_attempts, safe_to_retry, policy_digest, requires_uid_isolation, requires_egress_enforcement,
+         policy_acknowledged_gaps, retry_backoff_seconds,execution_mode)
+       VALUES ($1,$2,$3,$4,'queued',$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+       RETURNING *`,
+      [
+        id, job.principal, job.idempotencyKey ?? null, job.requestHash,
+        job.harness.definition.name, job.harness.definition.version, job.harness.digest, JSON.stringify(job.harness),
+        job.profile, job.model, JSON.stringify(job.input ?? null), job.maxDurationSeconds, job.tokenBudget,
+        job.maxAttempts, job.safeToRetry, job.policy?.digest ?? null,
+        job.policy?.requirements.requiresUidIsolation ?? null, job.policy?.requirements.requiresEgressEnforcement ?? null,
+        job.policy?.requirements.acknowledgedGaps ?? null, job.policy?.retryBackoffSeconds ?? null, job.execution ?? "pool",
+      ],
+    );
+    await this.#event(client, id, job.policy ? { type: "job.queued", policyDigest: job.policy.digest } : { type: "job.queued" });
+    return { view: toView(inserted.rows[0]!), created: true };
   }
 
   async getJob(principal: string, id: string): Promise<JobView | undefined> {
@@ -462,6 +449,9 @@ export class JobStore {
       if (row.state !== "failed" && row.state !== "needs_review") {
         throw new StoreError("invalid_state", `A job in state '${row.state}' cannot be retried.`);
       }
+      if ((await client.query("SELECT 1 FROM shared_delegations WHERE job_id=$1", [id])).rowCount) {
+        throw new StoreError("invalid_state", "Delegated work needs a new explicit coordinator submission so its aggregate budget and completion identity are admitted again.");
+      }
       await client.query(
         `UPDATE jobs SET state = 'queued', max_attempts = attempts + 1, not_before = now(), error_code = NULL,
            error_message = NULL, updated_at = now() WHERE id = $1`,
@@ -482,15 +472,26 @@ export class JobStore {
    */
   async claimNext(options: ClaimOptions): Promise<Claim | undefined> {
     return this.#tx(async (client) => {
+      if (options.allocationId) {
+        const allocation = await client.query(
+          `SELECT id FROM execution_allocations WHERE id=$1 AND id::text=$2 AND state IN ('starting','running')
+           AND attempt_id IS NULL AND startup_until>clock_timestamp() AND expires_at>clock_timestamp() FOR UPDATE`, [options.allocationId, options.executor.executorId]);
+        if (!allocation.rowCount) return undefined;
+      }
       const candidate = await client.query<JobRow>(
         `SELECT j.* FROM jobs j
          WHERE j.state IN ('queued','retry_wait') AND j.not_before <= now() AND j.profile = ANY($1::text[])
+           AND (($8::uuid IS NULL AND j.execution_mode='pool') OR
+             (j.execution_mode='dedicated' AND EXISTS (
+               SELECT 1 FROM execution_allocations e WHERE e.id=$8 AND e.job_id=j.id
+                 AND e.attempt_id IS NULL AND e.state IN ('starting','running') AND e.expires_at>clock_timestamp()
+                 AND e.id::text=$9)))
            AND (SELECT count(*) FROM jobs r WHERE r.principal = j.principal AND r.state IN ('running','cancel_requested')) < $2
            AND ${eligibleForExecutor(3)}
          ORDER BY j.not_before, j.created_at
          FOR UPDATE SKIP LOCKED
          LIMIT 1`,
-        [options.executor.profiles, options.maxConcurrentPerPrincipal, ...eligibilityParams(options)],
+        [options.executor.profiles, options.maxConcurrentPerPrincipal, ...eligibilityParams(options), options.allocationId ?? null, options.executor.executorId],
       );
       const job = candidate.rows[0];
       if (!job) {
@@ -518,11 +519,14 @@ export class JobStore {
         ],
       );
       const deadline = attempt.rows[0]!.deadline;
+      if (options.allocationId) {
+        await client.query("UPDATE execution_allocations SET attempt_id=$2 WHERE id=$1", [options.allocationId, attemptId]);
+      }
       await client.query("UPDATE jobs SET state = 'running', attempts = $2, updated_at = now() WHERE id = $1", [
         job.id,
         number,
       ]);
-      const used = Number(job.input_tokens) + Number(job.output_tokens);
+      const used = Number(job.budget_tokens_used);
       const tokenBudget = Math.max(0, job.token_budget - used);
       const jti = randomUUID();
       const expiresAt = new Date(deadline.getTime() + 60_000);
@@ -571,6 +575,7 @@ export class JobStore {
          WHERE w.id IN (
            SELECT j.id FROM jobs j
            WHERE j.state IN ('queued','retry_wait') AND NOT j.waiting_reported
+             AND j.execution_mode='pool'
              AND j.not_before <= now() - make_interval(secs => $7) AND j.profile = ANY($1::text[])
              AND NOT (${eligibleForExecutor(2)})
            ORDER BY j.not_before
@@ -802,18 +807,26 @@ export class JobStore {
   // Capability introspection and usage, used by the inference gateway.
   // -------------------------------------------------------------------------
 
-  async introspectCapability(jti: string): Promise<CapabilityIntrospection> {
-    const result = await this.pool.query<{
+  async introspectCapability(jti: string, db: pg.Pool | pg.PoolClient = this.pool): Promise<CapabilityIntrospection> {
+    const result = await db.query<{
       revoked: boolean;
       expired: boolean;
       token_budget: number;
       tokens_used: string;
       status: string;
       cancel_requested: boolean;
+      dedicated: boolean;
+      parent_allowed: boolean;
+      allocation_active: boolean;
     }>(
       `SELECT c.revoked, c.expires_at < now() AS expired, c.token_budget, c.tokens_used::text AS tokens_used,
-              a.status, j.cancel_requested
+              a.status, j.cancel_requested, j.execution_mode='dedicated' AS dedicated,
+              (j.execution_mode='pool' OR d.id IS NULL OR COALESCE(s.principal=j.principal AND
+                s.tokens_used+s.tokens_reserved <= (s.definition->'limits'->>'tokenBudget')::bigint,false)) AS parent_allowed,
+              (j.execution_mode='pool' OR EXISTS(SELECT 1 FROM execution_allocations e WHERE e.attempt_id=a.id
+                AND e.state IN ('starting','running') AND e.expires_at>clock_timestamp())) AS allocation_active
        FROM capabilities c JOIN attempts a ON a.id = c.attempt_id JOIN jobs j ON j.id = a.job_id
+       LEFT JOIN shared_delegations d ON d.job_id=j.id LEFT JOIN shared_sessions s ON s.id=d.session_id
        WHERE c.jti = $1`,
       [jti],
     );
@@ -822,32 +835,98 @@ export class JobStore {
       return { active: false, reason: "unknown", remainingTokens: 0 };
     }
     const remainingTokens = Math.max(0, row.token_budget - Number(row.tokens_used));
-    if (row.revoked || row.expired || row.cancel_requested) {
+    if (row.revoked || row.expired || row.cancel_requested || !row.allocation_active) {
       return { active: false, reason: "revoked", remainingTokens };
     }
     if (row.status !== "running") {
       return { active: false, reason: "attempt_inactive", remainingTokens };
     }
-    if (remainingTokens <= 0) {
+    if (remainingTokens <= 0 || !row.parent_allowed) {
       return { active: false, reason: "budget_exhausted", remainingTokens };
     }
-    return { active: true, remainingTokens };
+    return { active: true, remainingTokens, ...(row.dedicated ? { reservationRequired: true } : {}) };
   }
 
-  async recordUsage(jti: string, inputTokens: number, outputTokens: number): Promise<boolean> {
+  async beginInferenceRequest(jti: string, requestId: string): Promise<number> {
+    return this.#tx(async (db) => {
+      await db.query("SELECT j.id FROM jobs j JOIN attempts a ON a.job_id=j.id JOIN capabilities c ON c.attempt_id=a.id WHERE c.jti=$1 FOR UPDATE OF j", [jti]);
+      const status = await this.introspectCapability(jti, db);
+      if (!status.active || !status.reservationRequired) throw new StoreError("invalid_state", "The dedicated job inference grant is inactive.");
+      const pending = await db.query("SELECT 1 FROM job_inference_requests WHERE jti=$1 AND state='pending'", [jti]);
+      if (pending.rowCount) throw new StoreError("quota_exceeded", "The job already has an inference request in flight.");
+      const created = await db.query(
+        "INSERT INTO job_inference_requests(request_id,jti,reserved_tokens,state) VALUES($1,$2,$3,'pending') ON CONFLICT DO NOTHING",
+        [requestId, jti, status.remainingTokens]);
+      if (!created.rowCount) throw new StoreError("idempotency_conflict", "The inference request identity was already used.");
+      return status.remainingTokens;
+    });
+  }
+
+  async recordUsage(jti: string, inputTokens: number, outputTokens: number, requestId: string = randomUUID(), known = true): Promise<boolean> {
     const input = Math.max(0, Math.floor(inputTokens));
     const output = Math.max(0, Math.floor(outputTokens));
-    const result = await this.pool.query(
-      `WITH cap AS (
-         UPDATE capabilities SET tokens_used = tokens_used + $2 + $3 WHERE jti = $1 RETURNING attempt_id
-       )
-       UPDATE jobs j SET input_tokens = j.input_tokens + $2, output_tokens = j.output_tokens + $3,
-              inference_requests = j.inference_requests + 1, updated_at = now()
-       FROM attempts a, cap
-       WHERE a.id = cap.attempt_id AND j.id = a.job_id`,
-      [jti, input, output],
-    );
-    return (result.rowCount ?? 0) > 0;
+    return this.#tx(async (db) => {
+      const job = (await db.query<{ id: string; execution_mode: string }>(
+        `SELECT j.id,j.execution_mode FROM jobs j JOIN attempts a ON a.job_id=j.id
+         JOIN capabilities c ON c.attempt_id=a.id WHERE c.jti=$1 FOR UPDATE OF j`, [jti])).rows[0];
+      if (!job) return false;
+      let row = (await db.query<{ jti: string; state: string; reserved_tokens: number; input_tokens: string; output_tokens: string; charged_tokens: string }>(
+        "SELECT * FROM job_inference_requests WHERE request_id=$1", [requestId])).rows[0];
+      if (!row) {
+        if (job.execution_mode === "dedicated") return false;
+        const inserted = await db.query(
+          "INSERT INTO job_inference_requests(request_id,jti,state) VALUES($1,$2,'pending') ON CONFLICT DO NOTHING", [requestId, jti]);
+        if (!inserted.rowCount) throw new StoreError("idempotency_conflict", "The usage identity is already associated with another request.");
+        row = { jti, state: "pending", reserved_tokens: 0, input_tokens: "0", output_tokens: "0", charged_tokens: "0" };
+      }
+
+      if (row.jti !== jti) throw new StoreError("idempotency_conflict", "The usage identity belongs to another grant.");
+      if (row.state === "completed") {
+        if (!known || Number(row.input_tokens) !== input || Number(row.output_tokens) !== output) throw new StoreError("idempotency_conflict", "The usage report changed.");
+        return true;
+      }
+      const charged = Math.max(Number(row.charged_tokens), known ? input + output : row.reserved_tokens);
+      const delta = charged - Number(row.charged_tokens);
+      await db.query(
+        "UPDATE job_inference_requests SET state=$2,input_tokens=$3,output_tokens=$4,charged_tokens=$5,finished_at=clock_timestamp() WHERE request_id=$1",
+        [requestId, known ? "completed" : "unknown", input, output, charged]);
+      await db.query("UPDATE capabilities SET tokens_used=tokens_used+$2 WHERE jti=$1", [jti, delta]);
+      await db.query(
+        `UPDATE jobs SET input_tokens=input_tokens+$2,output_tokens=output_tokens+$3,budget_tokens_used=budget_tokens_used+$4,
+         inference_requests=inference_requests+$5,updated_at=clock_timestamp() WHERE id=$1`,
+        [job.id, input - Number(row.input_tokens), output - Number(row.output_tokens), delta, row.state === "pending" ? 1 : 0]);
+      return true;
+    });
+  }
+
+  async recoverInferenceRequests(): Promise<void> {
+    await this.#tx(async (db) => {
+      const jobs = await db.query<{ id: string }>(
+        `SELECT j.id FROM jobs j WHERE EXISTS (
+          SELECT 1 FROM attempts a JOIN capabilities c ON c.attempt_id=a.id JOIN job_inference_requests r ON r.jti=c.jti
+          WHERE a.job_id=j.id AND r.state='pending' AND
+            (c.expires_at<clock_timestamp() OR a.finished_at<clock_timestamp()-interval '30 seconds'))
+         ORDER BY j.id FOR UPDATE SKIP LOCKED LIMIT 100`);
+      for (const job of jobs.rows) {
+        const unknown = await db.query<{ jti: string; reserved_tokens: number }>(
+          `UPDATE job_inference_requests r SET state='unknown',charged_tokens=reserved_tokens,finished_at=clock_timestamp()
+           FROM capabilities c,attempts a WHERE r.jti=c.jti AND c.attempt_id=a.id AND a.job_id=$1 AND r.state='pending'
+             AND (c.expires_at<clock_timestamp() OR a.finished_at<clock_timestamp()-interval '30 seconds')
+           RETURNING r.jti,r.reserved_tokens`, [job.id]);
+        for (const row of unknown.rows) {
+          await db.query("UPDATE capabilities SET tokens_used=tokens_used+$2 WHERE jti=$1", [row.jti, row.reserved_tokens]);
+        }
+        await db.query("UPDATE jobs SET budget_tokens_used=budget_tokens_used+$2,inference_requests=inference_requests+$3 WHERE id=$1",
+          [job.id, unknown.rows.reduce((sum, row) => sum + row.reserved_tokens, 0), unknown.rows.length]);
+      }
+    });
+  }
+
+  async failUnclaimedInTransaction(db: pg.PoolClient, id: string, message: string): Promise<void> {
+    const rows = await db.query<{ attempts: number }>(
+      `UPDATE jobs SET state='failed',error_code='executor_lost',error_message=$2,updated_at=clock_timestamp()
+       WHERE id=$1 AND execution_mode='dedicated' AND state IN ('queued','retry_wait') RETURNING attempts`, [id, message]);
+    if (rows.rows[0]) await this.#event(db, id, { type: "job.failed", attempt: rows.rows[0].attempts, code: "executor_lost", message });
   }
 
   // -------------------------------------------------------------------------
@@ -1064,6 +1143,7 @@ function toView(row: JobRow): JobView {
     state: row.state,
     harness: { name: row.harness_name, version: row.harness_version, digest: row.harness_digest },
     profile: row.profile,
+    ...(row.execution_mode === "dedicated" ? { execution: "dedicated" as const } : {}),
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
     maxDurationSeconds: row.max_duration_seconds,

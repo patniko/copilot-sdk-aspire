@@ -5,11 +5,12 @@ import {
   type HarnessSnapshot,
   type JobEventView,
 } from "@copilot-agent/contracts";
-import { HostStore, JobEventListener, JobStore, StoreError } from "@copilot-agent/job-store";
+import { HostStore, JobEventListener, JobStore, StoreError, type DelegationStore } from "@copilot-agent/job-store";
 import { ApiKeyAuthenticator, createService, HttpError } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import { Admission } from "./admission.js";
+import { Admission } from "@copilot-agent/service-defaults";
 import { registerConsole } from "./console.js";
+import { registerSharedSessionRoutes, type SharedApiDependencies } from "./shared-routes.js";
 
 export interface ApiDependencies {
   store: JobStore;
@@ -21,6 +22,9 @@ export interface ApiDependencies {
   /** Serve the browser job console at `/`. Defaults to true. */
   console?: boolean;
   host?: { store: HostStore; owner: string; principal: string; transport: string };
+  shared?: SharedApiDependencies;
+  execution?: "pool" | "dedicated";
+  delegations?: DelegationStore;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -34,6 +38,7 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
   }
 
   const principalOf = (request: FastifyRequest) => deps.authenticator.authenticate(request).id;
+  if (deps.shared) registerSharedSessionRoutes(app, deps.shared, principalOf, deps.delegations);
   if (deps.host) {
     const host = deps.host;
     const authorizeHost = (request: FastifyRequest) => {
@@ -130,10 +135,10 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
     if (idempotencyKey !== undefined && !/^[\x21-\x7e]{1,200}$/.test(idempotencyKey)) {
       throw new HttpError(400, "invalid_request", "Idempotency-Key must be 1-200 visible ASCII characters.");
     }
-    const admitted = deps.admission.admit(parsed.data);
+    const admitted = deps.admission.admit(parsed.data, deps.execution);
     try {
       const { view, created } = await deps.store.createJob(
-        { principal, idempotencyKey, ...admitted },
+        { principal, idempotencyKey, ...admitted, execution: deps.execution },
         deps.maxOpenJobsPerPrincipal,
       );
       reply.header("location", `/v1/jobs/${view.id}`);
@@ -221,10 +226,12 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
     if (!view) {
       throw new HttpError(404, "not_found", "Job not found.");
     }
+    const files = deps.delegations ? await deps.delegations.artifacts(principalOf(request), id) : [];
     return {
       artifacts:
         view.state === "succeeded"
-          ? [{ name: "result.json", contentType: "application/json", href: `/v1/jobs/${id}/artifacts/result.json` }]
+          ? [{ name: "result.json", contentType: "application/json", href: `/v1/jobs/${id}/artifacts/result.json` },
+            ...files.map((file) => ({ ...file, name: `outputs/${file.path}`, contentType: "application/octet-stream", href: `/v1/jobs/${id}/artifacts/${file.id}` }))]
           : [],
     };
   });
@@ -235,6 +242,18 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
       throw new HttpError(404, "not_found", "Artifact not found.");
     }
     return reply.type("application/json").send(JSON.stringify(view.result));
+  });
+
+  app.get("/v1/jobs/:id/artifacts/:artifactId", async (request, reply) => {
+    const principal = principalOf(request);
+    const jobId = jobIdOf(request);
+    const id = (request.params as { artifactId: string }).artifactId;
+    if (!UUID.test(id)) throw new HttpError(404, "not_found", "Artifact not found.");
+    const file = await deps.delegations?.artifact(principal, jobId, id);
+    if (!file) throw new HttpError(404, "not_found", "Artifact not found.");
+    return reply.header("cache-control", "private, no-store").header("x-content-type-options", "nosniff")
+      .header("etag", `"${file.sha256}"`).header("content-disposition", `attachment; filename="${file.path.split("/").at(-1)}"`)
+      .type("application/octet-stream").send(file.content);
   });
 
   app.get("/v1/jobs/:id/events", async (request, reply) => {

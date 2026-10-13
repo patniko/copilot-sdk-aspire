@@ -28,6 +28,16 @@ describe("hosting topology", () => {
     expect(topology.edges.some((edge) => edge.from === "container" && edge.to === "gateway")).toBe(true);
   });
 
+  it("distinguishes the implemented local opt-in from the Azure proposal without inventing telemetry", () => {
+    const topology = hostingTopology("hybrid", "disabled", true);
+    const shared = topology.nodes.find((node) => node.id === "shared")!;
+    expect(shared.proposed).toBe(false);
+    expect(shared.resource).toBe("session-host");
+    expect(hostingObservation(shared, "local", { running: true, resources: [] })).toBe("Not observed");
+    expect(topology.nodes.find((node) => node.id === "executors")?.caption).toBe("One-shot Linux containers");
+    expect(topology.edges.every((edge) => !edge.proposed)).toBe(true);
+  });
+
   it("keeps every node in bounds and every edge attached to declared nodes", () => {
     for (const mode of ["current", "hybrid"] as const) for (const transport of ["disabled", "direct", "github", "both"] as const) {
       const topology = hostingTopology(mode, transport);

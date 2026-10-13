@@ -39,7 +39,7 @@ export type JobSubmission = z.infer<typeof JobSubmission>;
 
 export const JobErrorCode = z.union([
   RunnerFailureCode,
-  z.enum(["lease_expired", "executor_lost", "protocol_error", "runner_exited", "policy_rejected", "policy_revoked"]),
+  z.enum(["lease_expired", "executor_lost", "protocol_error", "runner_exited", "policy_rejected", "policy_revoked", "artifact_failed"]),
 ]);
 export type JobErrorCode = z.infer<typeof JobErrorCode>;
 
@@ -59,6 +59,8 @@ export interface JobView {
   state: JobState;
   harness: { name: string; version: string; digest: string };
   profile: string;
+  /** Present for jobs assigned to a one-shot on-demand allocation rather than the legacy pool. */
+  execution?: "dedicated";
   createdAt: string;
   updatedAt: string;
   /** Per-attempt duration limit after intersecting harness, policy, and caller limits. */
