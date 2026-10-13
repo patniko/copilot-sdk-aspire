@@ -1,0 +1,72 @@
+.hosting-viewport {
+  overflow-x: auto;
+}
+.hosting-map {
+  position: relative;
+  min-width: 1050px;
+  width: 100%;
+}
+.hosting-drawing {
+  display: block;
+  width: 100%;
+  color: var(--fgColor-muted);
+}
+.hosting-boundary rect {
+  fill: var(--bgColor-muted);
+  stroke: var(--borderColor-default);
+}
+.hosting-boundary text {
+  fill: var(--fgColor-muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+.hosting-edge polyline {
+  fill: none;
+  stroke: var(--borderColor-default);
+  stroke-width: 2;
+}
+.hosting-edge[data-support="true"] polyline {
+  stroke-dasharray: 6 4;
+}
+.hosting-edge[data-active="true"] polyline {
+  stroke: var(--fgColor-accent);
+  stroke-width: 3;
+}
+.hosting-edge text {
+  fill: var(--fgColor-muted);
+  stroke: var(--bgColor-default);
+  stroke-width: 4;
+  paint-order: stroke;
+  font-size: 12px;
+}
+.hosting-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  padding: 12px;
+  text-align: left;
+  border: 1px solid var(--borderColor-default);
+  border-radius: 8px;
+  background: var(--bgColor-default);
+  color: var(--fgColor-default);
+}
+.hosting-node strong {
+  font-size: 14px;
+}
+.hosting-node span {
+  color: var(--fgColor-muted);
+  font-size: 12px;
+}
+.hosting-node[data-proposed="true"] {
+  border-style: dotted;
+  border-width: 2px;
+}
+.hosting-node[aria-pressed="true"] {
+  border-color: var(--fgColor-accent);
+  box-shadow: 0 0 0 2px var(--fgColor-accent);
+}
+.hosting-node:hover {
+  background: var(--bgColor-accent-muted);
+}

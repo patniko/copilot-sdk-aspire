@@ -1,11 +1,12 @@
 import clsx from "clsx";
-import { useEffect, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { hasToken } from "./api";
 import {
   Boxes,
   Download,
   FlaskConical,
   GitHubMark,
+  GitBranch,
   Laptop,
   LayoutDashboard,
   Moon,
@@ -28,12 +29,15 @@ import { OverviewView } from "./views/Overview";
 import { PolicyView } from "./views/Policy";
 import { TryView } from "./views/Try";
 
+const HostingView = lazy(() => import("./views/Hosting").then((module) => ({ default: module.HostingView })));
+
 const NAV: Array<{ id: View; label: string; icon: ReactNode }> = [
   { id: "overview", label: "Overview", icon: <LayoutDashboard /> },
   { id: "harnesses", label: "Harnesses", icon: <Boxes /> },
   { id: "policy", label: "Policy", icon: <ShieldCheck /> },
   { id: "local", label: "Local run", icon: <Laptop /> },
   { id: "deploy", label: "Deploy", icon: <Rocket /> },
+  { id: "hosting", label: "Hosting", icon: <GitBranch /> },
   { id: "try", label: "Try it", icon: <FlaskConical /> },
 ];
 
@@ -161,6 +165,7 @@ export function App() {
           {view === "policy" && <PolicyView />}
           {view === "local" && <LocalRunView />}
           {view === "deploy" && <DeployView />}
+          {view === "hosting" && <Suspense fallback={<div role="status"><Spinner /> Loading hosting topology...</div>}><HostingView /></Suspense>}
           {view === "try" && <TryView />}
         </main>
 

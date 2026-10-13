@@ -11,7 +11,7 @@ import type {
 } from "../server/types";
 import { api, errorMessage } from "./api";
 
-export type View = "overview" | "harnesses" | "policy" | "local" | "deploy" | "try";
+export type View = "overview" | "harnesses" | "policy" | "local" | "deploy" | "hosting" | "try";
 
 interface AppState {
   view: View;

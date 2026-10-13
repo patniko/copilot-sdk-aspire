@@ -68,6 +68,22 @@ Command output streams into the task drawer at the bottom; long tasks can be can
 deliberately not committed with the platform source. Back it up or version it in a separate customer-owned
 repository if it must be shared or audited.
 
+## Hosting and topology
+
+**Hosting** shows a selectable component map for the current stack and an explicitly labeled hybrid proposal.
+Choose local or the selected Azure target, select a node to inspect its responsibility and limitations, or
+expand the text connection map. Keyboard selection, horizontal scrolling, and light/dark themes are supported.
+
+This first view is a configured architecture, not live telemetry. It shows available resource observations
+without treating missing data as a running or stopped service. Those observations have no freshness guarantee.
+The preview does not deploy resources or modify settings, and planned nodes are visibly marked.
+Native container-host inference is shown separately from the managed Foundry route.
+
+The connection card preserves the existing container CLI launchers. The shared coordinator launcher remains
+unavailable until its runtime and multi-account isolation are qualified. First-token measurements, allocation
+counts, cost estimates, and future pool controls are not fabricated; they remain unavailable until their backend
+integration is implemented.
+
 ## Experimental demo host
 
 Local run and each deployment target have independent **Demo agent host** settings: disabled, direct,
