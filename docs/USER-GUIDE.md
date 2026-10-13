@@ -155,7 +155,7 @@ Open the `agent-api` URL in a browser and enter the caller API key, not a servic
 1. Choose **New session**, select a published harness/version and an allowed agent profile, and review the input.
 2. Submit. The console's "session" represents a durable job; it is not a resumable SDK chat session.
 3. Follow the live activity and check **Needs you** for approvals or questions.
-4. Expand **Event details** or **SDK details** on an activity row to inspect its persisted JSON.
+4. Expand an activity title to inspect its persisted JSON.
 5. On success, inspect the structured result. API clients can also fetch `artifacts/result.json`.
 
 ![Job console showing sessions and requests needing the caller's attention](images/job-console-sessions.png)

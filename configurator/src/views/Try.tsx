@@ -65,6 +65,10 @@ function skeleton(schema: any, depth = 0): unknown {
 function describeSdkEvent(detail: Record<string, any> = {}): string {
   const data = detail.data ?? {};
   switch (detail.eventType) {
+    case "assistant.turn_start":
+      return data.turnId === undefined ? "Agent turn started" : `Agent turn started · turn ${data.turnId}`;
+    case "assistant.turn_end":
+      return data.turnId === undefined ? "Agent turn completed" : `Agent turn completed · turn ${data.turnId}`;
     case "assistant.message":
       return data.content ? `Assistant: ${singleLine(data.content, 220)}` : "Assistant message";
     case "assistant.reasoning":
@@ -73,15 +77,75 @@ function describeSdkEvent(detail: Record<string, any> = {}): string {
       return data.content ? `User: ${singleLine(data.content, 220)}` : "User message";
     case "assistant.usage":
       return `Model usage: ${data.model ?? "unknown model"} · ${data.inputTokens ?? 0} in · ${data.outputTokens ?? 0} out`;
+    case "model.call_start":
+      return `Calling ${data.model ?? "model"}`;
+    case "model.call_finished":
+      return `Model call ${outcomeLabel(data.outcome)}${durationSuffix(data.dispatchDurationMs)}`;
+    case "model.call_final_result":
+      return `${data.model ?? "Model"} returned a final result`;
+    case "model.model_call_started":
+      return `Calling ${data.modelCall?.model ?? data.modelInfo?.model ?? "model"}`;
+    case "model.model_call_success":
+      return `${data.modelCall?.model ?? data.modelInfo?.model ?? "Model"} responded${durationSuffix(data.modelCallDurationMs)}`;
+    case "model.turn_started":
+      return `Model turn started${modelSuffix(data)}`;
+    case "model.turn_ended":
+      return `Model turn completed${modelSuffix(data)}`;
+    case "model.log":
+      return data.message ? `${data.level ?? "Model"}: ${singleLine(data.message, 220)}` : `${data.level ?? "Model"} log`;
     case "model.call_failure":
       return `Model call failed: ${data.errorCode ?? data.failureKind ?? data.errorMessage ?? "unknown error"}`;
+    case "permission.requested": {
+      const request = data.permissionRequest ?? data.promptRequest ?? {};
+      return `Permission requested: ${singleLine(request.intention ?? request.kind ?? "agent action", 180)}`;
+    }
+    case "permission.completed":
+      return `Permission ${data.result?.kind ?? "resolved"}`;
+    case "session.info":
+      return data.message ? `${humanize(data.infoType ?? "Session")}: ${singleLine(data.message, 220)}` : humanize(data.infoType ?? "Session info");
+    case "session.mcp_servers_loaded":
+      return `MCP servers loaded · ${Array.isArray(data.servers) ? data.servers.length : 0}`;
+    case "session.tools_updated":
+      return `Tools updated${modelSuffix(data)}`;
+    case "session.usage_info":
+      return `Context usage: ${data.currentTokens ?? 0} / ${data.tokenLimit ?? "?"} tokens`;
+    case "session.background_tasks_changed":
+      return "Background tasks changed";
+    case "pending_messages.modified":
+      return "Pending messages changed";
+    case "tool.execution_start":
+      return `${data.toolTitle ?? `Tool ${data.toolName ?? "started"}`}${data.toolTitle && data.toolName ? ` · ${data.toolName}` : ""}`;
+    case "tool.execution_complete":
+      return `Tool ${data.success === false ? "failed" : "completed"}${durationSuffix(data.durationMs)}`;
     case "tool.execution_progress":
       return data.progressMessage ?? "Tool progress";
     case "tool.execution_partial_result":
       return `Tool output: ${singleLine(data.partialOutput ?? "", 220)}`;
     default:
-      return String(detail.eventType ?? "SDK event").replaceAll(".", " ");
+      return humanize(detail.eventType ?? "SDK event");
   }
+}
+
+function humanize(value: unknown): string {
+  const text = String(value).replaceAll(".", " ").replaceAll("_", " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function durationSuffix(value: unknown): string {
+  const duration = Number(value);
+  if (!Number.isFinite(duration) || duration < 0) return "";
+  return ` · ${duration < 1000 ? `${Math.round(duration)} ms` : `${(duration / 1000).toFixed(1)} s`}`;
+}
+
+function outcomeLabel(value: unknown): string {
+  if (value === "success") return "succeeded";
+  if (value === "failure") return "failed";
+  return String(value ?? "finished");
+}
+
+function modelSuffix(data: Record<string, any>): string {
+  const model = data.model ?? data.modelInfo?.model ?? data.modelCall?.model;
+  return model ? ` · ${model}` : "";
 }
 
 function singleLine(value: unknown, limit: number): string {
@@ -92,9 +156,9 @@ function singleLine(value: unknown, limit: number): string {
 function describeRunnerEvent(e: Record<string, any>): string {
   switch (e.kind) {
     case "tool.started":
-      return `Tool ${e.tool} started`;
+      return e.detail ? describeSdkEvent(e.detail) : `Tool ${e.tool} started`;
     case "tool.completed":
-      return `Tool ${e.tool} ${e.ok ? "completed" : "failed"}`;
+      return e.detail ? describeSdkEvent(e.detail) : `Tool ${e.tool} ${e.ok ? "completed" : "failed"}`;
     case "subagent.started":
       return `Delegated to sub-agent ${e.agent}`;
     case "subagent.completed":
@@ -102,9 +166,9 @@ function describeRunnerEvent(e: Record<string, any>): string {
     case "skill.used":
       return `Loaded skill ${e.skill}`;
     case "agent.turn_started":
-      return "Agent turn started";
+      return e.detail ? describeSdkEvent(e.detail) : "Agent turn started";
     case "agent.turn_completed":
-      return "Agent turn completed";
+      return e.detail ? describeSdkEvent(e.detail) : "Agent turn completed";
     case "sdk.event":
       return describeSdkEvent(e.detail);
     default:
@@ -174,21 +238,29 @@ export function EventItem({ event }: { event: JobEvent }) {
   const { icon, className } = eventIcon(event);
   const body = event.body as Record<string, any>;
   const detail = body.type === "job.runner_event" ? body.event?.detail : undefined;
+  const title = describe(event);
+  const time = <span className="ml-auto shrink-0 font-mono text-[11px] fg-muted">{new Date(event.at).toLocaleTimeString([], { hour12: false })}</span>;
   return (
     <li className="timeline-item !py-1">
       <span className={clsx("timeline-badge", className)}>{icon}</span>
       <div className="min-w-0 flex-1 pt-0.5 text-xs">
-        <div className="flex items-baseline gap-2">
-          <span className="min-w-0 whitespace-pre-wrap break-words">{describe(event)}</span>
-          <span className="ml-auto shrink-0 font-mono text-[11px] fg-muted">{new Date(event.at).toLocaleTimeString([], { hour12: false })}</span>
-        </div>
-        {detail && (
-          <details className="mt-1">
-            <summary className="w-max fg-accent">SDK details</summary>
+        {detail ? (
+          <details>
+            <summary className="cursor-pointer">
+              <span className="ml-1 inline-flex w-[calc(100%-1rem)] items-baseline gap-2 align-top">
+                <span className="min-w-0 whitespace-pre-wrap break-words fg-accent">{title}</span>
+                {time}
+              </span>
+            </summary>
             <pre className="mt-1 max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md border p-2 text-[11px]">
               {JSON.stringify(detail, null, 2)}
             </pre>
           </details>
+        ) : (
+          <div className="flex items-baseline gap-2">
+            <span className="min-w-0 whitespace-pre-wrap break-words">{title}</span>
+            {time}
+          </div>
         )}
       </div>
     </li>
