@@ -29,7 +29,7 @@ importers:
         version: 8.70.1(eslint@10.11.0(jiti@1.21.7))(typescript@5.9.3)
       vitest:
         specifier: ^4.0.0
-        version: 4.1.11(@types/node@22.20.4)(vite@8.3.1(@types/node@22.20.4)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15))
+        version: 4.1.11(@types/node@22.20.4)(happy-dom@20.14.5)(vite@8.3.1(@types/node@22.20.4)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15))
 
   configurator:
     dependencies:
@@ -39,6 +39,9 @@ importers:
       '@copilot-agent/service-defaults':
         specifier: workspace:*
         version: link:../src/service-defaults
+      '@github/copilot-sdk':
+        specifier: 1.0.16
+        version: 1.0.16
       fastify:
         specifier: ^5.4.0
         version: 5.12.5
@@ -73,6 +76,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      happy-dom:
+        specifier: ^20.0.0
+        version: 20.14.5
       postcss:
         specifier: ^8.5.0
         version: 8.5.28
@@ -389,7 +395,7 @@ importers:
         version: 8.23.0
       vitest:
         specifier: ^4.0.0
-        version: 4.1.11(@types/node@22.20.4)(vite@8.3.1(@types/node@22.20.4)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15))
+        version: 4.1.11(@types/node@22.20.4)(happy-dom@20.14.5)(vite@8.3.1(@types/node@22.20.4)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15))
       ws:
         specifier: ^8.18.1
         version: 8.22.0
@@ -1060,6 +1066,9 @@ packages:
   '@types/react@19.3.0':
     resolution: {integrity: sha1-Ozzo2MFif7XM1NrdV+9EXFoVO3c=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@types/react/-/react-19.3.0.tgz}
 
+  '@types/whatwg-mimetype@3.0.2':
+    resolution: {integrity: sha1-5eBtzT6S1OYi7wEpY3cH1mwo1qQ=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@types/whatwg-mimetype/-/whatwg-mimetype-3.0.2.tgz}
+
   '@types/ws@8.18.1':
     resolution: {integrity: sha1-SEZOS/Ld/RfbE9hFRn9gcP/qSqk=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@types/ws/-/ws-8.18.1.tgz}
 
@@ -1262,6 +1271,10 @@ packages:
   buffer-equal-constant-time@1.0.1:
     resolution: {integrity: sha1-+OcRMvf/5uAaXJaXpMbz5I1cyBk=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/buffer-equal-constant-time/-/buffer-equal-constant-time-1.0.1.tgz}
 
+  buffer-image-size@0.6.4:
+    resolution: {integrity: sha1-NX6Bc+lRztO1onhcaVmTqinbysQ=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/buffer-image-size/-/buffer-image-size-0.6.4.tgz}
+    engines: {node: '>=4.0'}
+
   bundle-name@4.1.0:
     resolution: {integrity: sha1-87lrNBYNZDGhnXaIE1r3z7h5eIk=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/bundle-name/-/bundle-name-4.1.0.tgz}
     engines: {node: '>=18'}
@@ -1354,6 +1367,10 @@ packages:
 
   electron-to-chromium@1.5.439:
     resolution: {integrity: sha512-qu6QIPXhsb+CRcAiTMNjR4A1y/7tCYKkKjr5CZXRVih6qkDf79peZ2BpEU3qoDBNCRrcy3Mra3X9nG5oruuA7Q==, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/electron-to-chromium/-/electron-to-chromium-1.5.439.tgz}
+
+  entities@7.0.1:
+    resolution: {integrity: sha1-JuioiInbY0F9y5oeeaPxvJK1l2s=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/entities/-/entities-7.0.1.tgz}
+    engines: {node: '>=0.12'}
 
   es-errors@1.3.0:
     resolution: {integrity: sha1-BfdaJdq5jk+x3NXhRywFRtUFfI8=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/es-errors/-/es-errors-1.3.0.tgz}
@@ -1506,6 +1523,10 @@ packages:
   glob-parent@6.0.2:
     resolution: {integrity: sha1-bSN9mQg5UMeSkPJMdkKj3poo+eM=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/glob-parent/-/glob-parent-6.0.2.tgz}
     engines: {node: '>=10.13.0'}
+
+  happy-dom@20.14.5:
+    resolution: {integrity: sha512-x/RzkpWO40bTjIoT30iQtt64FLLmH/iRcUCN2X//bLx7H3ifkdfPXyqsro/OYtqzIAhiLMMA7mmiOR9C3NOKjQ==, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/happy-dom/-/happy-dom-20.14.5.tgz}
+    engines: {node: '>=20.0.0'}
 
   hashery@1.5.1:
     resolution: {integrity: sha1-S6gq1UkRrGF0Z4cIRdV6n+UIpAA=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/hashery/-/hashery-1.5.1.tgz}
@@ -2253,6 +2274,10 @@ packages:
     resolution: {integrity: sha1-oyLMDx2X95T/2cTNKomKC94JfzQ=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/vscode-jsonrpc/-/vscode-jsonrpc-8.2.1.tgz}
     engines: {node: '>=14.0.0'}
 
+  whatwg-mimetype@3.0.0:
+    resolution: {integrity: sha1-X6GnYjhn/xr2yj3HKta4pCCL66c=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/whatwg-mimetype/-/whatwg-mimetype-3.0.0.tgz}
+    engines: {node: '>=12'}
+
   which@2.0.2:
     resolution: {integrity: sha1-fGqN0KY2oDJ+ELWckobu6T8/UbE=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/which/-/which-2.0.2.tgz}
     engines: {node: '>= 8'}
@@ -2803,6 +2828,8 @@ snapshots:
     dependencies:
       csstype: 3.2.3
 
+  '@types/whatwg-mimetype@3.0.2': {}
+
   '@types/ws@8.18.1':
     dependencies:
       '@types/node': 22.20.4
@@ -3033,6 +3060,10 @@ snapshots:
 
   buffer-equal-constant-time@1.0.1: {}
 
+  buffer-image-size@0.6.4:
+    dependencies:
+      '@types/node': 22.20.4
+
   bundle-name@4.1.0:
     dependencies:
       run-applescript: 7.1.0
@@ -3109,6 +3140,8 @@ snapshots:
       safe-buffer: 5.2.1
 
   electron-to-chromium@1.5.439: {}
+
+  entities@7.0.1: {}
 
   es-errors@1.3.0: {}
 
@@ -3319,6 +3352,19 @@ snapshots:
   glob-parent@6.0.2:
     dependencies:
       is-glob: 4.0.3
+
+  happy-dom@20.14.5:
+    dependencies:
+      '@types/node': 22.20.4
+      '@types/whatwg-mimetype': 3.0.2
+      '@types/ws': 8.18.1
+      buffer-image-size: 0.6.4
+      entities: 7.0.1
+      whatwg-mimetype: 3.0.0
+      ws: 8.22.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   hashery@1.5.1:
     dependencies:
@@ -3952,7 +3998,7 @@ snapshots:
       jiti: 1.21.7
       tsx: 4.23.15
 
-  vitest@4.1.11(@types/node@22.20.4)(vite@8.3.1(@types/node@22.20.4)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15)):
+  vitest@4.1.11(@types/node@22.20.4)(happy-dom@20.14.5)(vite@8.3.1(@types/node@22.20.4)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15)):
     dependencies:
       '@vitest/expect': 4.1.11
       '@vitest/mocker': 4.1.11(vite@8.3.1(@types/node@22.20.4)(esbuild@0.28.2)(jiti@1.21.7)(tsx@4.23.15))
@@ -3976,10 +4022,13 @@ snapshots:
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 22.20.4
+      happy-dom: 20.14.5
     transitivePeerDependencies:
       - msw
 
   vscode-jsonrpc@8.2.1: {}
+
+  whatwg-mimetype@3.0.0: {}
 
   which@2.0.2:
     dependencies:

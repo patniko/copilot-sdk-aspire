@@ -50,7 +50,7 @@ so tests do not consume stale compiled dependencies.
 | `pnpm typecheck` | Contracts, services, and AppHost; AppHost needs Aspire-generated `.aspire` modules |
 | `pnpm typecheck:tests` | Type-checks test code separately |
 | `pnpm lint` | Current ESLint script checks `apphost.mts`, not the entire repository |
-| `pnpm test:unit` | Unit tests plus configurator tests; no Docker, Azure, or model needed |
+| `pnpm test:unit` | Unit tests plus configurator tests; no Docker, Azure, or model needed. Authoring UI interaction tests use Happy DOM; SDK/model transport is mocked. |
 | `pnpm test:integration` | Real services/store against disposable PostgreSQL, fake runner, and fake model upstream |
 | `pnpm test:runtime` | Experimental shared-runtime primitives against a locally built SDK/native runtime and synthetic loopback inference; no Docker or credentials |
 | `pnpm test` | Unit and integration projects together |
@@ -357,6 +357,22 @@ Use the [configurator](CONFIGURATOR.md#editing-harnesses) for harness authoring.
 
 Existing custom harness tools are approved bindings, not a substitute for SDK permission prompts. Treat a tool's
 external side effects explicitly; do not mark a workload `safeToRetry` just because the tool often succeeds.
+
+The configurator's [Copilot-assisted authoring](CONFIGURATOR.md#copilot-assisted-authoring) can draft sub-agents,
+skills and existing bindings, or propose new tool code. [`authoring.ts`](../configurator/server/authoring.ts)
+owns the bounded SDK session, catalog-only prompt, structured schemas and validation. The token-protected
+`POST /api/authoring/draft` endpoint never writes configuration or platform files. Browser code imports only
+shared types; keep the SDK out of the Vite bundle. Generated configuration uses the normal editor save path,
+so no new runtime contract or runner mapping is introduced.
+
+Review-only tool proposals do not bypass the extension checklist above. Merge integration snippets into the
+actual source and preserve TypeScript/Python parity; a proposal is not evidence that a binding is supported.
+Focused authoring checks after building the shared packages:
+
+```powershell
+pnpm --filter @copilot-agent/configurator typecheck
+pnpm exec vitest run --project unit configurator\test\authoring.test.ts configurator\test\authoring-sdk.test.ts configurator\test\authoring-ui.test.tsx configurator\test\app.test.ts
+```
 
 ## Add a harness feature
 

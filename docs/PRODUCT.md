@@ -68,6 +68,7 @@ table below describes the established batch product.
 | Structured agent jobs | Input validation, durable state, schema-validated results, JSON result artifact | [API](API.md) |
 | Two runner implementations | TypeScript SDK reference runner and Python SDK sample on one protocol | [Runner protocol](RUNNER-PROTOCOL.md) |
 | Rich harnesses | Prompt sections, reasoning/context options, sub-agents, delegated tools, packaged skills | [Harness contract](../contracts/src/harness.ts) |
+| Assisted local authoring | Description-first sub-agent/skill/binding drafts with manual forms; review-only new-tool code proposals. Uses server-side GitHub Copilot, not Foundry job inference; never auto-installs generated code | [Configurator](CONFIGURATOR.md#copilot-assisted-authoring) |
 | Interactive jobs | Optional built-in tools, per-kind permission rules, approvals and questions | [User interaction](USER-GUIDE.md#approvals-and-questions) |
 | Durable execution | Leases, fencing, backoff, cancellation, and explicit review of uncertain effects | [Job states](ARCHITECTURE.md#job-state-transitions) |
 | Concurrent invocations | Separate jobs can use the same harness at once, subject to executor slots, policy, and model quota | [Instances and limits](PRODUCT-OVERVIEW.md#2-what-is-an-instance-and-can-several-run-concurrently) |

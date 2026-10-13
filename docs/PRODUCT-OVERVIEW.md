@@ -354,6 +354,11 @@ Local and remote MCP hosting are **not implemented**, even though the design and
 them. The configurator imports earlier Harness Builder plans with a report of unsupported/unmapped features;
 importing a plan does not make those features run.
 
+The configurator also offers [description-first Copilot authoring](CONFIGURATOR.md#copilot-assisted-authoring)
+for sub-agents, skills and existing bindings. New-tool code is a review-only proposal, not an automatically
+installed integration or an extension to Copilot's built-ins. This optional local authoring inference uses
+GitHub Copilot access independently of managed job execution through Foundry.
+
 **Source:** [configurator guide](CONFIGURATOR.md), [harness contract](../contracts/src/harness.ts),
 [TypeScript SDK mapping](../src/harness-hosting/src/session-config.ts),
 [Python SDK mapping](../execution-profiles/python-agent/runner.py),

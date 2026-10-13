@@ -21,6 +21,7 @@ your browser with a per-launch session URL. Keep the terminal open; press Ctrl+C
 | `CONFIGURATOR_PORT` | Preferred port (default 4280). |
 | `CONFIGURATOR_NO_OPEN=1` | Print the URL instead of opening a browser. |
 | `CONFIGURATOR_GITHUB_CLIENT_ID` | GitHub OAuth App client ID for Demo Host device sign-in. Enable Device Flow on the OAuth App; no client secret or callback endpoint is used by the configurator. |
+| `COPILOT_GITHUB_TOKEN` | Optional server-side GitHub credential for [Copilot-assisted authoring](#copilot-assisted-authoring). Otherwise the SDK attempts logged-in-user authentication, including `gh` CLI auth. Never enter this credential in an authoring description. |
 
 `pnpm configure` automatically loads these variables from a gitignored `.env.local` at the repository root.
 Values already set in the process environment take precedence. For example:
@@ -231,10 +232,52 @@ attempt deadline. Only the job's caller (its API key) can answer. The REST endpo
 | Deployment targets, NuGet override for the Aspire CLI | `.configurator/settings.json` | No (git-ignored; IDs and names only) |
 | Generated keys (dev API key, service keys, signing key) | Aspire user secrets and deployment state | Never shown, except on an explicit "Copy API key" |
 
-Execution profiles and tool implementations are code; the configurator lists them but does not edit them. To add a
-tool, implement it in the runners and add its binding to the profiles (see [RUNNER-PROTOCOL.md](RUNNER-PROTOCOL.md)).
+Execution profiles and tool implementations are code; the configurator lists them but does not edit them.
+Copilot can draft a review-only code proposal, but adding a tool still requires implementing it in the runners
+and adding its binding to the profiles (see [the extension checklist](DEVELOPER-GUIDE.md#add-a-harness-or-tool)).
 For policy, profile, or tool changes, follow the [publication rules](DEVELOPER-GUIDE.md#configuration-publication):
 **Reload harnesses** restarts only the API, not every configuration consumer.
+
+### Copilot-assisted authoring
+
+**Add custom sub-agent**, **Add skill**, and **Add custom tool** start with a description rather than
+immediately inserting a placeholder. Describe the role or procedure, its inputs, expected output, and constraints,
+then select **Generate draft**. **Show full form** bypasses Copilot entirely: sub-agents and skills open the
+existing editable fields; tools return to the existing binding picker. Manual binding buttons remain available
+on the Tools tab.
+
+Generation runs through `@github/copilot-sdk` on the local companion server, **not inside the browser**.
+It uses GitHub Copilot access and billing for the server's GitHub identity, not the harness's configured Foundry
+model, gateway, or job budget. Authenticate on the machine running `pnpm configure` with a Copilot-enabled
+GitHub account (for example through `gh auth login`), or supply `COPILOT_GITHUB_TOKEN` through the server
+environment. The Demo Host device sign-in and its Aspire-stored credential are separate and are not reused.
+An unavailable account/model produces an error; there is no silent provider fallback, and manual authoring
+does not require Copilot access.
+
+Only **Generate draft** starts model work. The prompt contains the description and a catalog from the current
+unsaved harness: its name/description, custom tool declarations, skill names/descriptions, existing agent names,
+allowed models and compatible profile/binding metadata. It does not contain harness or agent instructions,
+skill bodies, input/output schemas or examples, workspace files, settings, or credentials. Names and descriptions
+can still be sensitive; review them and do not include secrets or private job data. See
+[authoring boundaries](SECURITY.md#local-authoring-boundaries).
+
+Generated sub-agents, skills, and existing tool configurations are checked against the contracts, current harness,
+effective per-harness policy, and execution profiles. Valid results open in the full editor as **unsaved changes**;
+review and edit them before **Save changes**. They use the existing undo/redo, browser draft, validation and
+version-save behavior. Copilot cannot invent installed bindings or grant a sub-agent tools/skills the harness
+does not contain. Invalid results produce an error without changing the draft.
+
+On Tools, choose **Existing binding** to configure packaged code, or **New tool code proposal** to request
+source, tests and integration guidance for a new implementation. The latter is **not a Copilot built-in**:
+it is unverified text displayed read-only, with **Download proposal JSON** to retain it. Nothing is written
+into platform source, installed, executed, or added to the harness. Download before closing the dialog.
+Review and merge the proposed TypeScript/Python runner integrations and profile entries, test them, then
+rebuild/redeploy following the [tool extension checklist](DEVELOPER-GUIDE.md#add-a-harness-or-tool).
+Generated integration snippets must be reconciled with the actual source; source files are not sent to Copilot.
+
+One draft runs at a time per companion, with a 90-second limit. **Cancel generation**, closing the dialog,
+switching away from it, or taking the manual path cancels the request. Late results are not applied; a changed
+harness requires regenerating against the current draft. Retry after errors, or use the manual form.
 
 ### Local API key troubleshooting
 

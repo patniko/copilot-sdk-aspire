@@ -33,7 +33,7 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
+export async function api<T>(path: string, init: { method?: string; body?: unknown; signal?: AbortSignal } = {}): Promise<T> {
   const response = await fetch(path, {
     method: init.method ?? "GET",
     headers: {
@@ -41,6 +41,7 @@ export async function api<T>(path: string, init: { method?: string; body?: unkno
       ...(init.body === undefined ? {} : { "content-type": "application/json" }),
     },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
+    signal: init.signal,
   });
   const text = await response.text();
   let body: unknown;

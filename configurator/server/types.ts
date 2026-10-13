@@ -1,5 +1,5 @@
 // Types shared by the configurator server and UI. Type-only imports keep the UI bundle free of server code.
-import type { DemoHostSettings, ExecutionPolicy, HarnessDefinition, HarnessPolicyOverride, SkillDefinition } from "@copilot-agent/contracts";
+import type { AgentDefinition, DemoHostSettings, ExecutionPolicy, HarnessDefinition, HarnessPolicyOverride, SkillDefinition, ToolRequest } from "@copilot-agent/contracts";
 
 export type { ExecutionPolicy, HarnessPolicyOverride, SkillDefinition };
 
@@ -20,6 +20,22 @@ export interface HarnessDocument {
   /** Skills stored as skills/<name>/SKILL.md. Authoritative: manifest.skills is derived from it on save. */
   skills: SkillDefinition[];
 }
+
+export type AuthoringKind = "agent" | "skill" | "tool" | "tool-code";
+
+/** Code proposals are inert text, not installed bindings or executable configurator tasks. */
+export interface ToolCodeProposal {
+  name: string;
+  summary: string;
+  files: Array<{ path: string; content: string }>;
+  instructions: string;
+}
+
+export type AuthoringDraft =
+  | { kind: "agent"; agent: AgentDefinition }
+  | { kind: "skill"; skill: SkillDefinition }
+  | { kind: "tool"; tool: ToolRequest }
+  | { kind: "tool-code"; proposal: ToolCodeProposal };
 
 export interface Issue {
   level: "error" | "warning";

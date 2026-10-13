@@ -13,6 +13,7 @@ const state = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/state", () => ({ useApp: () => state }));
+vi.mock("../src/api", () => ({ api: vi.fn(), errorMessage: String }));
 
 function codingHarness(): HarnessDocument {
   const { instructionsFile, ...definition } = sample;

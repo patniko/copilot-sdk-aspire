@@ -1,11 +1,12 @@
 import clsx from "clsx";
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import type { BuiltinToolGroup } from "@copilot-agent/contracts";
 import type { HarnessDetail, HarnessDocument, HarnessManifest, Issue, SkillDefinition } from "../../../server/types";
 import { DecisionList } from "../../components/LivePlan";
 import { ArrowRight, Copilot, Plus, Trash2, Wrench } from "../../components/icons";
 import { Badge, Empty, Field, Flash, HelpButton, IssueList, JsonEditor, NumberInput, OrderedList, SegmentedControl, Toggle, VersionInput } from "../../components/ui";
 import { useApp } from "../../state";
+import { CreateWithCopilot } from "./authoring";
 
 export type Tab = "overview" | "prompt" | "model" | "tools" | "permissions" | "agents" | "skills" | "input" | "output" | "limits" | "runtime";
 export const TABS: Array<{ id: Tab; label: string }> = [
@@ -492,6 +493,7 @@ function PromptOrder({ mode, changed, file }: { mode: string; changed: number; f
 // ---------------------------------------------------------------------------
 
 function ToolsTab({ draft, update, issues }: { draft: HarnessDocument; update: Update; issues: Issue[] }) {
+  const manualTools = useRef<HTMLDivElement>(null);
   const { workspace } = useApp();
   const bindings = workspace!.bindings;
   const tools = draft.manifest.tools;
@@ -594,13 +596,16 @@ function ToolsTab({ draft, update, issues }: { draft: HarnessDocument; update: U
           </div>
         );
       })}
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="fg-muted">Add a tool:</span>
+      <CreateWithCopilot kind="tool" draft={draft} update={update} disabled={tools.length >= 64}
+        onManual={() => { manualTools.current?.focus(); manualTools.current?.scrollIntoView({ block: "nearest" }); }} />
+      <div ref={manualTools} tabIndex={-1} aria-label="Manually add a tool binding" className="flex flex-wrap items-center gap-2">
+        <span className="fg-muted">Or add an existing binding manually:</span>
         {bindings.map((b) => (
-          <button key={b.id} type="button" className="btn-secondary btn-sm" onClick={() => add(b.id)} title={b.description}>
+          <button key={b.id} type="button" className="btn-secondary btn-sm" onClick={() => add(b.id)} title={b.description} disabled={tools.length >= 64}>
             <Plus /> {b.id}
           </button>
         ))}
+        {bindings.length === 0 && <span className="text-xs fg-muted">No bindings installed. Request a code proposal, then integrate it in the platform source.</span>}
       </div>
       {issues.some((i) => i.path === "tools") && <IssueList issues={issues.filter((i) => i.path === "tools")} />}
     </div>
@@ -1091,9 +1096,7 @@ function AgentsTab({ draft, update, issues }: { draft: HarnessDocument; update: 
           </div>
         );
       })}
-      <button type="button" className="btn-secondary" onClick={add} disabled={agents.length >= 8}>
-        <Plus /> Add custom sub-agent
-      </button>
+      <CreateWithCopilot kind="agent" draft={draft} update={update} onManual={add} disabled={agents.length >= 8} />
     </div>
   );
 }
@@ -1172,9 +1175,7 @@ function SkillsTab({ draft, update, issues }: { draft: HarnessDocument; update: 
           </div>
         );
       })}
-      <button type="button" className="btn-secondary" onClick={add} disabled={draft.skills.length >= 10}>
-        <Plus /> Add skill
-      </button>
+      <CreateWithCopilot kind="skill" draft={draft} update={update} onManual={add} disabled={draft.skills.length >= 10} />
     </div>
   );
 }

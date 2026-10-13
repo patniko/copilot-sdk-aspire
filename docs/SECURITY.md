@@ -49,6 +49,36 @@ Store no credentials there, protect its delivery like application configuration,
 | MCP not implemented | Local and remote MCP placements from the plan are not yet available. | Implement with the same capability and gateway model. |
 | Single trust boundary per deployment | Principals are isolated in the API and ledger, but share execution infrastructure. | Do not market as cross-customer isolation. |
 
+## Local authoring boundaries
+
+The configurator's optional [Copilot-assisted authoring](CONFIGURATOR.md#copilot-assisted-authoring) uses a
+separate, server-side GitHub Copilot SDK session. It is not a batch job: Foundry gateway credentials, job
+capabilities, managed job budgets, uid isolation, and the Demo Host credential do not apply to it.
+The existing loopback Host/Origin checks and per-launch configurator token protect `POST /api/authoring/draft`.
+Possession of that token authorizes a model request charged to the server-side GitHub identity.
+
+The model receives only the submitted description and an explicit configuration catalog, not automatic
+workspace context, instructions, skill bodies, schemas/examples, or settings. This is data minimization, not
+secret detection: descriptions and catalog fields may themselves contain sensitive data. GitHub Copilot
+inference leaves the local machine; do not describe this feature as a Foundry-only or customer-Azure-only path.
+Credentials stay in the SDK process/server environment and are not returned to the browser or placed in prompts.
+Raw SDK errors are not logged or returned because they can contain credentials or prompt payloads.
+
+Each request creates an SDK `mode: "empty"` runtime in a temporary working/data directory with a narrow
+environment allowlist, no configuration discovery, file hooks, host Git operations, skills, shared session
+store, remote session export, or session telemetry. The only exposed tool submits a structured draft;
+permission requests are denied. This is tool-surface restriction, not an OS or egress sandbox.
+The runtime is stopped and its temporary directory removed when the request ends. A process or machine crash
+can leave temporary files; no crash-proof retention/deletion guarantee is claimed.
+Requests are limited to one concurrent draft per companion and 90 seconds, including startup; cancellation
+stops the request-owned runtime. This is not an exact inference-token or spend cap.
+
+Drafts are validated against existing contracts, effective harness policy and profiles before returning to the
+editor. They never update policy or files automatically. New tool code proposals are bounded, inert text:
+they can only be viewed/downloaded, never installed, registered or executed by the configurator. They are
+not compiled or semantically verified by generation. Normal platform code review, both-runner integration,
+tests, image packaging and deployment remain necessary.
+
 ## Experimental host boundaries
 
 The optional `agent-host` is a single-trusted-owner demo integration. The table above primarily describes

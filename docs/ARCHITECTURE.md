@@ -8,7 +8,7 @@ network isolation than the implementation provides.
 
 ## System overview
 
-![Default jobs and optional hosts, plus the local hybrid shared coordinator, PostgreSQL state, on-demand controller and retained job results](images/architecture.svg)
+![Default jobs and optional hosts, local hybrid services, and separate local configurator authoring through GitHub Copilot](images/architecture.svg)
 
 | Component | Owns | Source |
 | --- | --- | --- |
@@ -21,7 +21,7 @@ network isolation than the implementation provides.
 | `execution-controller` (local hybrid opt-in) | Durable allocation admission, operator-owned Docker lifecycle, orphan reconciliation and teardown | [Controller](../src/execution-controller/src/controller.ts), [allocation store](../src/job-store/src/allocations.ts) |
 | Runner | One SDK attempt with harness tools, skills, sub-agents, and permission handlers | [TypeScript](../src/harness-hosting/src/runner.ts), [Python](../execution-profiles/python-agent/runner.py) |
 | `inference-gateway` | Approved chat-completions route, capability checks, upstream identity, token-usage reporting | [Gateway](../src/inference-gateway/src/server.ts), [routes](../src/inference-gateway/src/routes.ts) |
-| Configurator | Customer-workspace authoring plus platform build/run/deploy controls; not part of the deployed request path | [Companion server](../configurator/server/app.ts) |
+| Configurator | Customer-workspace authoring, optional server-side Copilot drafting, plus platform build/run/deploy controls; not part of the deployed request path | [Companion server](../configurator/server/app.ts), [draft service](../configurator/server/authoring.ts) |
 | Aspire AppHost | Resource placement, endpoint references, service secrets, Azure identities and roles | [AppHost](../apphost.mts) |
 
 The API and dispatcher both access PostgreSQL through the shared store. The dispatcher controls attempt execution;
@@ -33,6 +33,14 @@ Configuration has two explicit ownership roots. `CONFIG_ROOT` supplies customer-
 and profile `{root}` entrypoints from the source checkout or `/app` in executor images. The configurator reads
 profiles/examples from the platform root but writes only the customer workspace. Image builds package the current
 workspace; they do not silently deploy the shipped examples.
+
+### Local assisted authoring
+
+The optional draft path is separate from all deployed execution paths. GitHub credentials stay server-side;
+the model receives only the description and configuration catalog. It cannot inspect or modify the checkout.
+Generated configuration returns to the existing unsaved editor; code proposals remain inert downloads.
+See [workflow and authentication](CONFIGURATOR.md#copilot-assisted-authoring) and
+[precise boundaries](SECURITY.md#local-authoring-boundaries).
 
 ## Local and Azure topology
 

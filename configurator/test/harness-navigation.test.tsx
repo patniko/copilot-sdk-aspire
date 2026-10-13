@@ -5,6 +5,7 @@ import { HarnessNavigation, HarnessSections } from "../src/views/harness/navigat
 import { TABS } from "../src/views/harness/tabs";
 
 vi.mock("../src/state", () => ({ useApp: () => ({}) }));
+vi.mock("../src/api", () => ({ api: vi.fn(), errorMessage: String }));
 
 const harness: HarnessSummary = {
   name: "test-harness", folder: "test-harness", version: "1.0.0", description: "A useful harness.",

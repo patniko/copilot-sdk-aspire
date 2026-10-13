@@ -1,9 +1,11 @@
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { request as httpRequest } from "node:http";
 import type { FastifyInstance } from "fastify";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../server/app.js";
+import type { DraftGenerator } from "../server/authoring.js";
 import { ensureCustomerWorkspace } from "../server/workspace.js";
 
 const repoRoot = join(import.meta.dirname, "..", "..");
@@ -12,6 +14,7 @@ const port = 4999;
 let root: string;
 let platformRoot: string;
 let app: FastifyInstance;
+const authoringGenerator = vi.fn<DraftGenerator>();
 
 const headers = (extra: Record<string, string> = {}) => ({ host: `127.0.0.1:${port}`, "x-configurator-token": token, ...extra });
 
@@ -45,7 +48,7 @@ beforeAll(async () => {
   await cp(join(repoRoot, "execution-profiles"), join(platformRoot, "execution-profiles"), { recursive: true });
   await cp(join(repoRoot, "examples", "customer-config", "harnesses"), join(root, "harnesses"), { recursive: true });
   await cp(join(repoRoot, "examples", "customer-config", "policy"), join(root, "policy"), { recursive: true });
-  app = await buildApp({ root: platformRoot, workspaceRoot: root, token, port });
+  app = await buildApp({ root: platformRoot, workspaceRoot: root, token, port, authoringGenerator });
 });
 
 afterAll(async () => {
@@ -126,6 +129,101 @@ describe("request security", () => {
       expect(traversal.statusCode).toBe(404);
     } finally {
       await staticApp.close();
+    }
+  });
+});
+
+describe("Copilot authoring endpoint", () => {
+  it("requires local authentication before any model work", async () => {
+    const payload = { kind: "agent", description: "Review results" };
+    for (const [requestHeaders, expected] of [
+      [{ host: `127.0.0.1:${port}` }, 401],
+      [headers({ origin: "https://attacker.example" }), 403],
+      [headers({ host: "attacker.example" }), 421],
+    ] as const) {
+      const response = await app.inject({ method: "POST", url: "/api/authoring/draft", headers: requestHeaders, payload });
+      expect(response.statusCode).toBe(expected);
+    }
+    expect(authoringGenerator).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid requests before generation", async () => {
+    const response = await app.inject({
+      method: "POST", url: "/api/authoring/draft", headers: headers(), payload: { kind: "agent", description: " ", document: {} },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(authoringGenerator).not.toHaveBeenCalled();
+  });
+
+  it("returns a validated draft without changing files, using unsaved catalog edits", async () => {
+    const detail = (await app.inject({ method: "GET", url: "/api/harnesses/text-summarizer", headers: headers() })).json();
+    const before = await readFile(join(root, "harnesses", "text-summarizer", "harness.json"), "utf8");
+    detail.document.skills.push({ name: "unsaved-skill", description: "Review results", content: "# Private procedure" });
+    const draft = {
+      kind: "agent", agent: { name: "reviewer", description: "Review", instructions: "Check the evidence.", tools: [], skills: ["unsaved-skill"] },
+    };
+    authoringGenerator.mockResolvedValueOnce(draft);
+    const response = await app.inject({
+      method: "POST", url: "/api/authoring/draft", headers: headers(),
+      payload: { kind: "agent", description: "Review conclusions", document: detail.document },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    expect(response.json()).toEqual(draft);
+    expect(authoringGenerator.mock.lastCall![0].prompt).toContain("unsaved-skill");
+    expect(authoringGenerator.mock.lastCall![0].prompt).not.toContain("# Private procedure");
+    expect(await readFile(join(root, "harnesses", "text-summarizer", "harness.json"), "utf8")).toBe(before);
+  });
+
+  it("validates against a harness policy override, without changing it", async () => {
+    const detail = (await app.inject({ method: "GET", url: "/api/harnesses/text-summarizer", headers: headers() })).json();
+    const override = { schemaVersion: "1", harness: "text-summarizer", overrides: { maxReasoningEffort: "low" } };
+    await mkdir(join(root, "policy", "harnesses"), { recursive: true });
+    const overridePath = join(root, "policy", "harnesses", "text-summarizer.json");
+    await writeFile(overridePath, JSON.stringify(override));
+    try {
+      authoringGenerator.mockResolvedValueOnce({
+        kind: "agent", agent: { name: "reviewer", description: "Review", instructions: "Review.", tools: [], reasoningEffort: "high" },
+      });
+      const response = await app.inject({
+        method: "POST", url: "/api/authoring/draft", headers: headers(),
+        payload: { kind: "agent", description: "Review conclusions", document: detail.document },
+      });
+      expect(response.statusCode).toBe(422);
+      expect(response.json().error).toContain("reasoningEffort");
+      expect(JSON.parse(await readFile(overridePath, "utf8"))).toEqual(override);
+    } finally {
+      await rm(overridePath);
+    }
+  });
+
+  it("cancels model work when the HTTP client disconnects", async () => {
+    let modelSignal: AbortSignal | undefined;
+    const cancellableApp = await buildApp({
+      root: platformRoot, workspaceRoot: root, token, port,
+      authoringGenerator: ({ signal }) => {
+        modelSignal = signal;
+        return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+      },
+    });
+    const detail = (await app.inject({ method: "GET", url: "/api/harnesses/text-summarizer", headers: headers() })).json();
+    await cancellableApp.listen({ host: "127.0.0.1", port: 0 });
+    const address = cancellableApp.server.address();
+    if (!address || typeof address === "string") throw new Error("Expected a local TCP listener.");
+    const client = httpRequest({
+      hostname: "127.0.0.1", port: address.port, path: "/api/authoring/draft", method: "POST",
+      headers: headers({ "content-type": "application/json" }),
+    });
+    const clientFailure = new Promise<Error>((resolve) => client.once("error", resolve));
+    try {
+      client.end(JSON.stringify({ kind: "agent", description: "Synthetic cancellation check.", document: detail.document }));
+      await vi.waitFor(() => expect(modelSignal).toBeDefined());
+      client.destroy(new Error("synthetic cancellation"));
+      await expect(clientFailure).resolves.toMatchObject({ message: "synthetic cancellation" });
+      await vi.waitFor(() => expect(modelSignal?.aborted).toBe(true));
+    } finally {
+      client.destroy();
+      await cancellableApp.close();
     }
   });
 });

@@ -14,6 +14,7 @@ import {
 import { canonicalJson } from "@copilot-agent/service-defaults";
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { z, ZodError } from "zod";
+import { AuthoringError, AuthoringRequest, AuthoringService, type DraftGenerator } from "./authoring.js";
 import { GitHubAuthError, GitHubDeviceAuth } from "./github-auth.js";
 import { mapPlannerPlan } from "./import.js";
 import { bumpPatch, compareVersions, Repo, RepoError } from "./repo.js";
@@ -60,6 +61,8 @@ export interface AppOptions {
   devOrigins?: string[];
   /** GitHub OAuth App client ID used for the device authorization flow. */
   githubOAuthClientId?: string;
+  /** Injectable model transport; production uses the local server-side Copilot SDK. */
+  authoringGenerator?: DraftGenerator;
 }
 
 const SLUG = /^[a-z][a-z0-9-]{1,62}$/;
@@ -104,6 +107,8 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   );
 
   const app = Fastify({ logger: false, bodyLimit: 4 * 1024 * 1024 });
+  const authoring = new AuthoringService(options.authoringGenerator);
+  app.addHook("preClose", async () => authoring.close());
   const allowedHosts = new Set([`127.0.0.1:${options.port}`, `localhost:${options.port}`]);
   const allowedOrigins = new Set([
     `http://127.0.0.1:${options.port}`,
@@ -136,7 +141,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
         issues: error.issues.map((i) => ({ path: i.path.join("."), message: i.message })),
       });
     }
-    if (error instanceof RepoError || error instanceof TryError) {
+    if (error instanceof RepoError || error instanceof TryError || error instanceof AuthoringError) {
       return reply.status(error.statusCode).send({ error: error.message });
     }
     if (error instanceof SettingsError) {
@@ -355,6 +360,22 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   });
 
   app.get("/api/harnesses/:folder", async (request) => detail(await repo.readHarness(folderParam(request))));
+
+  app.post("/api/authoring/draft", { bodyLimit: 512 * 1024 }, async (request, reply) => {
+    const body = AuthoringRequest.parse(request.body);
+    const controller = new AbortController();
+    const disconnect = () => {
+      if (!reply.raw.writableEnded) controller.abort();
+    };
+    reply.raw.once("close", disconnect);
+    reply.header("cache-control", "no-store");
+    try {
+      const ctx = await context(body.document);
+      return await authoring.generate(body, ctx, repo.bindings(ctx.profiles), controller.signal);
+    } finally {
+      reply.raw.removeListener("close", disconnect);
+    }
+  });
 
   const SkillBody = z.object({ name: z.string(), description: z.string(), content: z.string() });
   const DocumentBody = z.object({
