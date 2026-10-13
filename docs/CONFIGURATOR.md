@@ -73,7 +73,9 @@ repository if it must be shared or audited.
 **Hosting** shows selectable maps for the default pool stack, experimental local hybrid path, and the
 separately labeled, unqualified Azure hybrid proposal.
 Choose local or the selected Azure target, select a node to inspect its responsibility and limitations, or
-expand the text connection map. Keyboard selection, horizontal scrolling, and light/dark themes are supported.
+expand the text connection map. The canvas groups components into color-coded responsibility zones, highlights
+the routes connected to the selected component, and keeps proposed nodes and connections visually distinct.
+Keyboard selection, horizontal scrolling, narrow layouts, and light/dark themes are supported.
 
 This first view is a configured architecture, not live telemetry. It shows available resource observations
 without treating missing data as a running or stopped service. Those observations have no freshness guarantee.

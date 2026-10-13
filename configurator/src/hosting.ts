@@ -28,83 +28,83 @@ export interface HostingTopology {
   edges: HostingEdge[];
 }
 
-export const HOSTING_WIDTH = 1190;
-export const HOSTING_HEIGHT = 770;
+export const HOSTING_WIDTH = 1320;
+export const HOSTING_HEIGHT = 840;
 export const HOSTING_NODE_WIDTH = 190;
-export const HOSTING_NODE_HEIGHT = 95;
+export const HOSTING_NODE_HEIGHT = 112;
 
 export function hostingTopology(architecture: HostingArchitecture, transport: DemoHostSettings["transport"], localHybrid = false): HostingTopology {
   const hybrid = architecture === "hybrid";
   const native = transport === "github";
   const hostEnabled = transport !== "disabled";
   const nodes: HostingNode[] = [
-    { id: "cli", title: "Clients", caption: "Copilot CLI / job API", x: 40, y: 110,
-      purpose: "Copilot CLI uses the configured interactive host. API clients submit batch jobs. The proposal adds a shared coordinator as another CLI destination.",
+    { id: "cli", title: "Clients", caption: "Copilot CLI / job API", x: 40, y: 140,
+      purpose: "Copilot CLI uses the configured interactive host. API clients submit batch jobs. The hybrid architecture adds a shared coordinator as another CLI destination.",
       limitation: "Shared attachment is an experimental local path; Azure and two-real-account qualification remain open." },
-    { id: "entry", title: "Agent API", caption: "Admission & provisioning", x: 270, y: 110, resource: "agent-api",
+    { id: "entry", title: "Agent API", caption: "Admission & provisioning", x: 310, y: 140, resource: "agent-api",
       purpose: "Authenticate callers, admit jobs, and provision protected connection material for the configured host.",
       limitation: "Connection provisioning is not a public SDK port or permission to access another principal's sessions." },
-    { id: "executors", title: hybrid ? "Job containers" : "Executor pool", caption: hybrid ? "On demand (proposed)" : "Linux / runner slots", x: 960, y: 110, proposed: hybrid, resource: hybrid ? undefined : "agent-executor",
+    { id: "executors", title: hybrid ? "Job containers" : "Executor pool", caption: hybrid ? "On demand (proposed)" : "Linux / runner slots", x: 1062, y: 140, proposed: hybrid, resource: hybrid ? undefined : "agent-executor",
       purpose: hybrid ? "Allocate real container executions only when an admitted delegation needs them; return results and retire unused capacity." : "A running Linux container polls for jobs and launches UID-isolated runners in private attempt workspaces.",
       limitation: hybrid ? "Zero-to-many-to-zero provisioning is not implemented. Starting a runner process is not starting a container." : "The current pool remains allocated when idle. Attempt files are ephemeral; attempts are bounded to one hour." },
-    { id: "transport", title: native ? "GitHub relay" : transport === "both" ? "WSS / GitHub relay" : "Direct WSS", caption: hostEnabled ? "Configured transport" : "Host not configured", x: 40, y: 385,
+    { id: "transport", title: native ? "GitHub relay" : transport === "both" ? "WSS / GitHub relay" : "Direct WSS", caption: hostEnabled ? "Configured transport" : "Host not configured", x: 40, y: 455,
       purpose: native ? "The configured GitHub-native host uses outbound Mission Control connections for CLI attachment." : "The managed host's configured transport carries AHP traffic; direct connections use provisioned keys and one-time tickets.",
       limitation: hostEnabled ? "Transport choice is independent of execution destination. Managed transports still require a qualified runtime/client pair." : "Enable a container host in Local run or Deploy before using a CLI launcher." },
-    { id: "container", title: "Container agent", caption: hostEnabled ? native ? "GitHub-native session" : "Managed conversation" : "Optional / disabled", x: 270, y: 385, resource: "agent-host",
+    { id: "container", title: "Container agent", caption: hostEnabled ? native ? "GitHub-native session" : "Managed conversation" : "Optional / disabled", x: 310, y: 455, resource: "agent-host",
       purpose: "Preserve the directly attachable, retained container conversation without first entering the shared coordinator.",
       limitation: "This host is separate from batch attempts. A running batch job is not automatically a CLI-attachable session." },
-    { id: "ledger", title: "PostgreSQL", caption: "Jobs, leases & events", x: 730, y: 385, resource: "postgres",
+    { id: "ledger", title: "PostgreSQL", caption: "Jobs, leases & events", x: 812, y: 455, resource: "postgres",
       purpose: hybrid ? "Keep jobs authoritative and add session ownership, activation leases, delegation identities, and completion delivery." : "Persist caller-scoped jobs, attempts, capabilities, approvals, and events independently of worker processes.",
       limitation: hybrid ? "The session/delegation records in the hybrid design are proposed extensions, not existing job behavior." : "Durable job records do not restore an ended SDK conversation or its workspace." },
-    { id: "gateway", title: "Inference gateway", caption: "Managed model access", x: 960, y: 385, resource: "inference-gateway",
+    { id: "gateway", title: "Inference gateway", caption: "Managed model access", x: 1062, y: 455, resource: "inference-gateway",
       purpose: "Validate session or job inference grants and attach the gateway-owned provider credential.",
       limitation: "Gateway routing does not establish enforced network egress. Usage reporting is asynchronous, not exact billing reservation." },
-    { id: "foundry", title: "Foundry", caption: "Configured deployments", x: 960, y: 620,
+    { id: "foundry", title: "Foundry", caption: "Configured deployments", x: 1062, y: 690,
       purpose: "Serve the approved model deployments for managed sessions and jobs.",
       limitation: "Model latency and provider quota remain part of the result; more containers do not increase model quota." },
   ];
   const dispatcher: HostingNode = hybrid
-    ? { id: "scheduler", title: "Execution controller", caption: "Allocation (proposed)", x: 730, y: 110, proposed: true,
+    ? { id: "scheduler", title: "Execution controller", caption: "Allocation (proposed)", x: 812, y: 140, proposed: true,
       purpose: "Turn admitted delegations into bounded container allocations, reconcile failures, and deliver completion notifications.",
       limitation: "Infrastructure permissions belong here, not in the model-facing runtime. Polling alone cannot wake a zero-replica pool." }
-    : { id: "dispatcher", title: "Job dispatcher", caption: "Claims & capabilities", x: 730, y: 110, resource: "job-dispatcher",
+    : { id: "dispatcher", title: "Job dispatcher", caption: "Claims & capabilities", x: 812, y: 140, resource: "job-dispatcher",
       purpose: "Match jobs to eligible executors, fence attempt ownership, issue inference capabilities, and recover expired leases.",
       limitation: "The current dispatcher schedules attempt slots; it does not provision containers per job." };
   nodes.push(dispatcher);
   const edges: HostingEdge[] = [
-    { from: "cli", to: "entry", label: "Provision / API jobs", points: [[230, 157], [270, 157]], labelAt: [250, 220] },
-    { from: "cli", to: "transport", label: "Selected transport", points: [[135, 205], [135, 385]], labelAt: [135, 294] },
-    { from: "transport", to: "container", label: "Container session", points: [[230, 432], [270, 432]], labelAt: [250, 530] },
-    { from: dispatcher.id, to: "executors", label: hybrid ? "Allocate" : "Claim / heartbeat", points: [[920, 157], [960, 157]], labelAt: [940, 245], proposed: hybrid },
-    { from: dispatcher.id, to: "ledger", label: "Durable ownership", points: [[825, 205], [825, 385]], labelAt: [825, 294], support: true },
-    { from: "executors", to: "gateway", label: "Inference grant", points: [[1055, 205], [1055, 385]], labelAt: [1055, 294] },
-    { from: "gateway", to: "foundry", label: "Gateway identity", points: [[1055, 480], [1055, 620]], labelAt: [1055, 551] },
+    { from: "cli", to: "entry", label: "admit", points: [[258, 196], [310, 196]], labelAt: [284, 196] },
+    { from: "cli", to: "transport", label: "connect", points: [[149, 252], [149, 455]], labelAt: [149, 350] },
+    { from: "transport", to: "container", label: "session", points: [[258, 511], [310, 511]], labelAt: [284, 511] },
+    { from: dispatcher.id, to: "executors", label: hybrid ? "allocate" : "claim", points: [[1030, 196], [1062, 196]], labelAt: [1046, 196], proposed: hybrid },
+    { from: dispatcher.id, to: "ledger", label: "state", points: [[921, 252], [921, 455]], labelAt: [921, 350], support: true },
+    { from: "executors", to: "gateway", label: "grant", points: [[1171, 252], [1171, 455]], labelAt: [1171, 350] },
+    { from: "gateway", to: "foundry", label: "models", points: [[1171, 567], [1171, 690]], labelAt: [1171, 628] },
   ];
   if (hybrid) {
     nodes.push(
-      { id: "shared", title: "Shared coordinator", caption: "In process (proposed)", x: 500, y: 110, proposed: true,
+      { id: "shared", title: "Shared coordinator", caption: "In process (proposed)", x: 561, y: 140, proposed: true,
         purpose: "Run many tenant sessions on one worker. Answer lightweight prompts without allocating an execution container, and let the model delegate expensive work.",
         limitation: "Distinct CLI identities, virtual-workspace publication, owner-scoped catalogs, and recovery still require qualification." },
-      { id: "session-fs", title: "Session FS", caption: "Scoped state (proposed)", x: 500, y: 385, proposed: true,
+      { id: "session-fs", title: "Session FS", caption: "Scoped state (proposed)", x: 561, y: 455, proposed: true,
         purpose: "Keep runtime state and lightweight workspace files in tenant/session-scoped storage independently of runtime residency.",
         limitation: "Session FS is not an OS sandbox. Container inputs and outputs cross an explicit immutable artifact boundary." },
     );
     edges.push(
-      { from: "entry", to: "shared", label: "Shared admission", points: [[460, 157], [500, 157]], labelAt: [480, 220], proposed: true },
-      { from: "shared", to: "scheduler", label: "Delegate job", points: [[690, 157], [730, 157]], labelAt: [710, 220], proposed: true },
-      { from: "shared", to: "session-fs", label: "Session state", points: [[595, 205], [595, 385]], labelAt: [595, 294], support: true, proposed: true },
-      { from: "shared", to: "gateway", label: "Managed inference", points: [[660, 205], [660, 265], [980, 265], [980, 385]], labelAt: [720, 265], proposed: true },
+      { from: "entry", to: "shared", label: "route", points: [[528, 196], [561, 196]], labelAt: [544, 196], proposed: true },
+      { from: "shared", to: "scheduler", label: "delegate", points: [[779, 196], [812, 196]], labelAt: [795, 196], proposed: true },
+      { from: "shared", to: "session-fs", label: "session state", points: [[670, 252], [670, 455]], labelAt: [670, 350], support: true, proposed: true },
+      { from: "shared", to: "gateway", label: "managed inference", points: [[740, 252], [740, 305], [1100, 305], [1100, 455]], labelAt: [905, 305], proposed: true },
     );
   } else {
-    edges.push({ from: "entry", to: "dispatcher", label: "Admitted jobs", points: [[460, 157], [730, 157]], labelAt: [595, 140] });
+    edges.push({ from: "entry", to: "dispatcher", label: "admitted jobs", points: [[528, 196], [812, 196]], labelAt: [670, 196] });
   }
   if (hostEnabled && native) {
-    nodes.push({ id: "copilot", title: "GitHub Copilot", caption: "Native model access", x: 270, y: 620,
+    nodes.push({ id: "copilot", title: "GitHub Copilot", caption: "Native model access", x: 310, y: 690,
       purpose: "Native container-host conversations use Copilot inference and the connected account's entitlement.",
       limitation: "This is a different provider/billing path from Foundry. Do not present it as a same-model architecture benchmark." });
-    edges.push({ from: "container", to: "copilot", label: "Native inference", points: [[365, 480], [365, 620]], labelAt: [365, 579] });
+    edges.push({ from: "container", to: "copilot", label: "native inference", points: [[419, 567], [419, 690]], labelAt: [419, 628] });
   } else if (hostEnabled) {
-    edges.push({ from: "container", to: "gateway", label: "Managed conversation grant", points: [[365, 480], [365, 565], [1010, 565], [1010, 480]], labelAt: [690, 565] });
+    edges.push({ from: "container", to: "gateway", label: "managed conversation", points: [[419, 567], [419, 620], [1100, 620], [1100, 567]], labelAt: [760, 620] });
   }
   if (hybrid && localHybrid) {
     for (const node of nodes) {
