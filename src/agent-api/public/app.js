@@ -890,9 +890,9 @@ function describeEvent(body) {
         case "skill.used":
           return `Loaded skill ${e.skill}`;
         case "agent.turn_started":
-          return "Agent turn started";
+          return e.detail ? describeSdkEvent(e.detail) : "Agent turn started";
         case "agent.turn_completed":
-          return "Agent turn completed";
+          return e.detail ? describeSdkEvent(e.detail) : "Agent turn completed";
         case "progress":
           return e.message;
         case "sdk.event":
@@ -930,6 +930,10 @@ function describeEvent(body) {
 function describeSdkEvent(detail = {}) {
   const data = detail.data ?? {};
   switch (detail.eventType) {
+    case "assistant.turn_start":
+      return data.turnId === undefined ? "Agent turn started" : `Agent turn started · turn ${data.turnId}`;
+    case "assistant.turn_end":
+      return data.turnId === undefined ? "Agent turn completed" : `Agent turn completed · turn ${data.turnId}`;
     case "assistant.message":
       return data.content ? `Assistant: ${singleLine(data.content, 220)}` : "Assistant message";
     case "assistant.reasoning":
@@ -938,15 +942,75 @@ function describeSdkEvent(detail = {}) {
       return data.content ? `User: ${singleLine(data.content, 220)}` : "User message";
     case "assistant.usage":
       return `Model usage: ${data.model ?? "unknown model"} · ${data.inputTokens ?? 0} in · ${data.outputTokens ?? 0} out`;
+    case "model.call_start":
+      return `Calling ${data.model ?? "model"}`;
+    case "model.call_finished":
+      return `Model call ${outcomeLabel(data.outcome)}${durationSuffix(data.dispatchDurationMs)}`;
+    case "model.call_final_result":
+      return `${data.model ?? "Model"} returned a final result`;
+    case "model.model_call_started":
+      return `Calling ${data.modelCall?.model ?? data.modelInfo?.model ?? "model"}`;
+    case "model.model_call_success":
+      return `${data.modelCall?.model ?? data.modelInfo?.model ?? "Model"} responded${durationSuffix(data.modelCallDurationMs)}`;
+    case "model.turn_started":
+      return `Model turn started${modelSuffix(data)}`;
+    case "model.turn_ended":
+      return `Model turn completed${modelSuffix(data)}`;
+    case "model.log":
+      return data.message ? `${data.level ?? "Model"}: ${singleLine(data.message, 220)}` : `${data.level ?? "Model"} log`;
     case "model.call_failure":
       return `Model call failed: ${data.errorCode ?? data.failureKind ?? data.errorMessage ?? "unknown error"}`;
+    case "permission.requested": {
+      const request = data.permissionRequest ?? data.promptRequest ?? {};
+      return `Permission requested: ${singleLine(request.intention ?? request.kind ?? "agent action", 180)}`;
+    }
+    case "permission.completed":
+      return `Permission ${data.result?.kind ?? "resolved"}`;
+    case "session.info":
+      return data.message ? `${humanize(data.infoType ?? "Session")}: ${singleLine(data.message, 220)}` : humanize(data.infoType ?? "Session info");
+    case "session.mcp_servers_loaded":
+      return `MCP servers loaded · ${Array.isArray(data.servers) ? data.servers.length : 0}`;
+    case "session.tools_updated":
+      return `Tools updated${modelSuffix(data)}`;
+    case "session.usage_info":
+      return `Context usage: ${data.currentTokens ?? 0} / ${data.tokenLimit ?? "?"} tokens`;
+    case "session.background_tasks_changed":
+      return "Background tasks changed";
+    case "pending_messages.modified":
+      return "Pending messages changed";
+    case "tool.execution_start":
+      return `${data.toolTitle ?? `Tool ${data.toolName ?? "started"}`}${data.toolTitle && data.toolName ? ` · ${data.toolName}` : ""}`;
+    case "tool.execution_complete":
+      return `Tool ${data.success === false ? "failed" : "completed"}${durationSuffix(data.durationMs)}`;
     case "tool.execution_progress":
       return data.progressMessage ?? "Tool progress";
     case "tool.execution_partial_result":
       return `Tool output: ${singleLine(data.partialOutput ?? "", 220)}`;
     default:
-      return String(detail.eventType ?? "SDK event").replaceAll(".", " ");
+      return humanize(detail.eventType ?? "SDK event");
   }
+}
+
+function humanize(value) {
+  const text = String(value).replaceAll(".", " ").replaceAll("_", " ");
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function durationSuffix(value) {
+  const duration = Number(value);
+  if (!Number.isFinite(duration) || duration < 0) return "";
+  return ` · ${duration < 1000 ? `${Math.round(duration)} ms` : `${(duration / 1000).toFixed(1)} s`}`;
+}
+
+function outcomeLabel(value) {
+  if (value === "success") return "succeeded";
+  if (value === "failure") return "failed";
+  return String(value ?? "finished");
+}
+
+function modelSuffix(data) {
+  const model = data.model ?? data.modelInfo?.model ?? data.modelCall?.model;
+  return model ? ` · ${model}` : "";
 }
 
 function singleLine(value, limit) {
@@ -960,14 +1024,11 @@ function stripQuestionPrefix(summary) {
 
 function appendEvent(event) {
   const list = $("events");
-  const content = el("div", { class: "event-content" }, el("span", { class: "event-label", text: describeEvent(event.body) }));
-  content.append(
-    el(
-      "details",
-      { class: "event-details" },
-      el("summary", { text: event.body?.type === "job.runner_event" && event.body.event?.detail ? "SDK details" : "Event details" }),
-      el("pre", { class: "code", text: JSON.stringify(event.body, null, 2) }),
-    ),
+  const content = el(
+    "details",
+    { class: "event-content event-details" },
+    el("summary", { class: "event-label", text: describeEvent(event.body) }),
+    el("pre", { class: "code", text: JSON.stringify(event.body, null, 2) }),
   );
   list.append(el("li", { class: eventClass(event.body) }, el("time", { text: formatTime(event.at) }), content));
   list.scrollTop = list.scrollHeight;

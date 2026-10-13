@@ -53,8 +53,9 @@ CONFIGURATOR_GITHUB_CLIENT_ID=your-oauth-app-client-id
    lists, nested groups for objects, and an inline JSON box for shapes the form cannot express (such as a table of
    rows). Switch to **JSON** to edit the whole document. Then watch the activity timeline (turns, tools, sub-agent
    delegation, skills) and the structured result. When detailed job events are enabled, SDK events use
-   message-aware summaries and expose their persisted JSON under **SDK details**. It warns when your files differ
-   from what the service is running.
+   message-aware summaries plus useful model, tool, turn, duration, permission, and token metadata. Expand the
+   activity title itself to inspect its persisted JSON. It warns when your files differ from what the service is
+   running.
 6. **Deploy**: describe one or more targets, pass the preflight (configuration valid, signed in to the target tenant,
    Docker running), optionally **Preview infrastructure** (writes Bicep to `artifacts/deployment`), then **Deploy**.
    When the Azure CLI is signed in, **Subscription** lists your subscriptions (choosing one also sets the tenant),
