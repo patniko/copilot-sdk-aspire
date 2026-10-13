@@ -17,6 +17,13 @@ and [deployment prerequisites](DEPLOYMENT.md#demo-host-compatibility-gate).
 The GitHub-native profile uses Copilot inference and permissions; the separate managed profiles use the
 application's harness and Foundry gateway. They are not interchangeable billing or security models.
 
+**October 12 local-hybrid addition:** the default-pool assessment below remains scoped to its original
+batch product. The opt-in local path now adds retained shared in-process conversations, protected CLI
+provisioning, bounded delegation, one-shot Docker execution and retained output artifacts. It does not
+make batch SDK attempts resumable or deliver the general enterprise workflow platform. See the
+[canonical hybrid architecture](ARCHITECTURE.md#local-hybrid-hosting) and
+[current qualification record](HYBRID-HOSTING-PLAN.md#14-local-deployment-completion-slice-2026-10-12).
+
 This page owns the detailed capability assessment, comparison methodology, and proposed enterprise direction.
 [PRODUCT.md](PRODUCT.md) summarizes the product contract; the user, developer, API, architecture, and security
 guides own their operational reference details. Use the [documentation maintenance map](MAINTAINING-DOCS.md#change-to-document-map)
@@ -196,7 +203,7 @@ not modify an already-deployed cloud service; a deployment is required. Existing
 snapshot, but that is not a snapshot of every executable dependency or of the entire operator policy.
 
 **Source:** [AppHost](../apphost.mts), [Dockerfile](../deploy/Dockerfile),
-[registry](../src/service-defaults/src/registry.ts), [admission](../src/agent-api/src/admission.ts),
+[registry](../src/service-defaults/src/registry.ts), [admission](../src/service-defaults/src/admission.ts),
 [deployment guide](DEPLOYMENT.md).
 
 ## 2. What is an instance, and can several run concurrently?

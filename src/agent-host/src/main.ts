@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 import { DemoHostSettings, HostLease, policyFor } from "@copilot-agent/contracts";
 import { createService, loadHarnesses, loadPolicySet, loadProfiles, admitHostedHarness, optionalEnv, requireEnv, serviceUrl, listenPort } from "@copilot-agent/service-defaults";
 import { OwnerMessage, type OwnerConfiguration } from "./protocol.js";
-import { registerAhpProxy, resolveGitHubOwner, verifyGitHubOwner } from "./proxy.js";
-import { readServerKey, type ServerKey } from "./server-key.js";
+import { resolveGitHubOwner, verifyGitHubOwner } from "./proxy.js";
+import { readServerKey, registerAhpProxy, type ServerKey } from "@copilot-agent/service-defaults";
 
 if (process.platform !== "linux" || process.getuid?.() !== 0) {
   throw new Error("The demo host must run in its Linux container with uid-isolated execution.");

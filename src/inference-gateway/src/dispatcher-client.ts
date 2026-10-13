@@ -36,6 +36,17 @@ export class DispatcherClient {
     this.#cache.delete(jti);
   }
 
+  async beginRequest(jti: string, requestId: string): Promise<void> {
+    const response = await fetch(`${this.baseUrl}/internal/capabilities/begin`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-internal-key": this.gatewayKey },
+      body: JSON.stringify({ jti, requestId }),
+      redirect: "error",
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!response.ok) throw new Error(`Inference reservation failed with ${response.status}.`);
+  }
+
   async reportUsage(report: UsageReport): Promise<void> {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
@@ -45,7 +56,7 @@ export class DispatcherClient {
           body: JSON.stringify(report),
           signal: AbortSignal.timeout(5_000),
         });
-        if (response.ok) {
+        if (response.ok && (await response.json() as { recorded?: boolean }).recorded === true) {
           this.invalidate(report.jti);
           return;
         }

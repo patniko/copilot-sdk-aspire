@@ -686,3 +686,44 @@ The packaged Node SDK and launcher/library exercised one in-process owner, separ
 namespaces, two independently scoped provider-mode AHP hosts, and synthetic model replies.
 The exported bundle includes verified hashes and source/input provenance.
 This is a `fast` build, not a performance-qualified release image or a completed shared service.
+
+### Local service and actual container-cycle evidence
+
+The local path now implements protected session provisioning, account-bound one-use proxy tickets,
+durable FIFO turn admission and token reservations, idle eviction, atomic model-tool delegation,
+principal/epoch-fenced child admission, and bounded completion delivery. Delegations reuse the shared
+job admission helper. The one-shot Docker controller persists allocation identity, constrains executor
+credentials to their assigned job/attempt, reconciles labeled orphans, and counts capacity until
+confirmed teardown. Selected input snapshots and successful `outputs/` artifacts persist in PostgreSQL.
+Both runner languages consume the same additive artifact contract.
+
+The actual CLI/container gate passed using one explicitly authorized GitHub identity and synthetic
+loopback inference. Lightweight conversation created zero allocations. Model tool calls created
+TypeScript and Python child jobs in real uid-isolated Linux containers; the original CLI received
+completion, outputs remained downloadable after container removal, and capacity returned to zero.
+The extended gate also exercised queued/running cancellation, a restarted controller configured for
+two simultaneous containers, and removal of a uniquely labeled orphan. This is real execution and
+transport with a deterministic model fixture, not a paid-model autonomy/performance result.
+
+An actual isolated Aspire run reached healthy API, dispatcher, gateway, session-host and controller
+resources with no idle executor resource. It caught and corrected a prefixed-harness-digest contract
+mismatch that direct synthetic fixtures had missed. Fixed internal profile ports were removed so this
+worktree did not collide with another checkout's running resource service. Only the task-owned AppHost
+was stopped after the probe; the original checkout and its process were not changed.
+
+The shared-worker Linux image starts the matching in-process runtime and accepts a separate reviewed
+configuration build context. The executor image includes both runner languages. Ordinary package builds,
+test typechecking, AppHost typechecking/lint, 233 unit cases and 56 ordinary integration cases passed.
+Opt-in CLI reconnect, shared service eviction, independent runtime replacement, and Linux artifact
+symlink/hardlink/size rejection were exercised separately.
+
+The packaged Linux worker itself subsequently passed a PostgreSQL-backed conversation lifecycle probe
+as its unprivileged image user: ticket consumption, synthetic inference, empty anchors, orderly
+replacement and suppression of an already-recorded completion. This checks the application image,
+not only the native library's earlier Linux packaging probe.
+
+The topology page now distinguishes implemented local opt-in components from the Azure proposal and
+offers the shared launcher when its local service is observed. Live allocation telemetry, GUI editing
+of hybrid controls, comparative measurements, two-real-account authorization and Azure hybrid deployment
+remain outside this completed local implementation slice. They are not prerequisites to use the
+explicitly experimental local path, and none is reported as qualified.

@@ -80,6 +80,19 @@ Treat the output as a secret. Do not put it in documentation, screenshots, or co
 
 ## Demo agent host
 
+For the experimental shared coordinator instead, follow
+[local hybrid deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment). Use
+`pnpm host:connect --destination shared` to create a conversation, or add `--resume <session-uuid>`
+after disconnect/idle eviction. Lightweight chat needs no job container; the coordinator can delegate
+approved work and receive completion and retained artifacts. This is distinct from `--destination container`
+(the default existing host route) and from retrying a batch job.
+
+Shared sessions have finite turn, job and aggregate budgets. Close a session through the session API
+when finished; add `cancelChildren: true` only when you intend to cancel its admitted jobs as well.
+Closing or eviction does not delete retained history/artifacts. If completion delivery needs review,
+the session jobs endpoint identifies the child and notification status so its result can be retrieved
+without replaying unknown model effects. See [shared conversation API](API.md#experimental-shared-conversations).
+
 The experimental host is separate from the job console. It lets an eligible Copilot CLI use an
 agent with a retained remote workspace. GitHub-native hosting uses the released CLI server and Copilot's
 own model access. Managed direct hosting remains pending the

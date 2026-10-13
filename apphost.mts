@@ -15,6 +15,9 @@ import {
   refExpr,
 } from './.aspire/modules/aspire.mjs';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { access } from 'node:fs/promises';
+import { SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits } from './contracts/src/shared.js';
 import { CUSTOMER_WORKSPACE_DIR, ensureCustomerWorkspace } from './configurator/server/workspace.js';
 
 const builder = await createBuilder();
@@ -45,6 +48,11 @@ async function configured(key: string, fallback: string): Promise<string> {
 const npmRegistry = await configured('Parameters:npm-registry', 'https://registry.npmjs.org/');
 const pipIndexUrl = await configured('Parameters:pip-index-url', 'https://pypi.org/simple');
 const jobEventDetail = await configured('Parameters:job-event-detail', 'sanitized');
+const hybridEnabled = await configured('Parameters:hybrid-hosting', 'false');
+if (!['true', 'false'].includes(hybridEnabled)) throw new Error('hybrid-hosting must be true or false.');
+if (hybridEnabled === 'true' && isPublish) {
+  throw new Error('Hybrid hosting currently has a local Docker controller. Disable it for Azure publishing; the Azure adapter is not qualified.');
+}
 const demoHostTransport = await configured('Parameters:demo-host-transport', 'disabled');
 if (!['disabled', 'direct', 'github', 'both'].includes(demoHostTransport)) {
   throw new Error('Parameters:demo-host-transport must be disabled, direct, github, or both.');
@@ -137,6 +145,56 @@ const api = await service('agent-api')
   .withEnvironment('API_KEYS', refExpr`dev:${devApiKey}`)
   .withExternalHttpEndpoints();
 
+if (hybridEnabled === 'true') {
+  const principals = SharedPrincipalBindings.parse(JSON.parse(await configured('Parameters:hybrid-principals', '{}')));
+  if (!principals.dev) throw new Error('Map the local dev API principal to an approved numeric GitHub account in hybrid-principals.');
+  const model = await configured('Parameters:hybrid-model', '');
+  if (!model) throw new Error('Configure an approved hybrid-model before enabling shared hosting.');
+  const runtimePath = await configured('Parameters:hybrid-runtime-path', '');
+  if (!runtimePath) throw new Error('Configure hybrid-runtime-path to the qualified native launcher for this host OS.');
+  await access(runtimePath);
+  const workerLimits = SharedWorkerLimits.parse(JSON.parse(await configured('Parameters:hybrid-worker-limits', '{}')));
+  const sessionLimits = SharedSessionLimits.parse(JSON.parse(await configured('Parameters:hybrid-session-limits', '{}')));
+  const workerKey = await builder.addParameterWithGeneratedValue('shared-worker-key', generated, { secret: true, persist: true });
+  const allocationKey = await builder.addParameterWithGeneratedValue('allocation-signing-key', generated, { secret: true, persist: true });
+  const namespace = `local-${createHash('sha256').update(repoRoot).digest('hex').slice(0, 20)}`;
+  const shared = await builder.addNodeApp('session-host', './src/session-host', 'dist/main.js')
+    .withPnpm({ install: false })
+    .withReference(jobsDb).waitFor(jobsDb)
+    .withReference(dispatcherEndpoint).waitFor(dispatcher)
+    .withReference(await gateway.getEndpoint('http')).waitFor(gateway)
+    .withHttpEndpoint({ env: 'PORT' }).withHttpHealthCheck({ path: '/health' })
+    .withEnvironment('CONFIG_ROOT', customerConfigRoot)
+    .withEnvironment('PLATFORM_ROOT', repoRoot)
+    .withEnvironment('SHARED_SESSION_DATA', join(repoRoot, '.shared-session-data'))
+    .withEnvironment('COPILOT_CLI_PATH', runtimePath)
+    .withEnvironment('COPILOT_AHP_FACTORY_PROFILE', 'managed')
+    .withEnvironment('SHARED_WORKER_KEY', workerKey)
+    .withEnvironment('SHARED_PRINCIPALS', JSON.stringify(principals))
+    .withEnvironment('SHARED_MODEL', model)
+    .withEnvironment('SHARED_JOB_HARNESSES', await configured('Parameters:hybrid-harnesses', 'text-summarizer,copilot-coding-agent'))
+    .withEnvironment('SHARED_WORKER_LIMITS', JSON.stringify(workerLimits))
+    .withEnvironment('SHARED_SESSION_LIMITS', JSON.stringify(sessionLimits));
+  const sharedEndpoint = await shared.getEndpoint('http');
+  await shared.withEnvironment('SHARED_PUBLIC_URL', refExpr`${sharedEndpoint}`);
+  await api.withReference(sharedEndpoint).waitFor(shared)
+    .withEnvironment('SHARED_WORKER_KEY', workerKey)
+    .withEnvironment('EXECUTOR_MODE', 'on-demand');
+  await dispatcher.withEnvironment('SHARED_WORKER_KEY', workerKey);
+  await builder.addNodeApp('execution-controller', './src/execution-controller', 'dist/main.js')
+    .withPnpm({ install: false })
+    .withReference(jobsDb).waitFor(jobsDb)
+    .withReference(dispatcherEndpoint).waitFor(dispatcher)
+    .withReference(await gateway.getEndpoint('http')).waitFor(gateway)
+    .withHttpEndpoint({ env: 'PORT' }).withHttpHealthCheck({ path: '/health' })
+    .withEnvironment('ALLOCATION_SIGNING_KEY', allocationKey)
+    .withEnvironment('SHARED_WORKER_LIMITS', JSON.stringify(workerLimits))
+    .withEnvironment('EXECUTION_CONTAINER_SETTINGS', JSON.stringify({
+      namespace,
+      image: await configured('Parameters:hybrid-executor-image', 'copilot-hybrid-executor:local'),
+    }));
+}
+
 if (demoHostTransport !== 'disabled') {
   const hostKey = await builder.addParameterWithGeneratedValue('demo-host-key', generated, { secret: true, persist: true });
   const direct = demoHostTransport === 'direct' || demoHostTransport === 'both';
@@ -189,8 +247,9 @@ if (demoHostTransport !== 'disabled') {
   }
 }
 
-// The executor holds no database, Azure, or provider credentials: only its dispatcher key.
-await builder
+// On-demand mode creates no idle pool; the separate controller starts one-shot containers.
+if (hybridEnabled !== 'true') {
+  await builder
   .addDockerfile('agent-executor', '.', { dockerfilePath: 'deploy/Dockerfile', stage: 'agent-executor' })
   .withBuildArg('NPM_REGISTRY', npmRegistry)
   .withBuildArg('PIP_INDEX_URL', pipIndexUrl)
@@ -209,5 +268,6 @@ await builder
   .publishAsAzureContainerApp(async (_infra, app) => {
     await app.configureScale({ minReplicas: 1 });
   });
+}
 
 await builder.build().run();

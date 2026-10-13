@@ -17,6 +17,7 @@ import {
 import { createAjv, type Logger } from "@copilot-agent/service-defaults";
 import { LeaseLostError, type ClaimResponse, type DispatcherClient, type Outcome } from "./dispatcher-client.js";
 import type { IsolationSettings } from "./isolation.js";
+import { collectArtifacts, prepareArtifacts, type ArtifactWorkspace } from "./artifacts.js";
 
 export interface AttemptContext {
   claim: ClaimResponse;
@@ -60,6 +61,8 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
   let leaseLost = false;
   let cancelSent = false;
   let killTimer: NodeJS.Timeout | undefined;
+  let heartbeat: NodeJS.Timeout | undefined;
+  let artifactWorkspace: ArtifactWorkspace | undefined;
   const pendingEvents: RunnerEventBody[] = [];
   const stderrTail: string[] = [];
   const inputRequestsAbort = new AbortController();
@@ -174,6 +177,13 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
   };
 
   try {
+    if (claim.job.artifacts) {
+      try { artifactWorkspace = await prepareArtifacts(workspace, claim.job.artifacts.inputs, ctx.isolation); }
+      catch (error) {
+        log.error({ err: error }, "input artifact materialization failed");
+        return { kind: "failed", code: "artifact_failed", message: "Input artifacts could not be safely materialized.", retryable: false, uncertainEffects: false };
+      }
+    }
     child = spawnRunner(ctx, workspace);
     const exited = new Promise<number | null>((resolveExit) => {
       child!.on("close", (code) => resolveExit(code));
@@ -216,7 +226,8 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
             }
             helloReceived = true;
             clearTimeout(helloTimer);
-            const missing = [...REQUIRED_RUNNER_CAPABILITIES, ...requiredRunnerCapabilities(claim.job.harness.definition)].filter(
+            const missing = [...REQUIRED_RUNNER_CAPABILITIES, ...requiredRunnerCapabilities(claim.job.harness.definition),
+              ...(artifactWorkspace ? ["workspace-artifacts"] : [])].filter(
               (c) => !message.capabilities.includes(c),
             );
             if (message.protocol !== RUNNER_PROTOCOL_VERSION || missing.length > 0) {
@@ -243,6 +254,7 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
               inference: { baseUrl: ctx.gatewayBaseUrl, token: claim.inference.token, model: claim.inference.model },
               eventDetail: ctx.eventDetail,
               workspace,
+              ...(artifactWorkspace ? { artifacts: artifactWorkspace.context } : {}),
             });
             break;
           }
@@ -283,7 +295,7 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
 
     // Lease renewal, cancellation propagation, and event delivery.
     let lastRenewal = Date.now();
-    const heartbeat = setInterval(() => {
+    heartbeat = setInterval(() => {
       void (async () => {
         try {
           const status = await ctx.dispatcher.heartbeat(claim.attempt.id, claim.attempt.leaseToken);
@@ -346,7 +358,6 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
     const exitCode = await exited;
     inputRequestsAbort.abort();
     await Promise.allSettled([...inputTasks]);
-    clearInterval(heartbeat);
     clearInterval(flush);
     clearTimeout(deadlineTimer);
     clearTimeout(helloTimer);
@@ -378,13 +389,27 @@ export async function runAttempt(ctx: AttemptContext): Promise<Outcome | undefin
             uncertainEffects: true,
           };
     }
+    if (outcome.kind === "succeeded" && artifactWorkspace) {
+      try {
+        for (const artifact of await collectArtifacts(artifactWorkspace.root)) {
+          if (leaseLost || ctx.shutdown.aborted) return undefined;
+          await ctx.dispatcher.publishArtifact(claim.attempt.id, claim.attempt.leaseToken, artifact);
+        }
+      } catch (error) {
+        if (error instanceof LeaseLostError) return undefined;
+        log.error({ err: error }, "output artifact publication failed");
+        return { kind: "failed", code: "artifact_failed", message: "Output artifacts could not be safely retained.", retryable: false, uncertainEffects: true };
+      }
+    }
     return outcome;
   } finally {
+    clearInterval(heartbeat);
     inputRequestsAbort.abort();
     kill();
-    await rm(workspace, { recursive: true, force: true }).catch((error) =>
-      log.warn({ err: error }, "workspace cleanup failed"),
-    );
+    try { await artifactWorkspace?.root.close(); }
+    finally {
+      await rm(workspace, { recursive: true, force: true }).catch((error) => log.warn({ err: error }, "workspace cleanup failed"));
+    }
   }
 }
 

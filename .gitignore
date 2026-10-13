@@ -20,3 +20,4 @@ __pycache__/
 
 # Qualified local runtime build artifacts; never source-control native binaries.
 .runtime-artifacts/
+.shared-session-data/

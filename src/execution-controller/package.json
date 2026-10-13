@@ -1,0 +1,21 @@
+{
+  "name": "@copilot-agent/execution-controller",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@copilot-agent/contracts": "workspace:*",
+    "@copilot-agent/job-store": "workspace:*",
+    "@copilot-agent/service-defaults": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}

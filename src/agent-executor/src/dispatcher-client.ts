@@ -7,6 +7,8 @@ import type {
   JobErrorCode,
   RunnerEventBody,
   RunnerHello,
+  ArtifactData,
+  ArtifactManifest,
 } from "@copilot-agent/contracts";
 
 export interface ClaimResponse {
@@ -17,6 +19,7 @@ export interface ClaimResponse {
     profile: string;
     model: string;
     input: unknown;
+    artifacts?: { inputs: ArtifactData[] };
   };
   attempt: { id: string; number: number; leaseToken: string; deadline: string; acknowledgedGaps: string[] };
   inference: { token: string; model: string };
@@ -30,6 +33,7 @@ export type Outcome =
   | { kind: "failed"; code: JobErrorCode; message: string; retryable: boolean; uncertainEffects: boolean };
 
 export class LeaseLostError extends Error {}
+export class AllocationCompleteError extends Error {}
 
 export class InputRequestError extends Error {
   constructor(
@@ -58,6 +62,7 @@ export class DispatcherClient {
     if (response.status === 204) {
       return undefined;
     }
+    if (response.status === 410) throw new AllocationCompleteError("The allocation has already claimed its attempt.");
     if (response.status === 403) {
       const body = (await response.json()) as { error?: { details?: { gaps?: string[] } } };
       throw new NotEligibleError(body.error?.details?.gaps ?? []);
@@ -88,6 +93,14 @@ export class DispatcherClient {
     if (response.status === 409) {
       throw new LeaseLostError("lease lost");
     }
+
+  }
+
+  async publishArtifact(attemptId: string, leaseToken: string, artifact: ArtifactData): Promise<ArtifactManifest> {
+    const response = await this.#post(`/internal/attempts/${attemptId}/artifacts`, { leaseToken, artifact });
+    if (response.status === 409 || response.status === 401 || response.status === 403) throw new LeaseLostError("artifact ownership lost");
+    if (!response.ok) throw new Error(`Artifact publication failed with ${response.status}.`);
+    return await response.json() as ArtifactManifest;
   }
 
   async events(attemptId: string, leaseToken: string, events: RunnerEventBody[]): Promise<void> {

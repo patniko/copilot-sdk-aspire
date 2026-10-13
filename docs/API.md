@@ -27,8 +27,9 @@ loading the page alone grants no access to job data. Caller authentication is cu
 | `GET` | `/v1/jobs/{id}/events` | JSON page or SSE stream |
 | `POST` | `/v1/jobs/{id}:cancel` | Current job view after cancellation is requested; no body needed |
 | `POST` | `/v1/jobs/{id}:retry` | Job requeued with exactly one more attempt; no body needed |
-| `GET` | `/v1/jobs/{id}/artifacts` | `{ artifacts }`; only `result.json` for succeeded jobs, otherwise an empty list |
+| `GET` | `/v1/jobs/{id}/artifacts` | `{ artifacts }`; structured `result.json` plus retained output files for successful on-demand jobs |
 | `GET` | `/v1/jobs/{id}/artifacts/result.json` | The structured result as JSON; `404` unless succeeded |
+| `GET` | `/v1/jobs/{id}/artifacts/{artifactId}` | Authorized immutable output bytes from the successful attempt; `404` for another principal or unsuccessful job |
 | `GET` | `/v1/input-requests` | `{ requests }` across the caller's jobs |
 | `GET` | `/v1/jobs/{id}/input-requests` | `{ requests }` for one job, all states, oldest first, up to 100 |
 | `POST` | `/v1/jobs/{id}/input-requests/{requestId}/respond` | Updated input request after a permission decision or answer |
@@ -36,6 +37,11 @@ loading the page alone grants no access to job data. Caller authentication is cu
 | `GET` | `/health`, `/alive` | Readiness (database check) and liveness |
 
 ## Submit a job
+
+With local hybrid hosting enabled, the operator selects on-demand execution for ordinary submitted jobs
+as well as coordinator-delegated jobs. Their job views include `execution: "dedicated"` and their profiles
+must advertise `workspace-artifacts`. Callers cannot choose container images, infrastructure parameters,
+or allocation credentials. The default deployment retains its existing shared executor pool.
 
 ```json
 {
@@ -128,6 +134,49 @@ is asynchronous and can fail, so token totals are not a billing-grade ledger or 
 Likewise, `updatedAt - createdAt` can include queueing, retries, human waits, and usage updates; it is not a
 dedicated execution-latency metric. There is no built-in pricing catalog, experiment score, or per-model/sub-agent
 usage breakdown.
+
+On-demand jobs and shared conversations additionally reserve inference requests durably. A missing usage
+report conservatively consumes the request's remaining allowance after recovery; late usage above that
+charge is still counted. Stable request IDs deduplicate reports. Reservations prevent fresh parent/child
+allowances from being minted without aggregate admission; they are not an exact provider token or dollar cap.
+An already-forwarded request can overshoot, and unknown consumption remains explicitly conservative.
+
+## Experimental shared conversations
+
+These routes exist only when `agent-api` is connected to the opt-in shared worker. They are distinct from
+the singleton `/v1/host` APIs and from job IDs. The operator maps API principals to fixed numeric GitHub
+account IDs; clients cannot supply or replace that binding. Retained principals cannot be rebound.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `POST` | `/v1/sessions` | Body `{ "label": "Optional label" }`; `201` with a retained session and `Location`. Does not allocate an execution container or activate a runtime session. |
+| `GET` | `/v1/sessions` | `{ sessions }`, up to 100 recent principal-owned sessions, including closed ones |
+| `GET` | `/v1/sessions/{id}` | Session model, limits, activity timestamp, closed/online state, used/reserved/remaining budget, jobs and continuation count |
+| `POST` | `/v1/sessions/{id}/connection` | Activate/resume, then return `{ sessionId, destination: "shared", url, token, expiresAt, serverKey }` with `Cache-Control: no-store` |
+| `GET` | `/v1/sessions/{id}/jobs` | Child job IDs/states and completion-notification state/error, including `needs_review` |
+| `POST` | `/v1/sessions/{id}/close` | Body `{ "cancelChildren": false }` by default; prevents new work and disconnects runtime residency without deleting retained data |
+
+Connection tokens are 60-second, one-use tickets bound to the principal/session/activation epoch. They are
+not internal AHP listener credentials. A reconnect requires a new ticket and a trusted server-key pin.
+The CLI separately authenticates its matching GitHub identity. Unknown, other-principal, closed, or
+account-mismatched sessions return `404`; capacity/budget limits return `429`. Successful creation is not
+idempotent: retain its returned UUID rather than automatically repeating a lost creation response.
+
+Idle eviction disconnects the CLI but preserves history/files. Closure does not cancel already-admitted
+children unless `cancelChildren` is true. Child outputs remain available through job/artifact endpoints.
+If a continuation cannot safely be retried or exhausts its budget, its notification is `needs_review`;
+retrieve the job explicitly instead of assuming a successful automatic callback.
+
+Manual `:retry` remains available for ordinary jobs. A delegated child cannot be reopened through that
+endpoint after terminal completion: ask the coordinator to make a new explicit submission, which
+re-admits aggregate budget, fan-out and completion identity. Policy-approved automatic retries before
+terminal completion retain the original reservation and existing uncertain-effects rules.
+
+Files are bounded to one MiB each, 16 outputs and eight MiB total per attempt. Only the final successful
+attempt's `outputs/` files are exposed; failed-attempt files are not downloadable. Paths are portable relative
+names, artifacts have SHA-256 digests, and downloads use attachment disposition and `nosniff`.
+The coordinator can explicitly import an output into its session filesystem; overwriting an existing file
+requires its exact current etag. Arbitrary attempt files and runtime history are not exported.
 
 ## Events
 

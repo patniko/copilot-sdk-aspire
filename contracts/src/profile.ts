@@ -42,7 +42,7 @@ export const ExecutionProfile = z
     toolchains: z.array(z.object({ name: z.string(), version: z.string() }).strict()),
     /** Tool bindings this profile can satisfy. */
     toolBindings: z.array(z.string().min(1)),
-    capabilities: z.array(z.enum(["cancel", "structured-result", "trace-context", "local-mcp", ...RUNNER_FEATURES])),
+    capabilities: z.array(z.enum(["cancel", "structured-result", "trace-context", "local-mcp", "workspace-artifacts", ...RUNNER_FEATURES])),
   })
   .strict();
 export type ExecutionProfile = z.infer<typeof ExecutionProfile>;

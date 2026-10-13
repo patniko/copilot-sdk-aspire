@@ -120,6 +120,7 @@ write({
     "skills",
     "builtin-tools",
     "interactive",
+    "workspace-artifacts",
   ],
 });
 

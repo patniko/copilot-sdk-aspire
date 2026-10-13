@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { describe, expect, it, beforeAll } from "vitest";
 import type { ExecutionPolicy, ExecutionProfile, HarnessPolicyOverride, HarnessSnapshot } from "@copilot-agent/contracts";
 import { HttpError, loadHarnesses, loadPolicy, loadProfiles } from "@copilot-agent/service-defaults";
-import { Admission } from "../../src/agent-api/src/admission.js";
+import { Admission } from "@copilot-agent/service-defaults";
 
 const root = join(import.meta.dirname, "..", "..");
 const customerConfigRoot = join(root, "examples", "customer-config");

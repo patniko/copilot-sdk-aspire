@@ -1,11 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { SharedServerKey } from "@copilot-agent/contracts";
 
-export const ServerKey = z.object({
-  keyId: z.string().min(1).max(200),
-  algorithm: z.enum(["x25519-sealedbox", "hpke-x25519-hkdf-sha256-aes256gcm"]),
-  publicKey: z.string().min(1).max(1000),
-}).strict();
+export const ServerKey = SharedServerKey;
 export type ServerKey = z.infer<typeof ServerKey>;
 
 /** Provision public key material over the supervisor's authenticated local connection. */

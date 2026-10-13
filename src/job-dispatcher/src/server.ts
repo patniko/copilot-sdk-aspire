@@ -1,5 +1,6 @@
 import {
   ExecutorCapabilities,
+  ArtifactData,
   InputRequestBody,
   JobErrorCode,
   modelOptionViolations,
@@ -11,11 +12,12 @@ import {
   toolPolicyViolations,
   type ExecutionPolicy,
 } from "@copilot-agent/contracts";
-import type { AttemptOutcome, Claim, JobStore, HostStore } from "@copilot-agent/job-store";
-import { createService, HttpError, requireInternalKey, signCapability } from "@copilot-agent/service-defaults";
+import type { AllocationStore, DelegationStore, AttemptOutcome, Claim, JobStore, HostStore } from "@copilot-agent/job-store";
+import { createService, HttpError, requireInternalKey, secretsEqual, signCapability } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { registerHostRoutes, type HostDependencies } from "./host-routes.js";
+import { registerSharedRoutes, type SharedDispatcherDependencies } from "./shared-routes.js";
 
 export interface DispatcherDependencies {
   store: JobStore;
@@ -26,6 +28,9 @@ export interface DispatcherDependencies {
   signingKey: string;
   hostStore?: HostStore;
   host?: HostDependencies;
+  shared?: SharedDispatcherDependencies;
+  allocations?: AllocationStore;
+  delegations?: DelegationStore;
 }
 
 /**
@@ -103,6 +108,7 @@ const UsageBody = z
     model: z.string().max(200),
     inputTokens: z.number().int().min(0).max(10_000_000),
     outputTokens: z.number().int().min(0).max(10_000_000),
+    usageKnown: z.boolean().optional(),
   })
   .strict();
 
@@ -127,9 +133,21 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   const waitingThresholdSeconds = Math.max(60, policy.leaseSeconds * 2);
   let lastWaitingCheck = 0;
   if (deps.host) registerHostRoutes(app, deps.host);
+  if (deps.shared) registerSharedRoutes(app, deps.shared, deps.signingKey, policy.allowedModels);
   const heartbeatSeconds = Math.max(3, Math.floor(policy.leaseSeconds / 3));
 
-  const executorOnly = (request: FastifyRequest) => requireInternalKey(request, deps.executorKey);
+  const executorOnly = async (request: FastifyRequest) => {
+    const presented = request.headers["x-internal-key"];
+    if (typeof presented !== "string") throw new HttpError(401, "unauthenticated", "Service authentication failed.");
+    if (secretsEqual(presented, deps.executorKey)) return undefined;
+    const allocation = await deps.allocations?.authenticate(presented);
+    if (!allocation) throw new HttpError(401, "unauthenticated", "Service authentication failed.");
+    const id = (request.params as { id?: string }).id;
+    if (id && (!z.string().uuid().safeParse(id).success || !(await deps.allocations!.ownsAttempt(allocation.id, id)))) {
+      throw new HttpError(403, "forbidden", "This allocation does not own the attempt.");
+    }
+    return allocation;
+  };
   const gatewayOnly = (request: FastifyRequest) => requireInternalKey(request, deps.gatewayKey);
   const attemptIdOf = (request: FastifyRequest) => {
     const id = (request.params as { id: string }).id;
@@ -140,8 +158,10 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   };
 
   app.post("/internal/executor/claim", async (request, reply) => {
-    executorOnly(request);
+    const allocation = await executorOnly(request);
     const executor = parse(ExecutorCapabilities, request.body);
+    if (allocation && executor.executorId !== allocation.id) throw new HttpError(403, "forbidden", "The executor identity must match its allocation.");
+    if (allocation?.attemptId) return reply.status(410).send({ error: { code: "allocation_used", message: "This one-shot allocation has already claimed its attempt." } });
     const eligibleProfiles = executor.profiles.filter((p) => approvedProfiles.has(p));
     if (eligibleProfiles.length === 0) {
       return reply.status(204).send();
@@ -152,6 +172,7 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
       leaseSeconds: policy.leaseSeconds,
       maxConcurrentPerPrincipal: policy.maxConcurrentAttemptsPerPrincipal,
       defaults,
+      allocationId: allocation?.id,
     });
     if (!claim) {
       if (Date.now() - lastWaitingCheck > 10_000) {
@@ -194,7 +215,7 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
       "attempt claimed",
     );
     return {
-      job: claim.job,
+      job: { ...claim.job, ...(allocation && deps.delegations ? { artifacts: { inputs: await deps.delegations.inputs(claim.job.id) } } : {}) },
       attempt: claim.attempt,
       inference: { token: capabilityToken, model: claim.job.model },
       leaseSeconds: policy.leaseSeconds,
@@ -203,7 +224,7 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   });
 
   app.post("/internal/attempts/:id/heartbeat", async (request, reply) => {
-    executorOnly(request);
+    await executorOnly(request);
     const { leaseToken } = parse(LeaseBody, request.body);
     const result = await deps.store.heartbeat(attemptIdOf(request), leaseToken, policy.leaseSeconds);
     if (!result) {
@@ -213,14 +234,14 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   });
 
   app.post("/internal/attempts/:id/provenance", async (request, reply) => {
-    executorOnly(request);
+    await executorOnly(request);
     const body = parse(ProvenanceBody, request.body);
     const ok = await deps.store.recordProvenance(attemptIdOf(request), body.leaseToken, body.provenance);
     return ok ? { ok } : reply.status(409).send({ error: { code: "lease_lost", message: "Stale attempt." } });
   });
 
   app.post("/internal/attempts/:id/events", async (request, reply) => {
-    executorOnly(request);
+    await executorOnly(request);
     const body = parse(EventsBody, request.body);
     const attemptId = attemptIdOf(request);
     for (const event of body.events) {
@@ -232,7 +253,7 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   });
 
   app.post("/internal/attempts/:id/input-requests", async (request, reply) => {
-    executorOnly(request);
+    await executorOnly(request);
     const body = parse(CreateInputRequestBody, request.body);
     try {
       const created = await deps.store.createInputRequest(
@@ -254,7 +275,7 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   });
 
   app.post("/internal/attempts/:id/input-requests/:requestId/poll", async (request, reply) => {
-    executorOnly(request);
+    await executorOnly(request);
     const { leaseToken } = parse(LeaseBody, request.body);
     const requestId = (request.params as { requestId: string }).requestId;
     if (!z.string().uuid().safeParse(requestId).success) {
@@ -271,7 +292,7 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   });
 
   app.post("/internal/attempts/:id/complete", async (request, reply) => {
-    executorOnly(request);
+    await executorOnly(request);
     const body = parse(CompleteBody, request.body);
     const result = await deps.store.completeAttempt(
       attemptIdOf(request),
@@ -290,17 +311,48 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
     gatewayOnly(request);
     const { jti } = parse(IntrospectBody, request.body);
     const result = await deps.store.introspectCapability(jti);
+    if (result.reason === "unknown" && deps.shared) {
+      const shared = await deps.shared.store.introspect(jti, undefined, policy.allowedModels);
+      if (shared.reason !== "unknown") return shared;
+    }
     return result.reason === "unknown" && deps.hostStore ? deps.hostStore.introspect(jti) : result;
+  });
+
+  app.post("/internal/attempts/:id/artifacts", async (request) => {
+    await executorOnly(request);
+    if (!deps.delegations) throw new HttpError(409, "artifacts_unavailable", "Delegated artifact storage is unavailable.");
+    const body = parse(LeaseBody.extend({ artifact: ArtifactData }), request.body);
+    return deps.delegations.publishArtifact(attemptIdOf(request), body.leaseToken, body.artifact);
+  });
+
+  app.post("/internal/capabilities/begin", async (request) => {
+    gatewayOnly(request);
+    const body = parse(z.object({ jti: z.string().uuid(), requestId: z.string().uuid() }).strict(), request.body);
+    try {
+      const shared = await deps.shared?.store.introspect(body.jti);
+      return { remainingTokens: shared && shared.reason !== "unknown"
+        ? await deps.shared!.store.beginInference(body.jti, body.requestId, policy.allowedModels)
+        : await deps.store.beginInferenceRequest(body.jti, body.requestId) };
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "quota_exceeded") {
+        throw new HttpError(429, "inference_busy", "The conversation already has an inference request in flight.");
+      }
+      throw error;
+    }
   });
 
   app.post("/internal/capabilities/usage", async (request) => {
     gatewayOnly(request);
     const usage = parse(UsageBody, request.body);
+    if (deps.shared && usage.requestId) {
+      const recorded = await deps.shared.store.recordUsage(usage.jti, usage.requestId, usage.inputTokens, usage.outputTokens, usage.usageKnown ?? true);
+      if (recorded) return { recorded };
+    }
     if (deps.hostStore && usage.requestId) {
       const recorded = await deps.hostStore.recordUsage(usage.jti, usage.requestId, usage.inputTokens, usage.outputTokens);
       if (recorded) return { recorded };
     }
-    return { recorded: await deps.store.recordUsage(usage.jti, usage.inputTokens, usage.outputTokens) };
+    return { recorded: await deps.store.recordUsage(usage.jti, usage.inputTokens, usage.outputTokens, usage.requestId, usage.usageKnown ?? true) };
   });
 
   return app;

@@ -8,7 +8,7 @@ import type { ExecutionPolicy, ExecutionProfile, ExecutorCapabilities, JobView, 
 import { JobEventListener, JobStore, migrate } from "@copilot-agent/job-store";
 import { ApiKeyAuthenticator, createLogger, loadHarnesses, loadPolicy, loadProfiles } from "@copilot-agent/service-defaults";
 import type { FastifyInstance } from "fastify";
-import { Admission } from "../../src/agent-api/src/admission.js";
+import { Admission } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../src/agent-api/src/server.js";
 import { runAttempt } from "../../src/agent-executor/src/attempt.js";
 import { DispatcherClient } from "../../src/agent-executor/src/dispatcher-client.js";

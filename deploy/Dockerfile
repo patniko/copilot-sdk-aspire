@@ -22,6 +22,7 @@ COPY src/job-dispatcher/package.json src/job-dispatcher/
 COPY src/inference-gateway/package.json src/inference-gateway/
 COPY src/agent-executor/package.json src/agent-executor/
 COPY src/agent-host/package.json src/agent-host/
+COPY src/execution-controller/package.json src/execution-controller/
 COPY src/harness-hosting/package.json src/harness-hosting/
 COPY tests/package.json tests/
 COPY configurator/package.json configurator/

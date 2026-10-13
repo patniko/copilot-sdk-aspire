@@ -3,3 +3,6 @@ export * from "./migrate.js";
 export * from "./listener.js";
 export * from "./host-store.js";
 export * from "./session-files.js";
+export * from "./shared-store.js";
+export * from "./delegations.js";
+export * from "./allocations.js";

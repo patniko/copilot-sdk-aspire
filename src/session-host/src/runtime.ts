@@ -1,20 +1,28 @@
 import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { CopilotClient, RuntimeConnection, type AhpHost, type CopilotSession, type SessionConfig } from "@github/copilot-sdk";
+import { CopilotClient, RuntimeConnection, type AhpHost, type CopilotSession, type SessionConfig, type SessionEvent } from "@github/copilot-sdk";
 import { SessionFileStore, type SessionFileLease } from "@copilot-agent/job-store";
 import { z } from "zod";
 import { postgresSessionFilesystem } from "./postgres-filesystem.js";
 import { SessionWorkspace } from "./workspace.js";
 
+export interface SharedActivationContext {
+  lease: SessionFileLease;
+  signal: AbortSignal;
+  workspace: SessionWorkspace;
+}
 export interface SharedSessionOptions {
   id: string;
   principal: string;
   githubUserId: number;
   model: string;
   instructions: string;
-  provider: NonNullable<SessionConfig["provider"]>;
-  tools?: SessionConfig["tools"];
+  provider: NonNullable<SessionConfig["provider"]> | ((context: SharedActivationContext) => NonNullable<SessionConfig["provider"]>);
+  tools?: SessionConfig["tools"] | ((context: SharedActivationContext) => NonNullable<SessionConfig["tools"]>);
+  hooks?: (context: SharedActivationContext) => SessionConfig["hooks"];
+  onEvent?: (context: SharedActivationContext, event: SessionEvent) => void;
+  onActivity?: (context: SharedActivationContext) => void;
 }
 interface Activation {
   lease: SessionFileLease;
@@ -40,6 +48,7 @@ export class SharedSessionRuntime {
   readonly #client: CopilotClient;
   readonly #activations = new Map<string, Activation>();
   readonly #opening = new Set<string>();
+  readonly #models = new Set<string>();
   readonly #worker = randomUUID();
   #stopping = false;
 
@@ -59,6 +68,10 @@ export class SharedSessionRuntime {
       baseDirectory: join(root, "runtime"),
       useLoggedInUser: false,
       logLevel: process.env.LOG_LEVEL === "debug" ? "debug" : "error",
+      onListModels: () => [...this.#models].map((id) => ({
+        id, name: id,
+        capabilities: { supports: { vision: false, reasoningEffort: false }, limits: { max_context_window_tokens: 128_000 } },
+      })),
       sessionFs: {
         initialCwd: join(root, "anchors"),
         sessionStatePath: join(root, "session-state"),
@@ -73,7 +86,7 @@ export class SharedSessionRuntime {
     await this.#client.start();
   }
 
-  async open(options: SharedSessionOptions): Promise<{ id: string; url: string; token: string; sessionUri: string }> {
+  async open(options: SharedSessionOptions): Promise<{ id: string; url: string; token: string; sessionUri: string; lease: SessionFileLease }> {
     if (this.#stopping) throw new Error("The shared runtime is stopping.");
     if (!z.string().uuid().safeParse(options.id).success || !options.principal || !Number.isSafeInteger(options.githubUserId) || options.githubUserId < 1) {
       throw new Error("Invalid shared session identity.");
@@ -81,6 +94,7 @@ export class SharedSessionRuntime {
     if (this.#activations.has(options.id) || this.#opening.has(options.id)) throw new Error("The shared session is already active.");
     if (this.#activations.size + this.#opening.size >= this.maximumSessions) throw new Error("The shared runtime is at capacity.");
     this.#opening.add(options.id);
+    this.#models.add(options.model);
     let lease: SessionFileLease | undefined;
     let host: AhpHost | undefined;
     let session: CopilotSession | undefined;
@@ -106,10 +120,13 @@ export class SharedSessionRuntime {
       const anchor = await realpath(anchorDirectory);
       const storage = postgresSessionFilesystem(this.files, lease, process.platform === "win32" ? "windows" : "posix");
       await storage.mkdir(anchor, true);
+      const workspace = new SessionWorkspace(anchor, storage, lifetime.signal, (operation) => this.report(`session.fs.${operation}.failed`, options.id));
+      const context: SharedActivationContext = { lease, signal: lifetime.signal, workspace };
+      const tools = typeof options.tools === "function" ? options.tools(context) : options.tools ?? [];
       const metadataPath = join(this.root, "session-state", "application-snapshot.json");
       const current = snapshot.parse({
         schemaVersion: 1, model: options.model, instructions: options.instructions, githubUserId: options.githubUserId,
-        tools: (options.tools ?? []).map((tool) => tool.name).sort(),
+        tools: tools.map((tool) => tool.name).sort(),
       });
       const resume = await storage.exists(metadataPath);
       if (resume) {
@@ -118,31 +135,35 @@ export class SharedSessionRuntime {
       } else {
         await storage.writeFile(metadataPath, JSON.stringify(current));
       }
-      const workspace = new SessionWorkspace(anchor, storage, lifetime.signal, (operation) => this.report(`session.fs.${operation}.failed`, options.id));
       const config: SessionConfig = {
         sessionId: options.id,
         workingDirectory: anchor,
         model: options.model,
-        provider: options.provider,
-        tools: options.tools ?? [],
-        availableTools: (options.tools ?? []).map((tool) => `custom:${tool.name}`),
+        provider: typeof options.provider === "function" ? options.provider(context) : options.provider,
+        tools,
+        availableTools: tools.map((tool) => `custom:${tool.name}`),
         systemMessage: { mode: "replace", content: options.instructions },
         enableConfigDiscovery: false,
         skipCustomInstructions: true,
         streaming: true,
         onPermissionRequest: async () => ({ kind: "reject", feedback: "This shared session permits only its application tools." }),
         createSessionFsProvider: () => workspace.sessionFs,
+        hooks: options.hooks?.(context),
       };
       session = resume
         ? await this.#client.resumeSession(options.id, { ...config, continuePendingWork: false })
         : await this.#client.createSession(config);
       const original = session;
+      session.on((event) => options.onEvent?.(context, event));
       host = await this.#client.startAhpHost({
         computeId: options.id,
         workingDirectory: anchor,
         expectedOwner: { githubApiUrl: "https://api.github.com", userId: options.githubUserId },
         localServer: { hostname: "127.0.0.1", port: 0 },
-        onWorkspaceResource: workspace.onResource,
+        onWorkspaceResource: (request, invocation) => {
+          options.onActivity?.(context);
+          return workspace.onResource(request, invocation);
+        },
         createSession: async () => { throw new Error("Create shared conversations through the application; attach to the published session."); },
         resumeSession: async ({ sessionId }) => {
           if (sessionId !== options.id || lifetime.signal.aborted) throw new Error("The requested shared conversation is unavailable.");
@@ -160,7 +181,7 @@ export class SharedSessionRuntime {
       if (!host.url || !host.token || lifetime.signal.aborted || this.#stopping) throw new Error("Shared host startup did not complete.");
       this.#activations.set(options.id, { lease, lifetime, host, session, heartbeat });
       this.report(resume ? "session.resumed" : "session.created", options.id);
-      return { id: options.id, url: host.url, token: host.token, sessionUri: publication.sessionUri };
+      return { id: options.id, url: host.url, token: host.token, sessionUri: publication.sessionUri, lease };
     } catch (error) {
       lifetime.abort();
       clearInterval(heartbeat);
@@ -176,20 +197,47 @@ export class SharedSessionRuntime {
   async close(id: string): Promise<void> {
     const activation = this.#activations.get(id);
     if (!activation) return;
-    if (!activation.close) activation.close = this.#close(id, activation);
+    if (!activation.close) {
+      activation.close = this.#close(id, activation).catch((error) => {
+        activation.close = undefined;
+        throw error;
+      });
+    }
     return activation.close;
+  }
+
+  async sendSystem(id: string, prompt: string): Promise<string> {
+    const activation = this.#activations.get(id);
+    if (!activation || activation.close || activation.lifetime.signal.aborted) throw new Error("The shared conversation is not active.");
+    return activation.session.send({ prompt, source: "system" });
+  }
+
+  async hasSystemMessage(id: string, marker: string): Promise<boolean> {
+    const activation = this.#activations.get(id);
+    if (!activation || activation.close) throw new Error("The shared conversation is not active.");
+    return (await activation.session.getEvents()).some((event) =>
+      event.type === "user.message" && event.data.source === "system" && event.data.content.includes(marker));
   }
 
   async #close(id: string, activation: Activation): Promise<void> {
     clearInterval(activation.heartbeat);
-    try {
-      await activation.session.abort();
-      await activation.host.dispose();
-      await activation.session.disconnect();
-      await this.files.release(activation.lease);
-      this.#activations.delete(id);
-      this.report("session.deactivated", id);
-    } finally { activation.lifetime.abort(); }
+    const failures: unknown[] = [];
+    for (const action of [
+      () => activation.session.abort(),
+      () => activation.host.dispose(),
+      () => activation.session.disconnect(),
+    ]) {
+      try { await action(); }
+      catch (error) { failures.push(error); }
+    }
+    activation.lifetime.abort();
+    if (failures.length) {
+      this.report("session.deactivation_failed", id);
+      throw new AggregateError(failures, "The shared activation could not be completely stopped; its lease was not released.");
+    }
+    await this.files.release(activation.lease);
+    this.#activations.delete(id);
+    this.report("session.deactivated", id);
   }
 
   async stop(): Promise<void> {

@@ -11,12 +11,17 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@copilot-agent/contracts": "workspace:*",
     "@copilot-agent/job-store": "workspace:*",
+    "@copilot-agent/service-defaults": "workspace:*",
     "@github/copilot-sdk": "link:../../../copilot-agent-runtime-hybrid/src/sdk/nodejs",
+    "fastify": "^5.4.0",
+    "pg": "^8.16.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.15.0",
     "typescript": "^5.9.3"
   }
 }

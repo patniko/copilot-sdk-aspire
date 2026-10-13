@@ -10,7 +10,8 @@ import {
   securityRequirementsOf,
   toolPolicyViolations,
 } from "@copilot-agent/contracts";
-import { canonicalJson, createAjv, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
+import { canonicalJson, createAjv, policyDigest, sha256Hex } from "./registry.js";
+import { HttpError } from "./http.js";
 import type { ValidateFunction } from "ajv";
 
 export interface AdmissionContext {
@@ -50,7 +51,7 @@ export class Admission {
 
   constructor(private readonly context: AdmissionContext) {}
 
-  admit(submission: JobSubmission): AdmittedJob {
+  admit(submission: JobSubmission, execution: "pool" | "dedicated" = "pool"): AdmittedJob {
     const { harnesses, profiles, policies } = this.context;
     const versions = harnesses.get(submission.harness.name);
     const harness = submission.harness.version
@@ -72,6 +73,9 @@ export class Admission {
     }
     if (!policy.allowedProfiles.includes(profileId) || !profile) {
       throw new HttpError(422, "policy_rejected", `Profile '${profileId}' is not approved by the operator policy.`);
+    }
+    if (execution === "dedicated" && !profile.capabilities.includes("workspace-artifacts")) {
+      throw new HttpError(422, "policy_rejected", "On-demand execution requires a workspace-artifacts capable profile.");
     }
     const missingBindings = definition.tools
       .map((t) => t.binding)

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { HarnessDefinition } from "./harness.js";
+import { WorkspaceArtifacts } from "./artifacts.js";
 
 export const RUNNER_PROTOCOL_VERSION = "1" as const;
 
@@ -37,6 +38,7 @@ export const RunnerStart = z
     /** Controls whether the runner forwards bounded SDK event payloads with its normal progress events. */
     eventDetail: z.enum(["sanitized", "full"]).optional(),
     workspace: z.string().min(1),
+    artifacts: WorkspaceArtifacts.optional(),
     traceparent: z.string().optional(),
   })
   .strict();

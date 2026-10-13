@@ -241,9 +241,12 @@ account/workspace-scoped AHP listener per admitted conversation, backed by Postg
 Opening is bounded, storage leases renew during activation, and deactivation retains the conversation.
 New conversations are application-provisioned; the CLI attaches to the published session rather than
 creating arbitrary sessions through AHP. Returned listener tokens are private provisioning material:
-a public service must still supply authenticated one-time tickets and independently trusted server keys.
-The library does not yet implement the public session API, inference-budget grants, turn scheduling,
-idle eviction, or container delegation, and is not wired into the deployed AppHost.
+`SharedSessionService` supplies the authenticated one-time tickets and independently provisioned server
+keys instead of exposing that internal return value.
+The surrounding `SharedSessionService` supplies protected provisioning, durable turn/budget admission,
+idle eviction and application tools; the local AppHost enables it explicitly. `execution-controller`
+reconciles on-demand containers outside the runtime process. These are local experimental integrations,
+not the Azure deployment path.
 Set `COPILOT_AHP_FACTORY_PROFILE=managed` on the hosting process before initialization. An in-process
 runtime cannot use the child-runtime `env` option; this existing managed profile keeps AHP identity
 credentials separate from the application's model provider. The library refuses to start without it.
@@ -257,7 +260,8 @@ The initially probed published bundle could not publish pure virtual workspace p
 The selected design now uses tiny native directory anchors while keeping content in the provider.
 The suite verifies that unsupported virtual-only publication is rejected, separately from the working
 anchor controls and per-account host scopes. Passing these primitive checks does not qualify the
-remaining CLI resource bridge or real multi-account attachment.
+complete public service or real multi-account attachment; the resource and CLI cases below provide
+separate evidence for those paths.
 See the [qualification record](HYBRID-HOSTING-PLAN.md#13-qualification-record).
 Ordinary `pnpm test`, unit, and integration selections do not include this native-runtime suite.
 
@@ -288,6 +292,33 @@ $env:HYBRID_CLI_TESTS = '1'
 $env:HYBRID_USE_GH_ACCOUNT = '1' # Explicit approval to use the account signed in through gh.
 pnpm exec vitest run --project integration tests\integration\shared-cli.test.ts
 ```
+
+`HYBRID_SESSION_RUNTIME_TESTS=1` also enables `shared-service.test.ts`: protected API provisioning,
+one-use tickets, real native inference through the reservation-backed gateway, completion history
+deduplication and idle eviction. `shared-store.test.ts` and `delegations.test.ts` use disposable
+PostgreSQL without a native runtime and cover atomic admission, scopes, quotas, usage recovery and artifacts.
+
+For the complete local CLI/container gate, build `copilot-hybrid-executor:local`, set the matching
+native/CLI paths and explicit account opt-in above, then run:
+
+```powershell
+$env:HYBRID_DEPLOYMENT_TESTS = '1'
+pnpm exec vitest run --project integration tests\integration\hybrid-deployment.test.ts
+```
+
+This drives real tool calls from a synthetic model through the actual CLI and shared host, checks that
+lightweight chat allocates no container, runs both TypeScript and Python jobs with uid isolation,
+downloads retained outputs after teardown, and receives completion in the same CLI conversation.
+It also exercises queued/running cancellation, two-container spreading after a controller restart,
+and orphan cleanup. Terminal assertions use a headless terminal emulator rather than concatenating
+ANSI-stripped repaint fragments.
+It uses a disposable database and uniquely labeled containers; it does not use a paid model or Azure.
+`HYBRID_CONTAINER_TESTS=1` enables the artifact-safety image probe and `shared-image.test.ts`.
+The latter runs the packaged worker as its unprivileged Linux user against disposable PostgreSQL,
+including one-use tickets, an in-process model turn and retained conversation replacement.
+Failed automatic notifications are inspectable through the session jobs API. Standalone deployment,
+configuration, Linux-image commands and the two CLI destinations are documented in
+[local hybrid deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment).
 
 The separate `tests/integration/github-native-host.test.ts` opt-in uses `DEMO_GITHUB_HOST_TESTS=1`,
 the same explicit GitHub credential variables, and `copilot-aspire-agent-host:native-demo` (or
@@ -335,7 +366,7 @@ Follow the complete feature path rather than changing only a schema or an editor
 | --- | --- |
 | [Harness contract](../contracts/src/harness.ts) and [profile/policy contract](../contracts/src/profile.ts) | Validation, defaults, policy ceilings, and required runner capability |
 | [Registry](../src/service-defaults/src/registry.ts) | File representation, resolved snapshot, digest behavior |
-| [Admission](../src/agent-api/src/admission.ts) | Supported profile/bindings/options rejected before queuing if unavailable |
+| [Admission](../src/service-defaults/src/admission.ts) | Shared API/delegation validation rejects unsupported profile/bindings/options before queuing |
 | [Executor](../src/agent-executor/src/attempt.ts) and [wire contract](../contracts/src/runner-protocol.ts) | Capability check on `hello`, lifecycle, bounded messages, output validation |
 | [TypeScript session mapping](../src/harness-hosting/src/session-config.ts) | SDK options, tool exposure, agent/skill mapping |
 | [Python runner](../execution-profiles/python-agent/runner.py) | Equivalent `session_options()` behavior with snake_case SDK fields |

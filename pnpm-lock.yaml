@@ -119,6 +119,9 @@ importers:
       fastify:
         specifier: ^5.4.0
         version: 5.12.5
+      zod:
+        specifier: ^4.3.6
+        version: 4.6.5
     devDependencies:
       typescript:
         specifier: ^5.9.3
@@ -129,6 +132,9 @@ importers:
       '@copilot-agent/contracts':
         specifier: workspace:*
         version: link:../../contracts
+      '@copilot-agent/job-store':
+        specifier: workspace:*
+        version: link:../job-store
       '@copilot-agent/service-defaults':
         specifier: workspace:*
         version: link:../service-defaults
@@ -161,6 +167,28 @@ importers:
         specifier: ^4.3.6
         version: 4.6.5
     devDependencies:
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
+  src/execution-controller:
+    dependencies:
+      '@copilot-agent/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@copilot-agent/job-store':
+        specifier: workspace:*
+        version: link:../job-store
+      '@copilot-agent/service-defaults':
+        specifier: workspace:*
+        version: link:../service-defaults
+      zod:
+        specifier: ^4.3.6
+        version: 4.6.5
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.4
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -270,6 +298,9 @@ importers:
       pino:
         specifier: ^9.7.0
         version: 9.14.0
+      zod:
+        specifier: ^4.3.6
+        version: 4.6.5
     devDependencies:
       '@types/pg':
         specifier: ^8.15.0
@@ -280,12 +311,24 @@ importers:
 
   src/session-host:
     dependencies:
+      '@copilot-agent/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
       '@copilot-agent/job-store':
         specifier: workspace:*
         version: link:../job-store
+      '@copilot-agent/service-defaults':
+        specifier: workspace:*
+        version: link:../service-defaults
       '@github/copilot-sdk':
         specifier: link:../../../copilot-agent-runtime-hybrid/src/sdk/nodejs
         version: link:../../../copilot-agent-runtime-hybrid/src/sdk/nodejs
+      fastify:
+        specifier: ^5.4.0
+        version: 5.12.5
+      pg:
+        specifier: ^8.16.0
+        version: 8.23.0
       zod:
         specifier: ^4.3.6
         version: 4.6.5
@@ -293,6 +336,9 @@ importers:
       '@types/node':
         specifier: ^22.0.0
         version: 22.20.4
+      '@types/pg':
+        specifier: ^8.15.0
+        version: 8.23.1
       typescript:
         specifier: ^5.9.3
         version: 5.9.3
@@ -326,6 +372,9 @@ importers:
       '@types/ws':
         specifier: ^8.18.1
         version: 8.18.1
+      '@xterm/headless':
+        specifier: 5.5.0
+        version: 5.5.0
       fastify:
         specifier: ^5.4.0
         version: 5.12.5
@@ -344,6 +393,9 @@ importers:
       ws:
         specifier: ^8.18.1
         version: 8.22.0
+      zod:
+        specifier: ^4.3.6
+        version: 4.6.5
 
 packages:
 
@@ -1118,6 +1170,9 @@ packages:
 
   '@vitest/utils@4.1.11':
     resolution: {integrity: sha1-myekKTuCeUKyI1Ob+rG9n36toxs=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/@vitest/utils/-/utils-4.1.11.tgz}
+
+  '@xterm/headless@5.5.0':
+    resolution: {integrity: sha1-gj52mUsBzFv+afLCy6CAle6SiqA=}
 
   abstract-logging@2.0.1:
     resolution: {integrity: sha1-aww3HfIS23EptX0uf88oK4vxyDk=, tarball: https://ms-feed-25.pkgs.visualstudio.com/1es-public/_packaging/npm-public/npm/registry/abstract-logging/-/abstract-logging-2.0.1.tgz}
@@ -2896,6 +2951,8 @@ snapshots:
       '@vitest/pretty-format': 4.1.11
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.1
+
+  '@xterm/headless@5.5.0': {}
 
   abstract-logging@2.0.1: {}
 
