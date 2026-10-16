@@ -1022,7 +1022,73 @@ Pending.
 
 ### Stage 2: connection broker
 
-Pending.
+Recorded 2026-10-15 on branch `patniko-connection-broker` (commits `b0cc328`, `4c9cad5`, `6bdc70c`, `af03bae`), then
+merged with the integration branch at `9c6b918` (harness-driven shared mode) in `f18c658` and re-verified there. A
+second merge at `4272621` (egress review fixes) was re-verified with the baseline, unit, integration, and
+native-runtime suites; the real-CLI, container, and AppHost gates below ran on `f18c658`.
+
+Delivered, all local and opt-in through `Parameters:hybrid-hosting`:
+
+- A separate `connection-broker` service ([source](../src/connection-broker/src/broker.ts)) gives each session one
+  stable WebSocket path, `/sessions/{id}`. It consumes one-use tickets through the internal dispatcher route
+  `POST /internal/broker/connection`, then forwards bytes unchanged to the session's placement. Its only credential
+  is `CONNECTION_BROKER_KEY`; it holds no caller API key, database credential, inference grant, or provider
+  credential. `POST /v1/sessions/{id}/connection` returns the broker URL with the harness-driven `transport` and
+  `ahpSessionId` fields.
+- The shared worker accepts only connections forwarded with the broker key, for the activation epoch the consumed
+  ticket was issued for, and refuses public tickets. Tickets keep their 60-second, one-use semantics and the CLI's
+  server-key pin flow. The singleton demo `agent-host` direct path is unchanged.
+- Placement abstraction ([contract](../contracts/src/placement.ts)): `PlacementKind` (`shared` only),
+  `SessionPlacement`, and `PlacementRoute`; ledger columns `shared_sessions.placement` and `placement_generation`
+  (migration `009`); tickets bound to the generation; `PlacementStore`; and `POST /internal/broker/placements` for
+  live-route checks.
+- A distinguishable close: WebSocket code `4301`, reason `moved`, injected at a frame boundary when a live route's
+  placement kind or generation changes. The broker checks live routes every second and re-checks when an upstream
+  closes, replacing that close with `moved` if the placement changed.
+- Local AppHost wiring: a `connection-broker` Node resource and a generated `connection-broker-key` in the hybrid
+  branch. `pnpm host:connect --destination shared` works unchanged through the returned URL and now also verifies
+  the URL's session path.
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Baseline | `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`, `pnpm typecheck`, `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint` | All exit 0 |
+| Unit | `pnpm test:unit` | 511 passed, 1 skipped after the second merge (508 after the first). Before merging: 299 passed, 1 skipped (baseline 286; 14 new broker, frame, proxy, and placement cases) |
+| Integration | `pnpm test:integration` | 64 passed, 10 opt-in skipped (62 and 8 before the merge). New: ticket consumption and placement lookup, live connections across an `agent-api` restart, forwarded-only worker ingress, and `moved` after a test-only generation change |
+| Native runtime | `HYBRID_SESSION_RUNTIME_TESTS=1 COPILOT_AHP_FACTORY_PROFILE=managed`, `shared-service.test.ts`, `shared-session-runtime.test.ts`, and `shared-egress-runtime.test.ts` | 4 passed; an AHP handshake through the broker reached the runtime and returned its pinned key |
+| Real CLI | `HYBRID_CLI_TESTS=1 HYBRID_USE_GH_ACCOUNT=1`, `shared-cli.test.ts` | Passed with a harness-driven session: API, broker, dispatcher ticket consumption, shared worker; the CLI kept answering while `agent-api` was stopped and restarted; a replacement worker behind the same broker resumed the conversation for a fresh CLI |
+| Real containers | `HYBRID_DEPLOYMENT_TESTS=1 HYBRID_EXECUTOR_IMAGE=copilot-hybrid-executor:connection-broker`, `hybrid-deployment.test.ts` | Passed (57.9 s; 59.5 s before the merge), with `agent-api` replaced while the CLI stayed attached |
+| Packaged images | `HYBRID_CONTAINER_TESTS=1 HYBRID_SESSION_IMAGE=copilot-hybrid-session-host:connection-broker`, `shared-image.test.ts` and `artifact-safety.test.ts` | 2 passed |
+| Local AppHost | `aspire start --isolated` with hybrid parameters and a non-routable Foundry endpoint | All seven services healthy; a `hybrid-coordinator` session's connection returned the broker URL, `transport: "direct"`, and `ahpSessionId`; a brokered AHP session stayed open and answered across `aspire resource agent-api restart` (the configurator's **Reload harnesses**); the used ticket was refused; `pnpm host:connect --destination shared --resume <id>` attached the CLI through the broker |
+
+Runtime and artifacts: the Windows in-process pair `.runtime-artifacts/cli-workspace-fix` (`copilot-runtime.exe`
+`d843b17a242886e4504bebdd39c1563cece0eec248fc3dcbfe921d209cf88c4d`, `runtime.node`
+`ed6e2dda07580c86845b9edc30c59a03f584a4ef6651de6712cc34fedb3f357b`) and the CLI `dist-cli/index.js`
+(`e520ae56fc901a56dc821bcf9795255a489bff05e9a606b5d4fa526c586ccdf9`) from the runtime checkout at `0a32c39595f`.
+The `dist-cli/prebuilds/win32-arm64` launcher (`20791e27…`) predates that revision's Windows workspace
+path-spelling fix and refuses every CLI attachment with `application session resume failed`. The unmodified base
+gate reproduces this. The Linux bundle `hybrid-linux-arm64-verified` (runtime `0a32c39595f`, hosting `b20e188`)
+built `copilot-hybrid-session-host:connection-broker` (merged tree `sha256:910603c3…`; earlier `sha256:5278e5b9…`). The
+executor image `copilot-hybrid-executor:connection-broker` (merged tree `sha256:85b2f5a3…`; earlier `sha256:e677df02…`)
+was built from `deploy/Dockerfile`, which now installs the broker package. Inference was synthetic throughout.
+
+The merge kept harness-driven sessions on the broker path: the shared worker returns ticket material with
+`ahpSessionId`, the API adds the broker URL and `transport`, and `ConnectionTicket` lives in `shared.ts` to avoid a
+contracts import cycle. The worker's egress filter previously took its own address from `SHARED_PUBLIC_URL`, which
+no longer exists; it now refuses its own listener and the broker's through `SHARED_WORKER_URL` and
+`CONNECTION_BROKER_URL`.
+
+Extension points for later stages: add a placement kind to `PlacementKind`, the `shared_sessions_placement_kind`
+constraint, `PlacementRoute`, a `CASE` branch in `PlacementStore.consumeTicket`, and the broker's per-kind upstream
+table. Add another path family, such as `/hosts/{harness}`, as a `RouteFamily` with its own dispatcher route and an
+optional route check. A placement change updates `placement` and increments `placement_generation` in one transaction.
+
+Limitations: no production operation changes a placement yet, so `moved` has been exercised only by test-only
+generation changes, and clients do not reconnect on their own (stage 5). A move is noticed within about a second,
+or at once when the old placement closes. The broker is one local process with plain loopback WebSocket ingress; TLS,
+Azure resources, multi-replica routing, and container tunnels are not implemented, and restarting the broker or the
+shared worker disconnects clients. The broker can read the AHP traffic it forwards, except the sealed GitHub
+authentication. The configurator's hosting view does not show the broker yet. The demo host image gates were not
+rerun; its ticket-mode proxy path is covered by a unit test. This is not paid-model, two-account, or Azure evidence.
 
 ### Stage 2: shared-placement egress and remote MCP
 

@@ -18,6 +18,7 @@ network isolation than the implementation provides.
 | `agent-executor` | Polling slots, runner uid/workspace isolation, protocol validation, deadlines/cancellation, result validation | [Main](../src/agent-executor/src/main.ts), [attempt](../src/agent-executor/src/attempt.ts), [isolation](../src/agent-executor/src/isolation.ts) |
 | `agent-host` (opt-in, experimental) | Long-lived SDK owner, AHP transports, retained conversations/workspace, execution-grant renewal | [Supervisor](../src/agent-host/src/main.ts), [owner](../src/agent-host/src/owner.ts) |
 | `session-host` (local hybrid opt-in) | Shared in-process runtime, protected session provisioning, turn scheduling, provider-backed files, eviction and completion delivery | [Service](../src/session-host/src/service.ts), [scheduler](../src/session-host/src/scheduler.ts) |
+| `connection-broker` (local hybrid opt-in) | One stable WebSocket path per session, ticket consumption through the dispatcher, byte forwarding to the session's current placement, "moved" closes | [Broker](../src/connection-broker/src/broker.ts), [session routes](../src/connection-broker/src/sessions.ts), [placement contract](../contracts/src/placement.ts) |
 | `execution-controller` (local hybrid opt-in) | Durable allocation admission, operator-owned Docker lifecycle, orphan reconciliation and teardown | [Controller](../src/execution-controller/src/controller.ts), [allocation store](../src/job-store/src/allocations.ts) |
 | Runner | One SDK attempt with harness tools, skills, sub-agents, and permission handlers | [TypeScript](../src/harness-hosting/src/runner.ts), [Python](../execution-profiles/python-agent/runner.py) |
 | `inference-gateway` | Approved chat-completions route, capability checks, upstream identity, token-usage reporting | [Gateway](../src/inference-gateway/src/server.ts), [routes](../src/inference-gateway/src/routes.ts) |
@@ -79,21 +80,23 @@ this default batch-session behavior.
 
 ## Local hybrid hosting
 
-`Parameters:hybrid-hosting=true` adds a shared coordinator and execution controller while removing the
-always-on executor pool. Existing direct-container `agent-host` remains separately selectable.
-The local AppHost runs both new services as Node processes; a separately packaged Linux shared-worker
+`Parameters:hybrid-hosting=true` adds a shared coordinator, a connection broker, and an execution controller
+while removing the always-on executor pool. Existing direct-container `agent-host` remains separately selectable.
+The local AppHost runs these services as Node processes; a separately packaged Linux shared-worker
 image uses the same code and qualified native runtime. Neither arrangement creates a runtime process per user.
 
 ```mermaid
 flowchart LR
     CLI["Copilot CLI"] -->|"API principal"| API["agent-api"]
     API -->|"Protected provisioning"| Shared["session-host: one in-process owner"]
-    CLI -->|"One-use ticket + pinned key + GitHub account"| Shared
+    CLI -->|"One-use ticket + pinned key + GitHub account"| Broker["connection-broker"]
+    Broker -->|"Consume ticket, check placement"| Dispatcher["job-dispatcher"]
+    Broker -->|"Forward: broker key + activation epoch"| Shared
     Shared -->|"Session files, epochs, turns"| DB[("PostgreSQL")]
     Shared -->|"Model delegate_job: atomic child admission"| DB
     Controller["Operator Docker controller"] -->|"Allocation ledger"| DB
     Controller -->|"Create / reconcile / remove"| Child["One-shot Linux executor"]
-    Child -->|"Scoped claim and attempt reports"| Dispatcher["job-dispatcher"]
+    Child -->|"Scoped claim and attempt reports"| Dispatcher
     Dispatcher --> DB
     Shared -->|"Reserved turn capability"| Gateway["inference-gateway"]
     Child -->|"Reserved job capability"| Gateway
@@ -104,9 +107,45 @@ flowchart LR
 
 The shared worker owns one SDK connection, a provider namespace and storage lease per active conversation,
 and a small account/workspace-scoped AHP listener per resident session. Empty native directories anchor AHP
-paths; content/history stays in PostgreSQL. Lease epochs fence writes and grants. Tickets expose only the
-protected proxy, not private listeners. FIFO turn admission limits global and principal concurrency, with
-one active turn per conversation. Idle eviction retains the conversation; interrupted work is not automatically replayed.
+paths; content/history stays in PostgreSQL. Lease epochs fence writes and grants. FIFO turn admission limits
+global and principal concurrency, with one active turn per conversation. Idle eviction retains the conversation;
+interrupted work is not automatically replayed.
+
+Clients attach only through the connection broker, which gives each session one stable path
+(`/sessions/{id}`). The API asks the shared worker to activate the session and issue a one-use ticket, then
+returns the broker's URL. The broker consumes that ticket through an internal dispatcher route and forwards
+bytes to the session's current placement with its own service key and the activation epoch the ticket was
+issued for. The shared worker accepts only such forwarded connections and maps them to the resident session's
+private listener. The broker does not interpret AHP. Because it is a separate process, restarting `agent-api`,
+as the configurator's **Reload harnesses** does, leaves attached CLI connections up.
+
+```mermaid
+sequenceDiagram
+    participant C as Copilot CLI
+    participant A as agent-api
+    participant S as session-host
+    participant B as connection-broker
+    participant D as job-dispatcher
+    C->>A: POST /v1/sessions/{id}/connection
+    A->>S: Activate the session, issue a ticket
+    A-->>C: Broker URL, one-use ticket, server key
+    C->>B: WebSocket /sessions/{id}?tkn=ticket
+    B->>D: Consume the ticket
+    D-->>B: Placement shared, generation, epoch
+    B->>S: Forward with the broker key and epoch
+    S-->>C: AHP through the broker
+    loop While attached
+        B->>D: Check current placements
+    end
+    B--xC: Close 4301 "moved" if the placement changed
+```
+
+Each session records a placement in the ledger: its kind (only `shared` exists today) and a generation that
+increases on every change ([contract](../contracts/src/placement.ts)). Tickets bind to the generation. When it
+changes, the broker ends attached clients with WebSocket close code `4301` (`moved`) after any frame in flight,
+and an upstream close is replaced with `moved` when the placement changed underneath it. No current code path
+changes a placement; promotion and session containers are proposed in the
+[hosting modes plan](HOSTING-MODES-PLAN.md#4-proposed-topology).
 
 Delegation records, child jobs, input snapshots and aggregate budget reservations commit atomically.
 SDK tool-call identity deduplicates acceptance. Completion-driven turns cannot create nested delegations.

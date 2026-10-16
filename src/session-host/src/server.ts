@@ -1,8 +1,8 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import { SharedConnectionRequest, SharedSessionClosure, SharedSessionCreation } from "@copilot-agent/contracts";
+import { PLACEMENT_EPOCH_HEADER, SharedConnectionRequest, SharedSessionClosure, SharedSessionCreation } from "@copilot-agent/contracts";
 import { StoreError } from "@copilot-agent/job-store";
-import { createService, HttpError, registerAhpProxy, requireInternalKey } from "@copilot-agent/service-defaults";
+import { createService, HttpError, registerAhpProxy, requireInternalKey, singleHeader } from "@copilot-agent/service-defaults";
 import { SharedSessionService } from "./service.js";
 
 const Principal = z.string().regex(/^[A-Za-z0-9._@-]{1,128}$/);
@@ -14,11 +14,19 @@ const Control = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("close"), principal: Principal, id: z.string().uuid(), request: SharedSessionClosure }).strict(),
 ]);
 
-export function buildSharedHost(service: SharedSessionService, key: string): FastifyInstance {
+/**
+ * The shared worker's control API (`key`) and brokered AHP ingress. Clients reach sessions only through the connection
+ * broker, which consumes their tickets and forwards with `brokerKey`; this service accepts no public ticket.
+ */
+export function buildSharedHost(service: SharedSessionService, key: string, brokerKey: string): FastifyInstance {
+  if (brokerKey.length < 32 || brokerKey === key) throw new Error("The shared worker needs a distinct connection-broker key of at least 32 characters.");
   const app = createService({ name: "session-host", bodyLimit: 64 * 1024, ready: async () => {
     if (!service.healthy) throw new Error("The shared session owner is not ready.");
   } });
-  registerAhpProxy(app, { ready: () => service.healthy, resolve: (path, ticket) => service.resolveConnection(path, ticket) });
+  registerAhpProxy(app, {
+    ready: () => service.healthy, forwardedBy: brokerKey,
+    resolve: (path, headers) => service.resolveForwarded(path, singleHeader(headers, PLACEMENT_EPOCH_HEADER)),
+  });
   app.post("/internal/shared", async (request, reply) => {
     requireInternalKey(request, key);
     reply.header("cache-control", "no-store");

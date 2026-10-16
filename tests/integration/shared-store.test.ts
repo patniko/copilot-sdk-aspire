@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, inject, it } from "vitest";
 import { SharedSessionDefinition, SharedSessionLimits, SharedWorkerLimits } from "@copilot-agent/contracts";
-import { migrate, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
+import { migrate, PlacementStore, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
 
 let pool: pg.Pool;
 let store: SharedStore;
@@ -44,27 +44,29 @@ describe("durable shared session admission", () => {
     expect(await store.close(principal, session.id, false)).toBe(true);
   });
 
-  it("consumes one-use tickets atomically and fences account, expiry, and replacement epochs", async () => {
+  it("issues activation-bound tickets that only the placement store consumes, once", async () => {
+    const placements = new PlacementStore(pool);
     const { lease, principal, session } = await create();
+    await expect(store.issueTicket(principal, session.id)).rejects.toMatchObject({ code: "not_found" });
     await store.publish(lease, serverKey);
     expect((await store.get(principal, session.id))?.view.online).toBe(true);
+    await expect(store.issueTicket("someone-else", session.id)).rejects.toMatchObject({ code: "not_found" });
     const first = await store.issueTicket(principal, session.id);
     expect(first.serverKey).toEqual(serverKey);
-    expect(await store.consumeTicket({ ...lease, principal: "someone-else" }, first.token)).toBe(false);
-    expect((await Promise.all(Array.from({ length: 4 }, () => store.consumeTicket(lease, first.token)))).filter(Boolean)).toHaveLength(1);
-    const expired = await store.issueTicket(principal, session.id);
-    await pool.query("UPDATE shared_connection_tickets SET expires_at=clock_timestamp()-interval '1 second' WHERE session_id=$1", [session.id]);
-    expect(await store.consumeTicket(lease, expired.token)).toBe(false);
+    expect((await Promise.all(Array.from({ length: 4 }, () => placements.consumeTicket(session.id, first.token)))).filter(Boolean)).toHaveLength(1);
+    for (let index = 0; index < 16; index++) await store.issueTicket(principal, session.id);
+    await expect(store.issueTicket(principal, session.id)).rejects.toMatchObject({ code: "quota_exceeded" });
+    await pool.query("DELETE FROM shared_connection_tickets WHERE session_id=$1", [session.id]);
     const stale = await store.issueTicket(principal, session.id);
     await files.release(lease);
     const replacement = await files.acquire(session.id, principal, "replacement");
-    expect(await store.consumeTicket(lease, stale.token)).toBe(false);
-    expect(await store.consumeTicket(replacement, stale.token)).toBe(false);
+    expect(await placements.consumeTicket(session.id, stale.token)).toBeUndefined();
     await expect(store.issueTicket(principal, session.id)).rejects.toMatchObject({ code: "not_found" });
     await store.publish(replacement, serverKey);
     const last = await store.issueTicket(principal, session.id);
     await store.close(principal, session.id, false);
-    expect(await store.consumeTicket(replacement, last.token)).toBe(false);
+    expect(await placements.consumeTicket(session.id, last.token)).toBeUndefined();
+    await expect(store.issueTicket(principal, session.id)).rejects.toMatchObject({ code: "not_found" });
   });
 
   it("bounds active turns globally and per principal without blocking other principals behind a busy one", async () => {
