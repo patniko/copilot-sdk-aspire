@@ -10,4 +10,11 @@
   <ItemGroup>
     <PackageReference Include="Aspire.Hosting.Azure.AppContainers" Version="13.6.0" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- MessagePack 2.5.302 arrives transitively through Aspire.Hosting 13.6.0 (StreamJsonRpc) and has a moderate
+         denial-of-service advisory with no patched release yet. The local AppHost does not deserialize untrusted
+         MessagePack data. Remove this suppression when an Aspire update brings a fixed MessagePack; every other
+         advisory still fails the build. -->
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-qhrr-8q5h-9q3h" />
+  </ItemGroup>
 </Project>
