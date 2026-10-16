@@ -209,7 +209,7 @@ export function HarnessesView() {
         actions={
           <>
             <button type="button" className="btn-secondary" onClick={() => setDialog("import")}>
-              <UploadIcon size={16} /> Import plan
+              <UploadIcon size={16} /> Import
             </button>
             <button type="button" className="btn-primary" onClick={() => setDialog("new")}>
               <Plus /> New harness

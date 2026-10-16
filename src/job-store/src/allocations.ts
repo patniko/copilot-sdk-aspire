@@ -10,8 +10,11 @@ import { JobStore, StoreError } from "./store.js";
 export interface ControllerLease { namespace: string; owner: string }
 export type AllocationState = "starting" | "running" | "retiring" | "retired";
 
-/** A volume an allocation mounts. `sessionId` owns the volume: the allocation's own session, or a coordinator session for `shared`. */
-export interface VolumeRequirement { purpose: "session" | "shared"; sessionId: string; target: string; readOnly: boolean }
+/**
+ * A volume an allocation mounts. `sessionId` owns the volume: the allocation's own session, a coordinator session for
+ * `shared`, or the worker for a worker's private `worker` volume.
+ */
+export interface VolumeRequirement { purpose: "session" | "shared" | "worker"; sessionId: string; target: string; readOnly: boolean }
 export interface BoundVolume extends VolumeRequirement { name: string }
 
 interface AllocationCommon {
@@ -37,13 +40,16 @@ export interface JobAllocation extends AllocationCommon {
   profile: string;
 }
 /**
- * A resumable allocation bound to one application session. Requested unbound (no image, settings, credential, or
- * volume names); the controller binds those before it creates the container. Stopping it retains its volumes.
+ * A resumable allocation bound to one application session, or to one orchestrator worker (`purpose: "worker"`, whose
+ * `sessionId` is its coordinator's session). Requested unbound (no image, settings, credential, or volume names); the
+ * controller binds those before it creates the container. Stopping it retains its volumes.
  */
 export interface SessionAllocation extends AllocationCommon {
   kind: "session";
   sessionId: string;
-  purpose: "session";
+  purpose: "session" | "worker";
+  /** The worker the allocation runs, for `purpose: "worker"`. */
+  workerId?: string;
   size: string;
   resources: ContainerSize;
   idleSeconds: number;
@@ -55,15 +61,13 @@ export interface SessionAllocation extends AllocationCommon {
   readyAt?: string;
   heartbeatAt?: string;
   activityAt?: string;
+  /** The session closed, or for a worker: its coordinator closed or the worker stopped. */
   sessionClosed: boolean;
 }
 export type ExecutionAllocation = JobAllocation | SessionAllocation;
 
-/** A general allocation request: one session, its purpose, a size from the operator catalog, and the volumes it mounts. */
-export interface AllocationRequest {
-  sessionId: string;
+interface AllocationRequestCommon {
   principal: string;
-  purpose: "session";
   size: string;
   resources: ContainerSize;
   volumes: VolumeRequirement[];
@@ -71,21 +75,32 @@ export interface AllocationRequest {
   startupSeconds: number;
   maxLifetimeSeconds: number;
 }
+/** A general allocation request: one session or worker, its purpose, a size from the operator catalog, and the volumes it mounts. */
+export type AllocationRequest = AllocationRequestCommon & (
+  | { purpose: "session"; sessionId: string }
+  | { purpose: "worker"; workerId: string }
+);
 export type AuthenticatedAllocation =
   | { kind: "job"; id: string; jobId: string; attemptId?: string }
-  | { kind: "session"; id: string; sessionId: string; principal: string };
+  | { kind: "session"; id: string; sessionId: string; principal: string }
+  | { kind: "worker"; id: string; workerId: string; sessionId: string; principal: string };
 
 interface AllocationRow {
   id: string; kind: "job" | "session"; job_id: string | null; session_id: string | null; principal: string; namespace: string | null;
   image: string | null; settings: ExecutionContainerSettings | null; state: AllocationState; attempt_id: string | null;
   attempt_state: string | null; job_state: JobState | null; profile: string | null; container_id: string | null;
-  start_attempts: number; startup_until: Date; expires_at: Date; purpose: "session" | null; size: string | null;
+  start_attempts: number; startup_until: Date; expires_at: Date; purpose: "session" | "worker" | null; size: string | null;
   resources: ContainerSize | null; volumes: VolumeRequirement[] | BoundVolume[]; idle_seconds: number | null;
   ingress: { host: string; port: number } | null; server_key: SharedServerKey | null; ready_at: Date | null;
   heartbeat_at: Date | null; activity_at: Date | null; session_closed: boolean | null;
+  worker_id: string | null; worker_session_id: string | null;
 }
-const SELECT = `SELECT e.*,j.state AS job_state,j.profile,a.status AS attempt_state,s.closed AS session_closed FROM execution_allocations e
-  LEFT JOIN jobs j ON j.id=e.job_id LEFT JOIN attempts a ON a.id=e.attempt_id LEFT JOIN shared_sessions s ON s.id=e.session_id`;
+const SELECT = `SELECT e.*,j.state AS job_state,j.profile,a.status AS attempt_state,w.session_id AS worker_session_id,
+  (s.closed OR COALESCE(w.state='stopped',false)) AS session_closed FROM execution_allocations e
+  LEFT JOIN jobs j ON j.id=e.job_id LEFT JOIN attempts a ON a.id=e.attempt_id LEFT JOIN session_workers w ON w.id=e.worker_id
+  LEFT JOIN shared_sessions s ON s.id=COALESCE(e.session_id,w.session_id)`;
+/** The application session an allocation serves: its own, or its worker's coordinator. */
+const SUBJECT_SESSION = "COALESCE(e.session_id,(SELECT w.session_id FROM session_workers w WHERE w.id=e.worker_id))";
 const VOLUME_TARGET = /^\/[a-z0-9][a-z0-9/_-]{0,99}$/;
 
 /** Admission counts physical allocations until confirmed removal, including ambiguous starts and failed teardown. */
@@ -163,17 +178,24 @@ export class AllocationStore {
   async request(request: AllocationRequest, limits: SharedWorkerLimits, db?: pg.PoolClient): Promise<SessionAllocation> {
     SharedWorkerLimits.parse(limits);
     ContainerSize.parse(request.resources);
-    if (request.purpose !== "session" || !request.size || request.volumes.length > 4
-      || request.volumes.some((volume) => !VOLUME_TARGET.test(volume.target) || !["session", "shared"].includes(volume.purpose))
+    if ((request.purpose !== "session" && request.purpose !== "worker") || !request.size || request.volumes.length > 4
+      || request.volumes.some((volume) => !VOLUME_TARGET.test(volume.target) || !["session", "shared", "worker"].includes(volume.purpose))
       || new Set(request.volumes.map((volume) => volume.target)).size !== request.volumes.length
       || ![request.idleSeconds, request.startupSeconds, request.maxLifetimeSeconds].every((value) => Number.isSafeInteger(value) && value > 0)) {
       throw new StoreError("invalid_request", "Invalid session allocation request.");
     }
     const admit = async (client: pg.PoolClient): Promise<SessionAllocation> => {
-      const session = (await client.query<{ principal: string; closed: boolean }>(
-        "SELECT principal,closed FROM shared_sessions WHERE id=$1 FOR UPDATE", [request.sessionId])).rows[0];
-      if (!session || session.principal !== request.principal || session.closed) throw new StoreError("not_found", "The session is unavailable.");
-      const existing = (await client.query<AllocationRow>(`${SELECT} WHERE e.session_id=$1 AND e.state<>'retired'`, [request.sessionId])).rows[0];
+      // A worker's subject is the worker itself; it is unavailable once its coordinator closed or it stopped.
+      const subject = request.purpose === "worker"
+        ? (await client.query<{ principal: string; closed: boolean }>(
+          `SELECT w.principal,(s.closed OR w.state='stopped') AS closed FROM session_workers w JOIN shared_sessions s ON s.id=w.session_id
+           WHERE w.id=$1 FOR UPDATE OF w`, [request.workerId])).rows[0]
+        : (await client.query<{ principal: string; closed: boolean }>(
+          "SELECT principal,closed FROM shared_sessions WHERE id=$1 FOR UPDATE", [request.sessionId])).rows[0];
+      if (!subject || subject.principal !== request.principal || subject.closed) throw new StoreError("not_found", "The session is unavailable.");
+      const existing = (await client.query<AllocationRow>(
+        `${SELECT} WHERE ${request.purpose === "worker" ? "e.worker_id" : "e.session_id"}=$1 AND e.state<>'retired'`,
+        [request.purpose === "worker" ? request.workerId : request.sessionId])).rows[0];
       if (existing) return allocation(existing) as SessionAllocation;
       const counts = (await client.query<{ total: number; own: number }>(
         `SELECT count(*)::int AS total,count(*) FILTER (WHERE principal=$1)::int AS own
@@ -186,9 +208,10 @@ export class AllocationStore {
       if (released.rowCount) throw new StoreError("invalid_state", "A requested volume has been released.");
       const id = randomUUID();
       await client.query(
-        `INSERT INTO execution_allocations(id,kind,session_id,principal,purpose,size,resources,volumes,idle_seconds,state,startup_until,expires_at)
-         VALUES($1,'session',$2,$3,$4,$5,$6,$7,$8,'starting',clock_timestamp()+$9*interval '1 second',clock_timestamp()+$10*interval '1 second')`,
-        [id, request.sessionId, request.principal, request.purpose, request.size, JSON.stringify(request.resources),
+        `INSERT INTO execution_allocations(id,kind,session_id,worker_id,principal,purpose,size,resources,volumes,idle_seconds,state,startup_until,expires_at)
+         VALUES($1,'session',$2,$3,$4,$5,$6,$7,$8,$9,'starting',clock_timestamp()+$10*interval '1 second',clock_timestamp()+$11*interval '1 second')`,
+        [id, request.purpose === "session" ? request.sessionId : null, request.purpose === "worker" ? request.workerId : null,
+          request.principal, request.purpose, request.size, JSON.stringify(request.resources),
           JSON.stringify(request.volumes), request.idleSeconds, request.startupSeconds, request.maxLifetimeSeconds]);
       return allocation((await client.query<AllocationRow>(`${SELECT} WHERE e.id=$1`, [id])).rows[0]!) as SessionAllocation;
     };
@@ -210,7 +233,9 @@ export class AllocationStore {
       const bound: BoundVolume[] = [];
       for (const volume of row.volumes as VolumeRequirement[]) {
         const name = `hybrid-${lease.namespace}-${volume.purpose}-${volume.sessionId}`;
-        const owner = (await db.query<{ principal: string }>("SELECT principal FROM shared_sessions WHERE id=$1", [volume.sessionId])).rows[0];
+        const owner = (await db.query<{ principal: string }>(volume.purpose === "worker"
+          ? "SELECT principal FROM session_workers WHERE id=$1"
+          : "SELECT principal FROM shared_sessions WHERE id=$1", [volume.sessionId])).rows[0];
         if (!owner || owner.principal !== row.principal) throw new StoreError("invalid_state", "A volume's session belongs to another principal.");
         const record = (await db.query<{ name: string; released_at: Date | null }>(
           `INSERT INTO execution_volumes(name,namespace,session_id,purpose,principal) VALUES($1,$2,$3,$4,$5)
@@ -309,12 +334,17 @@ export class AllocationStore {
   }
 
   async authenticate(token: string): Promise<AuthenticatedAllocation | undefined> {
-    const row = (await this.pool.query<{ id: string; kind: "job" | "session"; job_id: string | null; attempt_id: string | null; session_id: string | null; principal: string }>(
-      `SELECT id,kind,job_id,attempt_id,session_id,principal FROM execution_allocations WHERE token_digest=$1
-       AND state IN ('starting','running') AND expires_at>clock_timestamp()`, [digest(token)])).rows[0];
+    const row = (await this.pool.query<{
+      id: string; kind: "job" | "session"; job_id: string | null; attempt_id: string | null; session_id: string | null; principal: string;
+      worker_id: string | null; worker_session_id: string | null;
+    }>(
+      `SELECT e.id,e.kind,e.job_id,e.attempt_id,e.session_id,e.principal,e.worker_id,w.session_id AS worker_session_id
+       FROM execution_allocations e LEFT JOIN session_workers w ON w.id=e.worker_id WHERE e.token_digest=$1
+       AND e.state IN ('starting','running') AND e.expires_at>clock_timestamp()`, [digest(token)])).rows[0];
     if (!row) return undefined;
-    return row.kind === "job"
-      ? { kind: "job", id: row.id, jobId: row.job_id!, ...(row.attempt_id ? { attemptId: row.attempt_id } : {}) }
+    if (row.kind === "job") return { kind: "job", id: row.id, jobId: row.job_id!, ...(row.attempt_id ? { attemptId: row.attempt_id } : {}) };
+    return row.worker_id
+      ? { kind: "worker", id: row.id, workerId: row.worker_id, sessionId: row.worker_session_id!, principal: row.principal }
       : { kind: "session", id: row.id, sessionId: row.session_id!, principal: row.principal };
   }
 
@@ -330,10 +360,11 @@ export class AllocationStore {
   async ready(allocationId: string, serverKey: SharedServerKey): Promise<void> {
     const key = SharedServerKey.parse(serverKey);
     await this.shared.transaction(async (db) => {
-      const row = (await db.query<{ session_id: string; server_key: SharedServerKey | null }>(
-        `SELECT e.session_id,e.server_key FROM execution_allocations e JOIN shared_sessions s ON s.id=e.session_id
+      const row = (await db.query<{ session_id: string; worker_id: string | null; server_key: SharedServerKey | null }>(
+        `SELECT s.id AS session_id,e.worker_id,e.server_key FROM execution_allocations e JOIN shared_sessions s ON s.id=${SUBJECT_SESSION}
          WHERE e.id=$1 AND e.kind='session' AND e.state IN ('starting','running') AND e.expires_at>clock_timestamp()
-           AND NOT s.closed FOR UPDATE OF e`, [allocationId])).rows[0];
+           AND NOT s.closed AND NOT EXISTS (SELECT 1 FROM session_workers w WHERE w.id=e.worker_id AND w.state='stopped')
+         FOR UPDATE OF e`, [allocationId])).rows[0];
       if (!row) throw new StoreError("not_found", "The session allocation is not active.");
       if (row.server_key) {
         if (JSON.stringify(SharedServerKey.parse(row.server_key)) !== JSON.stringify(key)) {
@@ -344,22 +375,26 @@ export class AllocationStore {
       await db.query(
         `UPDATE execution_allocations SET server_key=$2,ready_at=clock_timestamp(),heartbeat_at=clock_timestamp(),
          activity_at=clock_timestamp() WHERE id=$1`, [allocationId, JSON.stringify(key)]);
-      await db.query("UPDATE session_containers SET activations=activations+1 WHERE session_id=$1", [row.session_id]);
+      if (!row.worker_id) await db.query("UPDATE session_containers SET activations=activations+1 WHERE session_id=$1", [row.session_id]);
       await db.query("UPDATE shared_sessions SET last_activity_at=clock_timestamp() WHERE id=$1", [row.session_id]);
     });
   }
 
-  /** Records liveness and activity. Tells the container to stop when it is retiring, expired, or its session closed. */
+  /**
+   * Records liveness and activity. Tells the container to stop when it is retiring, expired, or its session closed; a
+   * worker's container also stops when its coordinator closed or the worker stopped.
+   */
   async containerHeartbeat(allocationId: string, report: SessionContainerHeartbeat): Promise<{ stop: boolean }> {
     const row = (await this.pool.query<{ stop: boolean }>(
       `WITH current AS (
-         SELECT e.id,e.session_id,(e.state='retiring' OR e.expires_at<=clock_timestamp() OR s.closed) AS stop
-         FROM execution_allocations e JOIN shared_sessions s ON s.id=e.session_id
+         SELECT e.id,s.id AS session_id,(e.state='retiring' OR e.expires_at<=clock_timestamp() OR s.closed
+           OR EXISTS (SELECT 1 FROM session_workers w WHERE w.id=e.worker_id AND w.state='stopped')) AS stop
+         FROM execution_allocations e JOIN shared_sessions s ON s.id=${SUBJECT_SESSION}
          WHERE e.id=$1 AND e.kind='session' AND e.state<>'retired' AND e.ready_at IS NOT NULL
        ), touched AS (
          UPDATE execution_allocations e SET heartbeat_at=clock_timestamp(),
            activity_at=CASE WHEN $2 OR $3 THEN clock_timestamp() ELSE e.activity_at END
-         FROM current c WHERE e.id=c.id RETURNING e.session_id
+         FROM current c WHERE e.id=c.id RETURNING c.session_id
        ), session AS (
          UPDATE shared_sessions s SET last_activity_at=clock_timestamp() FROM touched t WHERE s.id=t.session_id AND ($2 OR $3)
        )
@@ -381,7 +416,8 @@ function allocation(row: AllocationRow): ExecutionAllocation {
       ...(row.attempt_id ? { attemptId: row.attempt_id } : {}), ...(row.attempt_state ? { attemptState: row.attempt_state } : {}) };
   }
   return {
-    ...common, kind: "session", sessionId: row.session_id!, purpose: row.purpose!, size: row.size!,
+    ...common, kind: "session", sessionId: row.session_id ?? row.worker_session_id!, purpose: row.purpose!, size: row.size!,
+    ...(row.worker_id ? { workerId: row.worker_id } : {}),
     resources: ContainerSize.parse(row.resources), idleSeconds: row.idle_seconds!, volumes: row.volumes, sessionClosed: row.session_closed ?? true,
     ...(row.namespace ? { namespace: row.namespace } : {}), ...(row.image ? { image: row.image } : {}),
     ...(row.settings ? { settings: ExecutionContainerSettings.parse(row.settings) } : {}),
