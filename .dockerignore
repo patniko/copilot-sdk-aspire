@@ -12,8 +12,10 @@ artifacts
 docs
 tests
 !tests/package.json
-# Local SDK prototype; existing production image stages do not deploy this package.
+# Local SDK prototypes; existing production image stages do not deploy these packages. Their own Dockerfiles
+# (deploy/SessionHost.Dockerfile, deploy/SessionContainer.Dockerfile) use dedicated ignore files.
 src/session-host
+src/session-container
 NuGet.config
 *.md
 !.copilot-agent-workspace/harnesses/**/*.md

@@ -8,7 +8,7 @@ network isolation than the implementation provides.
 
 ## System overview
 
-![Default jobs and optional hosts, local hybrid services, and separate local configurator authoring through GitHub Copilot](images/architecture.svg)
+![Default jobs and optional hosts, local hybrid services including session containers, and separate local configurator authoring through GitHub Copilot](images/architecture.svg)
 
 | Component | Owns | Source |
 | --- | --- | --- |
@@ -18,7 +18,8 @@ network isolation than the implementation provides.
 | `agent-executor` | Polling slots, runner uid/workspace isolation, protocol validation, deadlines/cancellation, result validation | [Main](../src/agent-executor/src/main.ts), [attempt](../src/agent-executor/src/attempt.ts), [isolation](../src/agent-executor/src/isolation.ts) |
 | `agent-host` (opt-in, experimental) | Long-lived SDK owner, AHP transports, retained conversations/workspace, execution-grant renewal | [Supervisor](../src/agent-host/src/main.ts), [owner](../src/agent-host/src/owner.ts) |
 | `session-host` (local hybrid opt-in) | Shared in-process runtime, protected session provisioning, turn scheduling, provider-backed files, eviction and completion delivery | [Service](../src/session-host/src/service.ts), [scheduler](../src/session-host/src/scheduler.ts) |
-| `execution-controller` (local hybrid opt-in) | Durable allocation admission, operator-owned Docker lifecycle, orphan reconciliation and teardown | [Controller](../src/execution-controller/src/controller.ts), [allocation store](../src/job-store/src/allocations.ts) |
+| `execution-controller` (local hybrid opt-in) | Durable allocation admission, operator-owned Docker lifecycle for one-shot job and resumable session containers, volumes, orphan reconciliation and teardown | [Controller](../src/execution-controller/src/controller.ts), [allocation store](../src/job-store/src/allocations.ts) |
+| Session container (local hybrid opt-in) | One isolated conversation session per container: root supervisor with an allocation credential, unprivileged agent loop on a retained volume, AHP ingress | [Supervisor](../src/session-container/src/supervisor.ts), [owner](../src/session-container/src/owner.ts) |
 | Runner | One SDK attempt with harness tools, skills, sub-agents, and permission handlers | [TypeScript](../src/harness-hosting/src/runner.ts), [Python](../execution-profiles/python-agent/runner.py) |
 | `inference-gateway` | Approved chat-completions route, capability checks, upstream identity, token-usage reporting | [Gateway](../src/inference-gateway/src/server.ts), [routes](../src/inference-gateway/src/routes.ts) |
 | Configurator | Customer-workspace authoring, optional server-side Copilot drafting, plus platform build/run/deploy controls; not part of the deployed request path | [Companion server](../configurator/server/app.ts), [draft service](../configurator/server/authoring.ts) |
@@ -126,6 +127,74 @@ replaying a model turn. Closing prevents continuations and optionally requests c
 This is local demonstrator evidence, not hostile multi-customer isolation, transparent failover, or exact
 spending enforcement. See [Security](SECURITY.md#local-hybrid-boundaries), [API](API.md#experimental-shared-conversations),
 and [local deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment).
+
+### Session containers
+
+With `Parameters:session-containers=true`, a session created through `POST /v1/sessions` with a conversation
+harness whose hosting mode is `isolated` (the default) runs in its own resumable container, started by the same
+controller. This is per-session mode 1 of the [hosting modes plan](HOSTING-MODES-PLAN.md#71-mode-1-isolated-container);
+other modes still need their hosts and are rejected with the [hosting errors](API.md#errors-and-retry-decisions).
+
+```mermaid
+flowchart LR
+    CLI["Copilot CLI"] -->|"1. create / connect"| API["agent-api"]
+    API -->|"admission, allocation request,<br/>one-use ticket"| DB[("PostgreSQL<br/>sessions, allocations,<br/>volumes, grants")]
+    Controller["Execution controller"] -->|"bind image, credential,<br/>volume; reconcile"| DB
+    Controller -->|"create / stop / remove"| Box
+    subgraph Box["Session container"]
+        Supervisor["Supervisor (root)<br/>allocation credential,<br/>ingress :8080"]
+        Owner["Owner (uid 10001)<br/>runtime + harness tools,<br/>AHP on loopback"]
+        Supervisor -->|"IPC: start, grants"| Owner
+    end
+    Box --- Volume[("Named volume /data<br/>history + workspace")]
+    CLI -->|"2. direct WSS: ticket,<br/>pinned key, GitHub auth"| Supervisor
+    Supervisor -->|"spec, readiness, heartbeats,<br/>ticket check, grants"| Dispatcher["job-dispatcher"]
+    Dispatcher --> DB
+    Owner -->|"session capability"| Gateway["inference-gateway"]
+    Gateway --> Foundry["Foundry"]
+```
+
+Connecting requests a session allocation if the session has none: one transaction checks the deployment and
+per-principal container limits, which job allocations share, and records an unbound row. The controller binds it
+to the immutable session image, an HMAC-derived allocation credential and ingress credential, and the session's
+named volume (labeled with the controller namespace), then creates the container with the size the effective
+policy's catalog resolved at creation, `no-new-privileges`, and only the capabilities needed to start the
+unprivileged owner. The supervisor fetches its session's admitted harness snapshot, starts the owner, reads the
+AHP server key over loopback, and reports readiness. The API then issues a 60-second one-use ticket bound to that
+allocation and the session's placement generation, and returns the container's loopback-published ingress with
+the server key. The ingress accepts that ticket once, or the per-allocation credential from the connection broker.
+
+The owner runs the agent loop in-process with the locally built runtime, using
+`buildSessionOptions(..., "conversation")`, packaged tool bindings, skills, sub-agents, and the hosted
+permission policy, on the real filesystem under `/data/execution`. The application provisions the session: the
+first allocation creates it, later allocations resume it from the volume, and the AHP host publishes it for the
+expected GitHub account. Inference uses two-minute session grants fenced by the allocation, and usage is charged
+once per gateway request to the session budget.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Dormant: create session
+    Dormant --> Starting: connect, capacity admitted
+    Starting --> Running: listener ready
+    Starting --> Dormant: exited or startup limit
+    Running --> Stopping: idle, lifetime, exit, or stale heartbeat
+    Stopping --> Dormant: container removed, volume retained
+    Dormant --> Closed: close
+    Starting --> Closed: close
+    Running --> Closed: close
+    Closed --> [*]
+```
+
+Idle means no turn, session event, or new connection for the session's idle period; an attached but silent CLI is
+disconnected, as with shared eviction. Stopping is graceful so the runtime flushes its history before removal.
+Interrupted turns are not replayed. A replacement controller adopts running containers, removes labeled
+containers without a ledger allocation, and retires allocations whose container vanished. Volumes are never
+deleted automatically: closing marks them released for operator retention, and unknown labeled volumes are only
+reported.
+
+Locally the container's ingress is published on host loopback and the CLI connects to it directly. The ledger
+already routes the `container` placement for the connection broker; the broker's container upstream and the
+Azure direction (an outbound tunnel from the container) are not implemented.
 
 ## Optional demo agent host
 

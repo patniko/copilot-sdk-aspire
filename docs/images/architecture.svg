@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1590" viewBox="0 0 1280 1590" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1715" viewBox="0 0 1280 1715" role="img" aria-labelledby="title description">
   <title id="title">Copilot SDK and Aspire service architecture</title>
-  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The default executor pool runs unprivileged SDK runners using the inference gateway. The optional direct container host remains separate. Experimental local hybrid mode adds protected CLI provisioning and a shared in-process coordinator with PostgreSQL session files; an operator-owned Docker controller starts one-shot execution containers and durable completion returns results to the coordinator. Separately, the local configurator can send a description and catalog through a request-owned SDK to GitHub Copilot using server-side GitHub authentication; configuration returns to the unsaved editor and code proposals are never installed. Azure hybrid and two-real-account qualification remain open. Outbound network isolation is not enforced.</desc>
+  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The default executor pool runs unprivileged SDK runners using the inference gateway. The optional direct container host remains separate. Experimental local hybrid mode adds protected CLI provisioning and a shared in-process coordinator with PostgreSQL session files; an operator-owned Docker controller starts one-shot execution containers and durable completion returns results to the coordinator. It also starts one resumable session container per isolated conversation session, which the CLI reaches over direct WSS with a one-use ticket; the container keeps only an allocation-scoped credential, stops when idle, and resumes from its retained volume. Separately, the local configurator can send a description and catalog through a request-owned SDK to GitHub Copilot using server-side GitHub authentication; configuration returns to the unsaved editor and code proposals are never installed. Azure hybrid and two-real-account qualification remain open. Outbound network isolation is not enforced.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#576574"/>
@@ -15,7 +15,7 @@
       .edge { fill: none; stroke: #576574; stroke-width: 2; marker-end: url(#arrow); }
     </style>
   </defs>
-  <rect width="1280" height="1590" fill="#ffffff"/>
+  <rect width="1280" height="1715" fill="#ffffff"/>
   <text x="32" y="42" class="title">Batch jobs and optional hosted conversations</text>
   <text x="32" y="70" class="body">Current implementation | service responsibilities and credential boundaries</text>
 
@@ -107,8 +107,8 @@
   <text x="1060" y="733" class="label" text-anchor="middle">native: Copilot inference</text>
   <text x="44" y="919" class="small">Native mode uses Copilot billing/permissions. Managed mode needs runtime qualification. Neither is per-customer isolation.</text>
 
-  <rect x="24" y="960" width="1231" height="275" rx="12" fill="#f6f8fa" stroke="#8250df"/>
-  <text x="44" y="991" class="heading">Experimental local hybrid mode: shared conversation, on-demand execution</text>
+  <rect x="24" y="960" width="1231" height="400" rx="12" fill="#f6f8fa" stroke="#8250df"/>
+  <text x="44" y="991" class="heading">Experimental local hybrid mode: shared conversation, on-demand execution, session containers</text>
   <rect x="44" y="1020" width="240" height="96" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
   <text x="164" y="1048" class="heading" text-anchor="middle">CLI + agent-api</text>
   <text x="164" y="1073" class="body" text-anchor="middle">Principal-bound provisioning</text>
@@ -128,30 +128,39 @@
   <path d="M 284 1068 H 334" class="edge"/>
   <path d="M 594 1068 H 644" class="edge"/>
   <path d="M 904 1068 H 954" class="edge"/>
-  <text x="774" y="1143" class="label" text-anchor="middle">Model delegates; admission commits before allocation.</text>
-  <path d="M 1092 1116 V 1176 H 464 V 1116" class="edge"/>
-  <text x="785" y="1165" class="label" text-anchor="middle">Durable completion inbox + immutable artifact manifests</text>
-  <text x="44" y="1215" class="small">PostgreSQL owns state; the gateway owns inference credentials. No idle job pool. Azure and two-real-account gates remain open.</text>
+  <text x="660" y="1143" class="label" text-anchor="middle">Model delegates; admission commits before allocation.</text>
+  <path d="M 1200 1116 V 1176 H 464 V 1116" class="edge"/>
+  <text x="640" y="1199" class="label" text-anchor="middle">Durable completion inbox + immutable artifact manifests</text>
+  <rect x="644" y="1222" width="260" height="96" rx="10" fill="#fff4df" stroke="#b7791f"/>
+  <text x="774" y="1250" class="heading" text-anchor="middle">Session containers</text>
+  <text x="774" y="1275" class="body" text-anchor="middle">One isolated session each</text>
+  <text x="774" y="1299" class="body" text-anchor="middle">Retained volume; idle stop</text>
+  <path d="M 880 1116 V 1222" class="edge"/>
+  <path d="M 164 1116 V 1270 H 644" class="edge"/>
+  <text x="414" y="1260" class="label" text-anchor="middle">direct WSS: one-use ticket + pinned key</text>
+  <text x="924" y="1255" class="small">Allocation-scoped credential only:</text>
+  <text x="924" y="1275" class="small">own spec, readiness, tickets and</text>
+  <text x="924" y="1295" class="small">session inference grants</text>
+  <text x="44" y="1342" class="small">PostgreSQL owns state; the gateway owns inference credentials. No idle job pool. Azure and two-real-account gates remain open.</text>
+  <rect x="24" y="1385" width="1231" height="175" rx="12" fill="#f6f8fa" stroke="#3572b0"/>
+  <text x="44" y="1413" class="heading">Local assisted authoring: separate from deployed jobs and hosts</text>
+  <rect x="44" y="1430" width="240" height="80" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
+  <text x="164" y="1460" class="heading" text-anchor="middle">Configurator browser</text>
+  <text x="164" y="1486" class="body" text-anchor="middle">Description or manual form</text>
+  <rect x="454" y="1430" width="310" height="80" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
+  <text x="609" y="1460" class="heading" text-anchor="middle">Companion + request SDK</text>
+  <text x="609" y="1486" class="body" text-anchor="middle">No file/shell tools; validates drafts</text>
+  <rect x="979" y="1430" width="251" height="80" rx="10" fill="#e6f6ed" stroke="#22863a"/>
+  <text x="1104" y="1460" class="heading" text-anchor="middle">GitHub Copilot</text>
+  <text x="1104" y="1486" class="body" text-anchor="middle">Not Foundry job inference</text>
+  <path d="M 284 1470 H 454" class="edge"/>
+  <text x="369" y="1454" class="small" text-anchor="middle">local session token</text>
+  <path d="M 764 1470 H 979" class="edge"/>
+  <text x="871" y="1454" class="small" text-anchor="middle">server GitHub identity</text>
+  <text x="44" y="1540" class="small">Response: unsaved configuration for review, or inert tool-code JSON. No automatic saves, installations, or code execution.</text>
 
-  <rect x="24" y="1260" width="1231" height="175" rx="12" fill="#f6f8fa" stroke="#3572b0"/>
-  <text x="44" y="1288" class="heading">Local assisted authoring: separate from deployed jobs and hosts</text>
-  <rect x="44" y="1305" width="240" height="80" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
-  <text x="164" y="1335" class="heading" text-anchor="middle">Configurator browser</text>
-  <text x="164" y="1361" class="body" text-anchor="middle">Description or manual form</text>
-  <rect x="454" y="1305" width="310" height="80" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
-  <text x="609" y="1335" class="heading" text-anchor="middle">Companion + request SDK</text>
-  <text x="609" y="1361" class="body" text-anchor="middle">No file/shell tools; validates drafts</text>
-  <rect x="979" y="1305" width="251" height="80" rx="10" fill="#e6f6ed" stroke="#22863a"/>
-  <text x="1104" y="1335" class="heading" text-anchor="middle">GitHub Copilot</text>
-  <text x="1104" y="1361" class="body" text-anchor="middle">Not Foundry job inference</text>
-  <path d="M 284 1345 H 454" class="edge"/>
-  <text x="369" y="1329" class="small" text-anchor="middle">local session token</text>
-  <path d="M 764 1345 H 979" class="edge"/>
-  <text x="871" y="1329" class="small" text-anchor="middle">server GitHub identity</text>
-  <text x="44" y="1415" class="small">Response: unsaved configuration for review, or inert tool-code JSON. No automatic saves, installations, or code execution.</text>
-
-  <rect x="24" y="1460" width="1231" height="105" rx="12" fill="#fff4df" stroke="#b7791f"/>
-  <text x="44" y="1489" class="heading">Boundary limitation: outbound network access is not enforced.</text>
-  <text x="44" y="1517" class="body">Arrows show intended model paths, not a firewall. Batch runners have no provider, database, or service credentials.</text>
-  <text x="44" y="1544" class="body">The configurator is local tooling, not in the deployed request path. Its Copilot identity stays server-side. See docs/SECURITY.md.</text>
+  <rect x="24" y="1585" width="1231" height="105" rx="12" fill="#fff4df" stroke="#b7791f"/>
+  <text x="44" y="1614" class="heading">Boundary limitation: outbound network access is not enforced.</text>
+  <text x="44" y="1642" class="body">Arrows show intended model paths, not a firewall. Batch runners have no provider, database, or service credentials.</text>
+  <text x="44" y="1669" class="body">The configurator is local tooling, not in the deployed request path. Its Copilot identity stays server-side. See docs/SECURITY.md.</text>
 </svg>
