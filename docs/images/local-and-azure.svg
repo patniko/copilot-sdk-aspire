@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1120" viewBox="0 0 1280 1120" role="img" aria-labelledby="title description">
   <title id="title">Local and Azure deployment topology</title>
-  <desc id="description">One Aspire AppHost places the default API, dispatcher, and gateway in local Node processes or Azure Container Apps. PostgreSQL is local or managed; the executor is containerized. A separate optional host retains direct conversations. Local hybrid mode adds shared session-host and execution-controller Node processes, replaces the idle pool with one-shot Docker executors, and retains session files and artifacts in PostgreSQL. A Linux shared-worker image is packaged separately. Azure hybrid publishing is rejected pending its execution adapter. Model credentials stay with the gateway.</desc>
+  <desc id="description">One Aspire AppHost places the default API, dispatcher, and gateway in local Node processes or Azure Container Apps. PostgreSQL is local or managed; the executor is containerized. A separate optional host retains direct conversations. Local hybrid mode adds connection-broker, shared session-host, and execution-controller Node processes, replaces the idle pool with one-shot Docker executors, and retains session files and artifacts in PostgreSQL. A Linux shared-worker image is packaged separately. Azure hybrid publishing is rejected pending its execution adapter. Model credentials stay with the gateway.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#576574"/>
@@ -73,7 +73,7 @@
   <text x="48" y="851" class="heading">Hybrid opt-in: qualified local foundation, not Azure placement parity</text>
   <rect x="48" y="870" width="552" height="131" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
   <text x="324" y="897" class="node" text-anchor="middle">Shared in-process loop + Docker controller</text>
-  <text x="324" y="925" class="body" text-anchor="middle">Host Node services; no idle executor pool</text>
+  <text x="324" y="925" class="body" text-anchor="middle">Host Node services incl. connection broker; no idle pool</text>
   <text x="324" y="951" class="body" text-anchor="middle">PostgreSQL session FS + immutable output artifacts</text>
   <text x="324" y="977" class="body" text-anchor="middle">Linux shared-worker image packaged independently</text>
   <rect x="678" y="870" width="552" height="131" rx="10" fill="#fff4df" stroke="#b7791f"/>

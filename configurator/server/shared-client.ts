@@ -59,8 +59,9 @@ export async function sharedConnection(connection: { apiUrl: string; key: string
   const result = SharedConnection.parse(await call(connection, "POST", `/v1/sessions/${sessionId}/connection`, { transport }));
   const endpoint = new URL(result.url);
   if (result.sessionId !== sessionId || Date.parse(result.expiresAt) <= Date.now() || endpoint.username || endpoint.password || endpoint.search || endpoint.hash
+    || endpoint.pathname !== `/sessions/${sessionId}`
     || (endpoint.protocol === "ws:" && !["localhost", "127.0.0.1", "[::1]"].includes(endpoint.hostname))) {
-    throw new Error("The shared host returned an invalid or expired connection.");
+    throw new Error("The API returned an invalid or expired broker connection.");
   }
   return result;
 }

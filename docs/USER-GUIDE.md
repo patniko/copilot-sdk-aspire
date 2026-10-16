@@ -83,7 +83,8 @@ Treat the output as a secret. Do not put it in documentation, screenshots, or co
 For the experimental shared coordinator instead, follow
 [local hybrid deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment). Use
 `pnpm host:connect --destination shared` to create a conversation, or add `--resume <session-uuid>`
-after disconnect/idle eviction. Lightweight chat needs no job container; the coordinator can delegate
+after disconnect/idle eviction. The CLI attaches through the local connection broker, so reloading harnesses
+(which restarts the API) does not disconnect it. Lightweight chat needs no job container; the coordinator can delegate
 approved work and receive completion and retained artifacts. This is distinct from `--destination container`
 (the default existing host route) and from retrying a batch job.
 
@@ -240,8 +241,11 @@ explains the transitions.
 ## Create or change a harness
 
 Use **Harnesses** in the configurator to choose a template, define schemas and instructions, select approved
-models/profiles, and set tools, permissions, and limits. Start without built-in tools; enable only what the task
-needs. A harness requests capabilities but cannot override operator policy.
+models/profiles, and set tools, permissions, and limits. Conversation harnesses also request a hosting mode, an
+approval mode, and remote MCP tools on the **Hosting** tab, and the **Hosting** page shows whether the running
+deployment can host them (see [Hosting, approvals and remote MCP](CONFIGURATOR.md#hosting-approvals-and-remote-mcp)).
+Start without built-in tools; enable only what the task needs. A harness requests capabilities but cannot override
+operator policy.
 
 Save and increment the version when changing published behavior. For local harness-only edits, **Reload harnesses**
 restarts the API so new submissions see the change. Existing jobs keep their admitted snapshot. Policy, runner,

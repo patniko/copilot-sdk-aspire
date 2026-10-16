@@ -16,6 +16,7 @@ import { createSharedEgress } from "./shared-egress.js";
 
 const logger = createLogger("session-host");
 const key = requireEnv("SHARED_WORKER_KEY");
+const brokerKey = requireEnv("CONNECTION_BROKER_KEY");
 const principals = SharedPrincipalBindings.parse(JSON.parse(requireEnv("SHARED_PRINCIPALS")));
 const limits = SharedWorkerLimits.parse(JSON.parse(optionalEnv("SHARED_WORKER_LIMITS", "{}")));
 const configuration = new SharedConfiguration(async () => {
@@ -41,16 +42,20 @@ const store = new SharedStore(pool);
 const jobs = new JobStore(pool);
 const delegations = new DelegationStore(pool, store, jobs);
 const jobAdmissions = new WeakMap<SharedRegistry, Admission>();
-const publicUrl = () => requireEnv("SHARED_PUBLIC_URL");
+const port = listenPort(8083);
+// Shared egress also refuses this deployment's own listeners: this worker and the connection broker.
+const ownListeners = [optionalEnv("SHARED_WORKER_URL", ""), optionalEnv("CONNECTION_BROKER_URL", "")].filter(Boolean).map((value) => {
+  const url = new URL(value);
+  return { host: url.hostname.replace(/^\[(.*)\]$/, "$1"), port: Number(url.port || (["https:", "wss:"].includes(url.protocol) ? 443 : 80)) };
+});
 const egress = createSharedEgress({
-  internal: [{ host: "127.0.0.1", port: Number(new URL(publicUrl()).port) }],
+  internal: [{ host: "127.0.0.1", port }, ...ownListeners],
   report: (event, detail) => logger.info({ event, ...detail }, "shared egress"),
 });
 const service = new SharedSessionService({
   root: optionalEnv("SHARED_SESSION_DATA", join(process.cwd(), ".shared-session-data")),
   store, files: new SessionFileStore(pool), principals, admission, limits,
   gatewayUrl: `${serviceUrl("inference-gateway")}/openai/v1`,
-  publicUrl,
   mintToken: async (lease, turn) => {
     const response = await fetch(`${serviceUrl("job-dispatcher")}/internal/shared/grant`, {
       method: "POST", headers: { "content-type": "application/json", "x-internal-key": key },
@@ -78,10 +83,10 @@ const service = new SharedSessionService({
   },
   permissionHandlers: PERMISSION_HANDLERS,
 });
-const app = buildSharedHost(service, key);
+const app = buildSharedHost(service, key, brokerKey);
 const completions = new CompletionPump(service, delegations, jobs, logger);
 app.addHook("preClose", async () => { await completions.stop(); });
 app.addHook("onClose", async () => { await pool.end(); });
 await service.start();
 completions.start();
-await listen(app, listenPort(8083));
+await listen(app, port);

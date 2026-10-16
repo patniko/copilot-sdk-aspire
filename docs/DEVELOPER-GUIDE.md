@@ -18,6 +18,7 @@ and model setup; this guide owns the implementation workflow.
 | [`src/agent-executor/src`](../src/agent-executor/src) | Executor slots, uid isolation, runner lifecycle, protocol and result validation |
 | [`src/agent-host/src`](../src/agent-host/src) | Experimental long-lived SDK owner, AHP ingress, connection provisioning, and host supervision |
 | [`src/session-host/src`](../src/session-host/src) | Experimental native-anchor workspace bridge for a future shared host; library only, not an enabled deployment service |
+| [`src/connection-broker/src`](../src/connection-broker/src) | Experimental connection broker: one WebSocket path per session, ticket consumption through the dispatcher, forwarding to placements, "moved" closes |
 | [`src/inference-gateway/src`](../src/inference-gateway/src) | Model route checks, capability authorization, upstream identity, usage reporting |
 | [`src/harness-hosting/src`](../src/harness-hosting/src) | TypeScript Copilot SDK runner, session mapping, permission handlers, tool bindings |
 | [`src/service-defaults/src`](../src/service-defaults/src) | Shared HTTP, auth, logging, Postgres, configuration, and registry helpers |
@@ -285,14 +286,19 @@ Do not enable either option for an unattended run without permission to use that
 `tests/integration/shared-cli.test.ts` is a separate real-CLI gate, enabled with `HYBRID_CLI_TESTS=1`.
 Build the matching local CLI first, set `HYBRID_CLI_PATH` to its absolute `dist-cli/index.js` path,
 and supply the local native pair, managed hosting profile, disposable PostgreSQL, and explicitly
-authorized GitHub account described above. The test loads `node-pty` from that CLI worktree,
-authenticates to a task-owned loopback host with an explicitly pinned server key, and drives the
-interactive CLI against synthetic loopback inference. `--ahp-authenticate-with-github` is required
+authorized GitHub account described above. The test loads `node-pty` from that CLI worktree and
+provisions a conversation through `agent-api`. The CLI attaches through the connection broker, which consumes
+the one-use ticket through the dispatcher and forwards to the shared worker, with an explicitly pinned server
+key, and the test drives the interactive CLI against synthetic loopback inference.
+`--ahp-authenticate-with-github` is required
 to consent to sharing GitHub identity with this host; it is not a model-provider credential.
-The test then stops the first CLI and shared runtime owner, reopens the retained PostgreSQL-backed
-conversation, and attaches a fresh CLI. It checks replayed history and prior-turn context in the next
-model request, with native anchors still empty. It does not contact a paid model provider or qualify
-two-account operation, process-crash recovery, or multi-replica failover. For example:
+The test stops and restarts `agent-api` while the CLI stays attached and keeps answering. It then stops the
+first CLI and shared worker, starts a replacement worker behind the same broker, reopens the retained
+PostgreSQL-backed conversation with a new ticket, and attaches a fresh CLI. It checks replayed history and
+prior-turn context in the next model request, with native anchors still empty. It does not contact a paid
+model provider or qualify two-account operation, process-crash recovery, or multi-replica failover.
+On Windows, the native pair must include runtime `0a32c39595f`'s workspace path-spelling fix; an older
+launcher refuses every CLI attachment with `application session resume failed`. For example:
 
 ```powershell
 # Use the actual paths to your locally built, matching artifacts.
@@ -305,28 +311,52 @@ pnpm exec vitest run --project integration tests\integration\shared-cli.test.ts
 ```
 
 `HYBRID_SESSION_RUNTIME_TESTS=1` also enables `shared-service.test.ts`: protected API provisioning,
-one-use tickets, real native inference through the reservation-backed gateway, completion history
-deduplication and idle eviction. `shared-store.test.ts` and `delegations.test.ts` use disposable
-PostgreSQL without a native runtime and cover atomic admission, scopes, quotas, usage recovery and artifacts.
+one-use tickets consumed through the dispatcher and broker (including an AHP handshake with the runtime
+through the broker, and refusal of a direct connection to the worker), real native inference through the
+reservation-backed gateway, completion history deduplication and idle eviction. `shared-store.test.ts`,
+`placements.test.ts`, and `delegations.test.ts` use disposable
+PostgreSQL without a native runtime and cover atomic admission, scopes, quotas, ticket consumption, usage recovery and artifacts.
+The connection broker's ordinary suites need no native runtime: `tests/unit/connection-broker.test.ts`
+covers frame boundaries, ticket refusal, forwarded-only placement ingress, and `moved` closes, and
+`tests/integration/connection-broker.test.ts` covers the real dispatcher and API routes, including live
+connections across an `agent-api` restart and a test-only placement change.
 
-For the complete local CLI/container gate, build `copilot-hybrid-executor:local`, set the matching
-native/CLI paths and explicit account opt-in above, then run:
+The same flag enables `shared-egress-runtime.test.ts` for the
+[shared-placement egress library](SECURITY.md#shared-placement-egress-and-remote-mcp). A
+`SharedSessionRuntime` conversation driven by synthetic inference calls the filtered `web_fetch` and
+two tools on a fake Streamable HTTP MCP server ([`fake-mcp-server.ts`](../tests/fakes/fake-mcp-server.ts)),
+and the test checks that the server's credential reaches no model request, session event, report, or
+PostgreSQL session file. A second case shows the runtime's `custom-tool` permission requests for these
+tools mapped to the harness `url` rule and MCP prompts. Public-looking test host names reach loopback
+servers only through the filter's test seams. The classifier, redirect, client, and adapter suites need
+no runtime or Docker:
+
+```powershell
+pnpm exec vitest run --project unit tests\unit\egress-filter.test.ts tests\unit\remote-mcp.test.ts tests\unit\web-fetch-tool.test.ts tests\unit\shared-egress.test.ts
+```
+
+For the complete local CLI/container gate, build `copilot-hybrid-executor:local` (or set
+`HYBRID_EXECUTOR_IMAGE` to another tag), set the matching native/CLI paths and explicit account opt-in
+above, then run:
 
 ```powershell
 $env:HYBRID_DEPLOYMENT_TESTS = '1'
 pnpm exec vitest run --project integration tests\integration\hybrid-deployment.test.ts
 ```
 
-This drives real tool calls from a synthetic model through the actual CLI and shared host, checks that
-lightweight chat allocates no container, runs both TypeScript and Python jobs with uid isolation,
+This drives real tool calls from a synthetic model through the actual CLI, connection broker, and shared
+host, checks that lightweight chat allocates no container, replaces `agent-api` while the CLI stays attached,
+runs both TypeScript and Python jobs with uid isolation,
 downloads retained outputs after teardown, and receives completion in the same CLI conversation.
 It also exercises queued/running cancellation, two-container spreading after a controller restart,
 and orphan cleanup. Terminal assertions use a headless terminal emulator rather than concatenating
 ANSI-stripped repaint fragments.
 It uses a disposable database and uniquely labeled containers; it does not use a paid model or Azure.
 `HYBRID_CONTAINER_TESTS=1` enables the artifact-safety image probe and `shared-image.test.ts`.
-The latter runs the packaged worker as its unprivileged Linux user against disposable PostgreSQL,
-including one-use tickets, an in-process model turn and retained conversation replacement.
+The latter runs the packaged worker (`HYBRID_SESSION_IMAGE`, default `copilot-hybrid-session-host:local`)
+as its unprivileged Linux user against disposable PostgreSQL,
+including one-use ticket consumption, forwarded-only ingress, an in-process model turn and retained
+conversation replacement. Rebuild that image after changing the shared worker.
 Failed automatic notifications are inspectable through the session jobs API. Standalone deployment,
 configuration, Linux-image commands and the two CLI destinations are documented in
 [local hybrid deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment).
@@ -425,6 +455,10 @@ servers or handlers, the default size catalog and worker limits, and `ask` for p
 admissible on a host only when that host lists it in its features; until then admission returns
 `hosting_unavailable` naming it. A new hosted feature that batch runners would also see needs TypeScript and Python
 runner parity, or the batch rejection above.
+
+The configurator validates these fields with the same contract helpers but never evaluates a deployment: its
+[harness editor and Hosting page](CONFIGURATOR.md#hosting-approvals-and-remote-mcp) read availability from the
+running agent-api's [hosting views](API.md#hosting-views), so a host that gains a feature needs no configurator change.
 
 A catalog server's `allowPrivateNetwork: true` is an operator-only development allowance: its exact configured origin,
 never a redirect, may be a private, loopback, or container address, and its credential may then travel over `http`.

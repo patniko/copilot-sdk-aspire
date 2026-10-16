@@ -201,6 +201,7 @@ if (hybridEnabled === 'true') {
   const workerLimits = SharedWorkerLimits.parse(JSON.parse(await configured('Parameters:hybrid-worker-limits', '{}')));
   const sessionLimits = SharedSessionLimits.parse(JSON.parse(await configured('Parameters:hybrid-session-limits', '{}')));
   const workerKey = await builder.addParameterWithGeneratedValue('shared-worker-key', generated, { secret: true, persist: true });
+  const brokerKey = await builder.addParameterWithGeneratedValue('connection-broker-key', generated, { secret: true, persist: true });
   const allocationKey = await builder.addParameterWithGeneratedValue('allocation-signing-key', generated, { secret: true, persist: true });
   const namespace = `local-${createHash('sha256').update(repoRoot).digest('hex').slice(0, 20)}`;
   const shared = await builder.addNodeApp('session-host', './src/session-host', 'dist/main.js')
@@ -215,17 +216,32 @@ if (hybridEnabled === 'true') {
     .withEnvironment('COPILOT_CLI_PATH', runtimePath)
     .withEnvironment('COPILOT_AHP_FACTORY_PROFILE', 'managed')
     .withEnvironment('SHARED_WORKER_KEY', workerKey)
+    .withEnvironment('CONNECTION_BROKER_KEY', brokerKey)
     .withEnvironment('SHARED_PRINCIPALS', JSON.stringify(principals))
     .withEnvironment('SHARED_MODEL', model)
     .withEnvironment('SHARED_JOB_HARNESSES', await configured('Parameters:hybrid-harnesses', 'text-summarizer,copilot-coding-agent'))
     .withEnvironment('SHARED_WORKER_LIMITS', JSON.stringify(workerLimits))
     .withEnvironment('SHARED_SESSION_LIMITS', JSON.stringify(sessionLimits));
   const sharedEndpoint = await shared.getEndpoint('http');
-  await shared.withEnvironment('SHARED_PUBLIC_URL', refExpr`${sharedEndpoint}`);
+  // CLI clients attach only through the broker, which consumes their tickets through the dispatcher and forwards to the
+  // session's placement. It is separate from agent-api so that API restarts leave live connections up.
+  const broker = await builder.addNodeApp('connection-broker', './src/connection-broker', 'dist/main.js')
+    .withPnpm({ install: false })
+    .withReference(dispatcherEndpoint).waitFor(dispatcher)
+    .withReference(sharedEndpoint).waitFor(shared)
+    .withHttpEndpoint({ env: 'PORT' }).withHttpHealthCheck({ path: '/health' })
+    .withExternalHttpEndpoints()
+    .withEnvironment('CONNECTION_BROKER_KEY', brokerKey);
+  const brokerEndpoint = await broker.getEndpoint('http');
+  // The worker's shared egress refuses its own listener and the broker's.
+  await shared.withEnvironment('SHARED_WORKER_URL', refExpr`${sharedEndpoint}`)
+    .withEnvironment('CONNECTION_BROKER_URL', refExpr`${brokerEndpoint}`);
   await api.withReference(sharedEndpoint).waitFor(shared)
     .withEnvironment('SHARED_WORKER_KEY', workerKey)
+    .withEnvironment('CONNECTION_BROKER_URL', refExpr`${brokerEndpoint}`)
     .withEnvironment('EXECUTOR_MODE', 'on-demand');
-  await dispatcher.withEnvironment('SHARED_WORKER_KEY', workerKey);
+  await dispatcher.withEnvironment('SHARED_WORKER_KEY', workerKey)
+    .withEnvironment('CONNECTION_BROKER_KEY', brokerKey);
   await builder.addNodeApp('execution-controller', './src/execution-controller', 'dist/main.js')
     .withPnpm({ install: false })
     .withReference(jobsDb).waitFor(jobsDb)

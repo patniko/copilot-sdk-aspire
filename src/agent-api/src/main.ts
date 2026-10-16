@@ -47,7 +47,9 @@ const app = buildApi({
   execution: execution === "on-demand" ? "dedicated" : "pool",
   delegations: new DelegationStore(pool, new SharedStore(pool), store),
   hosting: { harnesses, profiles, policies, deployment },
-  ...(process.env.SHARED_WORKER_KEY ? { shared: { url: serviceUrl("session-host"), key: requireEnv("SHARED_WORKER_KEY") } } : {}),
+  ...(process.env.SHARED_WORKER_KEY ? { shared: {
+    url: serviceUrl("session-host"), key: requireEnv("SHARED_WORKER_KEY"), brokerUrl: requireEnv("CONNECTION_BROKER_URL"),
+  } } : {}),
   ...(ownerHosts.length ? { hosts: { store: hostStore, hosts: ownerHosts, harnesses, policies, profiles } } : {}),
 });
 

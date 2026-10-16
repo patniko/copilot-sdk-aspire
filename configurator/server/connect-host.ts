@@ -66,7 +66,7 @@ async function main(): Promise<void> {
     env.COPILOT_AHP_SERVER_KEY = JSON.stringify({ endpoint: url.href, ...connection.serverKey });
     url.searchParams.set("tkn", connection.token);
     args.push("--ahp", url.href, "--ahp-authenticate-with-github", "--resume", connection.ahpSessionId);
-    console.log(`Connecting to shared conversation ${connection.sessionId} (${harness}) with a one-use ticket. This explicitly authorizes GitHub identity authentication to the provisioned host.`);
+    console.log(`Connecting to shared conversation ${connection.sessionId} (${harness}) through the connection broker with a one-use ticket. This explicitly authorizes GitHub identity authentication to the provisioned host.`);
     console.log(`Resume later with: pnpm host:connect --harness ${harness} --resume ${connection.sessionId}`);
   } else if (hosting && api && harness && values.harness !== undefined) {
     // An isolated harness: connect to its own owner host over direct WSS or its own relay environment.
