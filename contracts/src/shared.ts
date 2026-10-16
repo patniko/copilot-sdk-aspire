@@ -1,5 +1,12 @@
 import { z } from "zod";
 import { SEMVER, SLUG } from "./harness.js";
+import type { HostingFeature } from "./hosting.js";
+
+/**
+ * Harness hosting features the shared worker implements for harness-driven sessions. Hosting admission reports
+ * `hosting_unavailable` for a shared-placement harness that requests a feature missing here.
+ */
+export const SHARED_WORKER_FEATURES: readonly HostingFeature[] = [];
 
 export const SharedSessionLimits = z.object({
   tokenBudget: z.number().int().min(100).max(10_000_000).default(500_000),

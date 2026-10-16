@@ -253,6 +253,8 @@ export class Repo {
           firstParty: p.agent.firstParty,
           toolBindings: p.toolBindings,
           capabilities: p.capabilities,
+          ...(p.inProcessBindings ? { inProcessBindings: p.inProcessBindings } : {}),
+          ...(p.permissionHandlers ? { permissionHandlers: p.permissionHandlers } : {}),
         });
       }
     }

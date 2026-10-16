@@ -6,7 +6,7 @@ import {
 } from "@copilot-agent/contracts";
 import type { SessionAllocation } from "@copilot-agent/job-store";
 import { sessionContainerArguments, volumeLabels } from "../../src/execution-controller/src/docker.js";
-import { sessionContainerOffer } from "../../src/agent-api/src/container-sessions.js";
+import { hostingDeployment } from "../../src/agent-api/src/hosting-deployment.js";
 import { OwnerConfiguration, OwnerMessage, SupervisorMessage } from "../../src/session-container/src/protocol.js";
 
 const sessionId = randomUUID();
@@ -80,7 +80,8 @@ describe("session container contracts", () => {
       expiresAt: new Date().toISOString(), serverKey: { keyId: "k", algorithm: "x25519-sealedbox", publicKey: "p" }, ahpSessionId: sessionId };
     expect(SharedConnection.parse(connection).destination).toBe("container");
     expect(SharedConnection.safeParse({ ...connection, destination: "host" }).success).toBe(false);
-    expect(sessionContainerOffer()).toEqual({ transports: ["direct"], features: [] });
+    expect(hostingDeployment({ executor: "on-demand", sharedWorker: false, sessionContainers: true }).sessionContainers).toEqual({ transports: ["direct"], features: [] });
+    expect(hostingDeployment({ executor: "pool", sharedWorker: true }).sessionContainers).toBeUndefined();
   });
 
   it("describes container placement, mode, segment and container state in session views", () => {

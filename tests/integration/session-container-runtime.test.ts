@@ -17,7 +17,8 @@ import {
 } from "@copilot-agent/job-store";
 import { Admission, ApiKeyAuthenticator, canonicalJson, createLogger, loadPolicySet, loadProfiles, sha256Hex } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../src/agent-api/src/server.js";
-import { ContainerSessionService, sessionContainerOffer } from "../../src/agent-api/src/container-sessions.js";
+import { ContainerSessionService } from "../../src/agent-api/src/container-sessions.js";
+import { hostingDeployment } from "../../src/agent-api/src/hosting-deployment.js";
 import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
 import { DispatcherClient as GatewayClient } from "../../src/inference-gateway/src/dispatcher-client.js";
 import { buildGateway } from "../../src/inference-gateway/src/server.js";
@@ -184,7 +185,7 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
       authenticator: new ApiKeyAuthenticator(`${principal}:${apiKey}`), maxOpenJobsPerPrincipal: 10, console: false, delegations,
       containers: new ContainerSessionService({
         store, allocations, directory: new SessionDirectory(pool), harnesses, profiles, policies, principals: { [principal]: githubUserId },
-        settings, limits, deployment: { isolatedHosts: [], sessionContainers: sessionContainerOffer() }, connectWaitSeconds: 180,
+        settings, limits, deployment: hostingDeployment({ executor: "on-demand", sharedWorker: false, sessionContainers: true }), connectWaitSeconds: 180,
       }),
     });
     apps.push(api);

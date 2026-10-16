@@ -21,6 +21,8 @@ loading the page alone grants no access to job data. Caller authentication is cu
 | Method | Path | Response / behavior |
 | --- | --- | --- |
 | `GET` | `/v1/harnesses` | `{ harnesses }` with published versions, digests, allowed/default profiles, and input/output schemas |
+| `GET` | `/v1/hosting` | Read-only [hosting views](#hosting-views): the deployment's hosts and every published harness's effective hosting |
+| `GET` | `/v1/hosting/{harness}` | One harness's hosting view; `?version=` selects a published version, otherwise the latest |
 | `POST` | `/v1/jobs` | `202` and a job view on creation; `200` on idempotent replay; `Location` header in both cases |
 | `GET` | `/v1/jobs` | `{ jobs, next? }`; newest first, without results |
 | `GET` | `/v1/jobs/{id}` | One job view, including result when successful |
@@ -203,6 +205,60 @@ return the hosting error for that harness. The response has `destination: "conta
 | `503` | `container_unavailable` | The container stopped before becoming ready; the message names the reason |
 
 Container sessions have no delegated jobs, so their jobs route returns an empty list.
+
+## Hosting views
+
+`GET /v1/hosting` and `GET /v1/hosting/{harness}` report where each published harness's agent loop would run and
+whether this deployment can host it, from the harness's optional `hosting` block, its effective policy (the base
+policy plus any override), and the hosts the deployment provides. They are read-only: they create no session, issue
+no connection material, and change nothing. Any authenticated principal can read them; transports are evaluated for
+the calling principal. The [hosting modes plan](HOSTING-MODES-PLAN.md) describes the modes. Today harness-driven
+conversations run only in `isolated` mode, on the optional [demo host](#experimental-demo-host-control) or in
+[session containers](#session-containers); batch
+harnesses run as jobs, and the local hybrid worker still runs only its fixed coordinator.
+Implemented in [hosting-routes.ts](../src/agent-api/src/hosting-routes.ts) with contracts in
+[hosting.ts](../contracts/src/hosting.ts).
+
+`GET /v1/hosting` returns `{ hosts, harnesses }`. `hosts` lists what the deployment provides: the batch
+`executor` (`pool` or `dedicated`), `isolatedHosts` (the managed demo host and the harness it serves, with its
+transports), `sharedWorker` (the local hybrid worker), `sessionContainers` (per-session containers, when enabled), and later
+`workerContainers`. Each
+host lists the harness `features` it implements; none of today's hosts implements remote MCP servers, approval modes
+other than `manual`, custom permission handlers, handoffs, promotion, or workers. GitHub-native demo hosting runs
+Copilot's own sessions rather than a harness, so it adds no isolated host. Owner principals are not returned.
+
+Each harness view (latest version, or `?version=` on the single-harness route) contains:
+
+| Field | Meaning |
+| --- | --- |
+| `harness`, `version`, `digest` | The published version evaluated |
+| `interaction` | `batch` (runs as jobs on the executor) or `conversation` |
+| `mode` | `isolated` (the default), `shared`, `promotable`, or `orchestrator` |
+| `placement` | Where the loop starts: `executor`, `container`, or `shared` |
+| `status` | `ready`, `not_allowed` (the policy does not allow the mode), `rejected` (another policy, profile, or target problem), or `unavailable` (the deployment lacks a prerequisite) |
+| `problems` | Every problem in admission order; each has a `code`, a `message`, an optional harness field `path`, and for `hosting_unavailable` a `prerequisite` (`kind` `host`, `transport`, or `feature`, and its `name`) |
+| `transports` | `direct` and `github`, each with `allowed` (policy and mode), `available` (offered to this principal), and the blocking `problem`; empty for batch harnesses |
+| `effective` | The harness's request resolved under policy: approval mode, promotion size and approval, worker sizes and limits, handoffs, and approved remote MCP tools |
+| `ceilings` | The effective policy's hosting modes, transports, approval modes, permission handlers, size catalog and default size, worker limits, promotion approvals, crafting template names, and MCP server names and tools. Server URLs and secret references are never returned |
+
+Problem codes, and the HTTP status a route uses when it rejects a request for one of them (session provisioning,
+planned for later stages, returns them as errors; the hosting views report them with `200`):
+
+| Code | Status | Meaning |
+| --- | --- | --- |
+| `hosting_mode_not_allowed` | 422 | The effective policy does not allow the harness's mode |
+| `transport_not_allowed` | 422 | The effective policy does not allow the transport, or any transport the mode supports |
+| `policy_rejected` | 422 | Another field-scoped policy, conversation-profile, or worker or handoff target problem |
+| `transport_unsupported` | 422 | The mode does not support the transport; `shared`, `promotable`, and `orchestrator` use direct WSS only |
+| `relay_owner_only` | 403 | Only an isolated host's owner principal can use its GitHub relay |
+| `hosting_unavailable` | 409 | Allowed, but the deployment lacks the named host, transport, or feature. There is no fallback to another mode |
+
+A `ready` harness can still lack a transport for the caller: the demo host serves only its owner principal (`dev`
+in the AppHost), so other principals see `hosting_unavailable` for direct WSS, naming session containers, and
+`relay_owner_only` for the GitHub relay. `ready` for `shared` reflects that the local hybrid worker is deployed;
+harness-driven shared sessions are not implemented yet.
+
+Unknown harnesses or versions return `404 harness_not_found`; an invalid `version` returns `400 invalid_request`.
 
 ## Events
 

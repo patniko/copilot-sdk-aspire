@@ -1,8 +1,12 @@
 import { z } from "zod";
 import { HarnessDefinition, HOSTING_MODES, SEMVER, SLUG } from "./harness.js";
+import type { HostingFeature } from "./hosting.js";
 import { PlacementKind } from "./placement.js";
 import { ContainerSize } from "./profile.js";
 import { SharedServerKey, SharedSessionView } from "./shared.js";
+
+/** Harness hosting features session containers implement. A harness that needs others is unavailable there. */
+export const SESSION_CONTAINER_FEATURES: readonly HostingFeature[] = [];
 
 /**
  * Operator settings for resumable session containers. The controller resolves `image` to an immutable local image ID

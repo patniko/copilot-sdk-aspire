@@ -15,7 +15,8 @@ import {
   Admission, ApiKeyAuthenticator, canonicalJson, createLogger, loadPolicySet, loadProfiles, sha256Hex, verifyInferenceCapability,
 } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../src/agent-api/src/server.js";
-import { ContainerSessionService, sessionContainerOffer } from "../../src/agent-api/src/container-sessions.js";
+import { ContainerSessionService } from "../../src/agent-api/src/container-sessions.js";
+import { hostingDeployment } from "../../src/agent-api/src/hosting-deployment.js";
 import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
 import { ExecutionController } from "../../src/execution-controller/src/controller.js";
 import { FakeAdapter } from "./fixtures/fake-adapter.js";
@@ -90,7 +91,7 @@ async function environment(options: { limits?: Partial<SharedWorkerLimits>; cont
   apps.push(dispatcher);
   const service = new ContainerSessionService({
     store, allocations, directory: new SessionDirectory(pool), harnesses, profiles, policies, principals: bindings, settings, limits,
-    deployment: { isolatedHosts: [], sessionContainers: sessionContainerOffer() }, connectWaitSeconds: 20,
+    deployment: hostingDeployment({ executor: "on-demand", sharedWorker: false, sessionContainers: true }), connectWaitSeconds: 20,
   });
   const api = buildApi({
     store: jobs, listener: new JobEventListener(pool), admission: new Admission({ harnesses, profiles, policies }), harnesses,

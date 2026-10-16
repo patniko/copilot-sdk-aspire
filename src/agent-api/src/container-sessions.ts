@@ -1,13 +1,13 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import {
-  connectionProblem, effectiveHostingPolicy, evaluateHosting, HOSTING_ERROR_STATUS, HOSTING_TRANSPORTS, policyFor, SessionContainerSettings,
+  connectionProblem, effectiveHostingPolicy, evaluateHosting, HOSTING_TRANSPORTS, policyFor, SessionContainerSettings,
   SharedPrincipalBindings, SharedWorkerLimits,
-  type ExecutionProfile, type HarnessSnapshot, type HostingDeployment, type HostingProblem, type PolicySet, type SessionCreation,
+  type ExecutionProfile, type HarnessSnapshot, type HostingDeployment, type HostingTarget, type PolicySet, type SessionCreation,
   type SessionView, type SharedConnection,
 } from "@copilot-agent/contracts";
 import { StoreError, type AllocationStore, type SessionContainerStore, type SessionDirectory } from "@copilot-agent/job-store";
-import { HttpError } from "@copilot-agent/service-defaults";
+import { hostingError, HttpError } from "@copilot-agent/service-defaults";
 
 export interface ContainerSessionDependencies {
   store: SessionContainerStore;
@@ -30,11 +30,6 @@ export interface ContainerSessionDependencies {
 
 /** `POST /v1/sessions/{id}/connection`; session containers serve direct WSS only. */
 const ConnectionRequest = z.object({ transport: z.enum(HOSTING_TRANSPORTS).default("direct") }).strict();
-
-/** The session-container offer this implementation provides: direct WSS only, and no optional hosting features yet. */
-export function sessionContainerOffer(): NonNullable<HostingDeployment["sessionContainers"]> {
-  return { transports: ["direct"], features: [] };
-}
 
 /**
  * Mode-1 sessions: an isolated conversation harness gets its own session container on connection, which stops when
@@ -62,7 +57,11 @@ export class ContainerSessionService {
   /** Admits the harness's hosting under its current effective policy and this deployment, or throws its first problem. */
   private evaluate(snapshot: HarnessSnapshot, principal: string) {
     const policy = policyFor(this.deps.policies, snapshot.definition.name);
-    const evaluation = evaluateHosting({ definition: snapshot.definition, policy, profiles: this.deps.profiles, deployment: this.deps.deployment, principal });
+    const lookup = (harness: string): HostingTarget | undefined => {
+      const latest = this.deps.harnesses.get(harness)?.[0];
+      return latest ? { definition: latest.definition, policy: policyFor(this.deps.policies, harness) } : undefined;
+    };
+    const evaluation = evaluateHosting({ definition: snapshot.definition, policy, profiles: this.deps.profiles, deployment: this.deps.deployment, lookup, principal });
     if (evaluation.interaction !== "conversation") {
       throw new HttpError(422, "policy_rejected", "Sessions need an interaction: conversation harness; batch harnesses run as jobs.", { path: "interaction" });
     }
@@ -156,12 +155,6 @@ export class ContainerSessionService {
       await delay(250);
     }
   }
-}
-
-function hostingError(problem: HostingProblem): HttpError {
-  return new HttpError(HOSTING_ERROR_STATUS[problem.code], problem.code, problem.message, {
-    ...(problem.path ? { path: problem.path } : {}), ...(problem.prerequisite ? { prerequisite: problem.prerequisite } : {}),
-  });
 }
 
 function publicEndpoint(origin: string, id: string): string {

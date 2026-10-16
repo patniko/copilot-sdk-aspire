@@ -227,7 +227,8 @@ if (demoHostTransport !== 'disabled') {
     .withEnvironment('DEMO_HOST_HARNESS', demoHostHarness);
   await api
     .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
-    .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport);
+    .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport)
+    .withEnvironment('DEMO_HOST_HARNESS', demoHostHarness);
   const hostStage = direct && demoHostRuntimeDirectory ? 'agent-host-runtime' : 'agent-host';
   const host = await builder
     .addDockerfile('agent-host', '.', {

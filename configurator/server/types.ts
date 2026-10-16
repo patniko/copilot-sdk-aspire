@@ -72,6 +72,10 @@ export interface ProfileSummary {
   firstParty: boolean;
   toolBindings: string[];
   capabilities: string[];
+  /** Host bindings the profile marks safe to run inside a shared worker's process. */
+  inProcessBindings?: string[];
+  /** Custom permission handlers the profile provides. */
+  permissionHandlers?: string[];
 }
 
 export interface BindingInfo {
