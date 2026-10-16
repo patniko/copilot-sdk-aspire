@@ -27,10 +27,7 @@ beforeAll(async () => {
     const harness = { name: "chat", version: "1.0.0", digest: `sha256:${"a".repeat(64)}` };
     const now = new Date().toISOString();
     if (command.operation === "connect") {
-      return {
-        sessionId: id, destination: "shared", transport: "direct", ahpSessionId: id, url: `ws://127.0.0.1:1/sessions/${id}`,
-        token: "t".repeat(40), expiresAt: now, serverKey: { keyId: "k", algorithm: "x25519-sealedbox", publicKey: "p" },
-      };
+      return { sessionId: id, ahpSessionId: id, token: "t".repeat(40), expiresAt: now, serverKey: { keyId: "k", algorithm: "x25519-sealedbox", publicKey: "p" } };
     }
     return {
       id, label: "", model: "fixture", closed: false, online: false, createdAt: now, lastActivityAt: now, harness, mode: "shared", placement: "shared",
@@ -52,7 +49,7 @@ beforeAll(async () => {
     store: { ping: async () => undefined } as unknown as JobStore, listener: {} as JobEventListener,
     admission: new Admission({ harnesses, profiles, policies: registry.policies }),
     authenticator: new ApiKeyAuthenticator(`alice:${key}`), harnesses, maxOpenJobsPerPrincipal: 10, console: false,
-    shared: { url: `http://127.0.0.1:${(worker.server.address() as AddressInfo).port}`, key: "worker-key" },
+    shared: { url: `http://127.0.0.1:${(worker.server.address() as AddressInfo).port}`, key: "worker-key", brokerUrl: "http://127.0.0.1:9" },
     hosting: { harnesses, profiles, policies: registry.policies, deployment: { isolatedHosts: [], sharedWorker: { transports: ["direct"], features: [...SHARED_WORKER_FEATURES] } } },
   });
 });
@@ -84,6 +81,7 @@ describe("harness-driven shared session routes", () => {
     const direct = await api.inject({ method: "POST", url: `/v1/sessions/${id}/connection`, headers });
     expect(direct.statusCode).toBe(200);
     expect(direct.headers["cache-control"]).toBe("no-store");
+    expect(direct.json()).toMatchObject({ destination: "shared", transport: "direct", ahpSessionId: id, url: `ws://127.0.0.1:9/sessions/${id}` });
     expect(controls.at(-1)).toEqual({ operation: "connect", principal: "alice", id, request: { transport: "direct" } });
     const relay = await api.inject({ method: "POST", url: `/v1/sessions/${id}/connection`, headers, payload: { transport: "github" } });
     expect(relay.statusCode).toBe(422);

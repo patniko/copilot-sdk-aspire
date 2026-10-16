@@ -1,10 +1,14 @@
 import type { AddressInfo } from "node:net";
 import type pg from "pg";
 import type { FastifyInstance } from "fastify";
+import WebSocket from "ws";
 import { SHARED_WORKER_FEATURES, SharedWorkerLimits } from "@copilot-agent/contracts";
-import { JobEventListener, JobStore, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
+import { JobEventListener, JobStore, PlacementStore, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
 import { Admission, ApiKeyAuthenticator, signSessionCapability } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../../src/agent-api/src/server.js";
+import { buildBroker } from "../../../src/connection-broker/src/broker.js";
+import { DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../../src/connection-broker/src/sessions.js";
+import { buildDispatcher } from "../../../src/job-dispatcher/src/server.js";
 import { buildGateway } from "../../../src/inference-gateway/src/server.js";
 import { parseRoutes } from "../../../src/inference-gateway/src/routes.js";
 import type { SharedAdmission } from "../../../src/session-host/src/admission.js";
@@ -18,6 +22,8 @@ export interface SharedStack {
   store: SharedStore;
   service: SharedSessionService;
   host: FastifyInstance;
+  /** The connection broker; CLI connections attach only through it. */
+  broker: FastifyInstance;
   api: FastifyInstance;
   /** Signed inference grants minted for turns, to prove they never reach stored history. */
   grants: string[];
@@ -26,9 +32,22 @@ export interface SharedStack {
 
 export const address = (app: FastifyInstance) => `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
 
+/** Attempts a WebSocket attachment with `ticket`: the HTTP status of a refusal, or 101 when it opens (then closes it). */
+export function attachStatus(url: string, ticket: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const target = new URL(url);
+    target.searchParams.set("tkn", ticket);
+    const socket = new WebSocket(target);
+    socket.once("unexpected-response", (_request, response) => { response.resume(); resolve(response.statusCode ?? 0); });
+    socket.once("open", () => { socket.terminate(); resolve(101); });
+    socket.once("error", reject);
+  });
+}
+
 /**
- * The shared worker, inference gateway, and agent-api wired as the AppHost wires them, against synthetic inference.
- * Grants are reservation-backed turn capabilities; nothing contacts a paid model.
+ * The shared worker, inference gateway, dispatcher broker routes, connection broker, and agent-api wired as the
+ * AppHost wires them, against synthetic inference. Grants are reservation-backed turn capabilities; nothing contacts a
+ * paid model.
  */
 export async function sharedStack(options: {
   pool: pg.Pool;
@@ -46,6 +65,7 @@ export async function sharedStack(options: {
 }): Promise<SharedStack> {
   const signingKey = "synthetic-signing-key-".repeat(3);
   const controlKey = "synthetic-control-key-".repeat(2);
+  const brokerKey = "synthetic-connection-broker-key-".repeat(2);
   const store = new SharedStore(options.pool);
   const grants: string[] = [];
   const apps: FastifyInstance[] = [];
@@ -62,11 +82,17 @@ export async function sharedStack(options: {
   });
   apps.push(gateway);
   await gateway.listen({ port: 0, host: "127.0.0.1" });
-  let host: FastifyInstance | undefined;
+  const jobs = new JobStore(options.pool);
+  const dispatcher = buildDispatcher({
+    store: jobs, policies: options.registry.policies, executorKey: "unused-executor-key-".repeat(3), gatewayKey: "unused-gateway-key-".repeat(3),
+    signingKey: "unused-signing-key-".repeat(4), broker: { store: new PlacementStore(options.pool), key: brokerKey },
+  });
+  apps.push(dispatcher);
+  await dispatcher.listen({ port: 0, host: "127.0.0.1" });
   const service = new SharedSessionService({
     root: options.root, store, files: new SessionFileStore(options.pool), principals: options.principals, admission: options.admission,
     limits: SharedWorkerLimits.parse(options.workerLimits ?? {}),
-    gatewayUrl: `${address(gateway)}/openai/v1`, publicUrl: () => address(host!),
+    gatewayUrl: `${address(gateway)}/openai/v1`,
     mintToken: async (lease, turn) => {
       const grant = await store.grant(lease, turn.id);
       const token = await signSessionCapability(signingKey, {
@@ -82,16 +108,22 @@ export async function sharedStack(options: {
     ...(options.permissionHandlerTimeoutMs ? { permissionHandlerTimeoutMs: options.permissionHandlerTimeoutMs } : {}),
   });
   await service.start();
-  host = buildSharedHost(service, controlKey);
+  const host = buildSharedHost(service, controlKey, brokerKey);
   apps.push(host);
   await host.listen({ port: 0, host: "127.0.0.1" });
+  const { app: broker } = buildBroker({
+    families: [sessionRoutes(new DispatcherDirectory(address(dispatcher), brokerKey))],
+    upstreams: { shared: sharedUpstream(new URL(address(host)), brokerKey) },
+  });
+  apps.push(broker);
+  await broker.listen({ port: 0, host: "127.0.0.1" });
   const harnesses = new Map(options.registry.harnesses);
   const profiles = new Map(options.registry.profiles);
   const api = buildApi({
-    store: new JobStore(options.pool), listener: new JobEventListener(options.pool), harnesses, console: false, maxOpenJobsPerPrincipal: 10,
+    store: jobs, listener: new JobEventListener(options.pool), harnesses, console: false, maxOpenJobsPerPrincipal: 10,
     admission: new Admission({ harnesses, profiles, policies: options.registry.policies }),
     authenticator: new ApiKeyAuthenticator(Object.entries(options.apiKeys).map(([principal, key]) => `${principal}:${key}`).join(";")),
-    shared: { url: address(host), key: controlKey },
+    shared: { url: address(host), key: controlKey, brokerUrl: address(broker) },
     hosting: {
       harnesses, profiles, policies: options.registry.policies,
       deployment: { isolatedHosts: [], sharedWorker: { transports: ["direct"], features: [...SHARED_WORKER_FEATURES] } },
@@ -99,7 +131,7 @@ export async function sharedStack(options: {
   });
   apps.push(api);
   return {
-    store, service, host, api, grants,
+    store, service, host, broker, api, grants,
     close: async () => {
       // Closing the worker's listener also stops the service.
       for (const app of apps.reverse()) await app.close();

@@ -15,7 +15,7 @@ import { testGitHubAccount } from "../runtime/account.js";
 import { localRuntimeArtifacts } from "../runtime/artifacts.js";
 import { QualificationCli } from "../runtime/cli.js";
 import { sharedAdmission, sharedHarness, sharedRegistry } from "./fixtures/shared-harness.js";
-import { sharedStack, type SharedStack } from "./fixtures/shared-stack.js";
+import { address, attachStatus, sharedStack, type SharedStack } from "./fixtures/shared-stack.js";
 import { inspect, syntheticModel, type SyntheticModel } from "./fixtures/synthetic-model.js";
 
 const enabled = process.env.HYBRID_CLI_TESTS === "1";
@@ -145,9 +145,11 @@ it.skipIf(!enabled)("serves two shared harnesses to two principals on one worker
     await aliceCli.send("RESEARCH the shared gate");
     await aliceCli.waitFor("RESEARCH_DONE", 120_000);
 
-    // Ticket isolation: a ticket issued for one principal's session cannot open another principal's session.
+    // Ticket isolation: a ticket issued for one principal's session cannot open another principal's session through the
+    // broker, and the worker accepts no ticket directly.
     const spare = await connect(alice, researcher.id);
-    expect(await stack.service.resolveConnection(`/sessions/${notes.id}`, spare.token)).toBeUndefined();
+    expect(await attachStatus(spare.url.replace(researcher.id, notes.id), spare.token)).toBe(401);
+    expect(await attachStatus(`${address(stack.host).replace("http:", "ws:")}/sessions/${researcher.id}`, spare.token)).toBe(401);
     const bobCli = new QualificationCli(join(root, "cli-bob"), credential);
     clis.push(bobCli);
     await bobCli.connect(await connect(bob, notes.id));
