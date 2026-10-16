@@ -3,7 +3,7 @@ import {
   type ExecutionProfile, type HarnessDefinition, type HarnessSnapshot, type HostingDeployment, type HostingEvaluation,
   type HostingTarget, type HostingTransport, policyFor, PROMOTE_SESSION_TOOL, RUNTIME_APPROVAL_MODES, type RuntimeApprovalMode,
   SESSION_CONTAINER_FEATURES, SHARED_TOOLS, SHARED_WORKER_BINDINGS, SHARED_WORKER_FEATURES, SHARED_WORKER_TRANSPORTS, type SharedHarnessRef,
-  type SharedSessionCreation, SharedSessionDefinition, SharedSessionLimits, CONVERSATION_PROFILE,
+  type SharedSessionCreation, SharedSessionDefinition, SharedSessionLimits, CONVERSATION_PROFILE, WORKER_CONTAINER_FEATURES, WORKER_TOOLS,
 } from "@copilot-agent/contracts";
 import { canonicalJson, hostingError, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
 import type { SharedConfiguration, SharedRegistry } from "./configuration.js";
@@ -16,14 +16,16 @@ export const SHARED_WORKER_DEPLOYMENT: HostingDeployment = Object.freeze({
 
 /**
  * This worker's hosting offer. With `promotion` it can move `promotable` conversations into session containers, so it
- * adds the `promotion` feature and the session-container host they move to.
+ * adds the `promotion` feature and the session-container host they move to; with `workerContainers` it runs
+ * orchestrator coordinators whose workers start in session containers.
  */
-export function sharedWorkerDeployment(options: { promotion: boolean }): HostingDeployment {
-  if (!options.promotion) return SHARED_WORKER_DEPLOYMENT;
+export function sharedWorkerDeployment(options: { promotion?: boolean; workerContainers?: boolean } = {}): HostingDeployment {
+  if (!options.promotion && !options.workerContainers) return SHARED_WORKER_DEPLOYMENT;
   return {
     isolatedHosts: [],
-    sharedWorker: { transports: [...SHARED_WORKER_TRANSPORTS], features: [...SHARED_WORKER_FEATURES, "promotion"] },
-    sessionContainers: { transports: ["direct"], features: [...SESSION_CONTAINER_FEATURES] },
+    sharedWorker: { transports: [...SHARED_WORKER_TRANSPORTS], features: [...SHARED_WORKER_FEATURES, ...(options.promotion ? ["promotion" as const] : [])] },
+    ...(options.promotion ? { sessionContainers: { transports: ["direct"], features: [...SESSION_CONTAINER_FEATURES] } } : {}),
+    ...(options.workerContainers ? { workerContainers: { features: [...WORKER_CONTAINER_FEATURES] } } : {}),
   };
 }
 
@@ -64,6 +66,8 @@ export interface SharedAdmissionOptions {
 
 const DELEGATION_BINDINGS = new Set<string>(SHARED_WORKER_BINDINGS);
 const RESERVED_TOOL_NAMES = new Set<string>([...Object.values(SHARED_TOOLS), PROMOTE_SESSION_TOOL]);
+/** An orchestrator coordinator also has the worker tools. */
+const ORCHESTRATOR_TOOL_NAMES = new Set<string>([...RESERVED_TOOL_NAMES, ...Object.values(WORKER_TOOLS)]);
 
 /**
  * Admits shared-placement sessions from published conversation harnesses and re-checks them against the current
@@ -168,8 +172,9 @@ export class SharedAdmission {
         { prerequisite: { kind: "host", name: "session-containers" } });
     }
     const profile = registry.profiles.get(CONVERSATION_PROFILE)!;
+    const reserved = evaluation.mode === "orchestrator" ? ORCHESTRATOR_TOOL_NAMES : RESERVED_TOOL_NAMES;
     definition.tools.forEach((tool, index) => {
-      if (RESERVED_TOOL_NAMES.has(tool.name)) {
+      if (reserved.has(tool.name)) {
         throw new HttpError(422, "policy_rejected", `'${tool.name}' is reserved for the shared worker's own tools.`, { path: `tools.${index}.name` });
       }
       if (tool.kind === "host" && (profile.inProcessBindings ?? []).includes(tool.binding) && !DELEGATION_BINDINGS.has(tool.binding)) {

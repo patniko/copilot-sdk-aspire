@@ -1,5 +1,5 @@
 import {
-  effectiveHarnessHosting, PromotionResponse, SessionContainerSettings, SharedPrincipalBindings, SharedWorkerLimits, sharedHarnessLimits,
+  effectiveHarnessHosting, PromotionResponse, SessionContainerSettings, SharedPrincipalBindings, SharedWorkerLimits,
   type ConnectionTicket, type HostingTransport, type PromotionRequestBody, type SharedSessionCreation,
 } from "@copilot-agent/contracts";
 import type { ManagedSettings } from "@github/copilot-sdk";
@@ -10,6 +10,7 @@ import {
 import { HttpError, readServerKey, type AhpProxyTarget } from "@copilot-agent/service-defaults";
 import type { SharedActivationPlan, SharedAdmission, SharedApprovalPlan } from "./admission.js";
 import { sharedSessionSettings } from "./harness-session.js";
+import { residencyVictim } from "./residency.js";
 import type { CustomPermissionHandler } from "./permission-handlers.js";
 import { SharedPermissionPolicy, type ToolRule } from "./permissions.js";
 import { PromotionRefused, SharedPromotions } from "./promotion/coordinator.js";
@@ -113,6 +114,16 @@ export class SharedSessionService {
     return counts;
   }
   busy(id: string): boolean { return this.#scheduler.busy(id) || this.#opening.has(id); }
+  /** The approval mode the runtime reports in force for a resident conversation. */
+  async approvalMode(principal: string, id: string): Promise<string> {
+    this.activation(principal, id);
+    return this.#runtime.approvalMode(id);
+  }
+  /** Asks the runtime for an approval mode, as an attached client's switch does; returns the mode in force afterwards. */
+  async requestApprovalMode(principal: string, id: string, mode: Parameters<SharedSessionRuntime["requestApprovalMode"]>[1]): Promise<string> {
+    this.activation(principal, id);
+    return this.#runtime.requestApprovalMode(id, mode);
+  }
   activation(principal: string, id: string): SessionFileLease {
     const resident = this.#residents.get(id);
     if (!resident?.connection || resident.record.principal !== principal || resident.closing || resident.controller.signal.aborted) {
@@ -262,21 +273,10 @@ export class SharedSessionService {
 
   /** An idle resident to evict so `harness` fits, or undefined when it fits now; throws when nothing can be evicted. */
   #capacityVictim(id: string, harness: string): string | undefined {
-    const evictable = (predicate: (entry: Resident) => boolean) => [...this.#residents.values()]
-      .filter((entry) => predicate(entry) && entry.record.id !== id && !this.busy(entry.record.id) && !entry.closing)
-      .sort((a, b) => a.lastActivity - b.lastActivity)[0]?.record.id;
-    const reserved = [...this.#harnessOf.entries()].filter(([entry]) => entry !== id);
-    if (reserved.filter(([, name]) => name === harness).length >= sharedHarnessLimits(this.options.limits, harness).residentSessions) {
-      const victim = evictable((entry) => entry.harness === harness);
-      if (!victim) throw new StoreError("quota_exceeded", "The shared worker is at resident capacity for this harness.");
-      return victim;
-    }
-    if (reserved.length >= this.options.limits.residentSessions) {
-      const victim = evictable(() => true);
-      if (!victim) throw new StoreError("quota_exceeded", "The shared worker is at resident capacity.");
-      return victim;
-    }
-    return undefined;
+    const residents = [...this.#residents.values()].map((entry) => ({
+      id: entry.record.id, harness: entry.harness, lastActivity: entry.lastActivity, idle: !this.busy(entry.record.id) && !entry.closing,
+    }));
+    return residencyVictim(this.options.limits, this.#harnessOf, residents, id, harness);
   }
 
   private async activate(row: SharedSessionRecord): Promise<void> {

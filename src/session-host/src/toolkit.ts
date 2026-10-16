@@ -1,5 +1,5 @@
 import type { Tool } from "@github/copilot-sdk";
-import { permissionModeFor, SHARED_WORKER_BINDINGS } from "@copilot-agent/contracts";
+import { hostingModeOf, permissionModeFor, SHARED_WORKER_BINDINGS } from "@copilot-agent/contracts";
 import type { SharedSessionRecord, SharedTurn } from "@copilot-agent/job-store";
 import type { SharedActivationPlan } from "./admission.js";
 import type { ToolRule } from "./permissions.js";
@@ -7,6 +7,7 @@ import { remoteMcpToolFor } from "./remote-mcp-tools.js";
 import type { SharedActivationContext } from "./runtime.js";
 import type { SharedEgress } from "./shared-egress.js";
 import { delegationTools, taskListTools, workspaceTools, type DelegationDependencies, type SharedTool } from "./tools.js";
+import { workerTools, type WorkerToolDependencies } from "./worker-tools.js";
 
 export interface SharedToolkitOptions {
   /** Filtered web access and remote MCP; required for harnesses that request either. */
@@ -15,6 +16,8 @@ export interface SharedToolkitOptions {
   delegation?: DelegationDependencies;
   /** `promote_session` for promotable harnesses; the shared worker supplies it when it can promote. */
   promotion?: (plan: SharedActivationPlan, session: SharedSessionRecord) => SharedTool;
+  /** Orchestrator workers; required for orchestrator coordinators. */
+  workers?: WorkerToolDependencies;
 }
 
 export interface SharedToolset {
@@ -26,9 +29,10 @@ const DELEGATION = new Set<string>(SHARED_WORKER_BINDINGS);
 const urlOf = (args: unknown) => (args && typeof args === "object" && "url" in args && typeof args.url === "string" ? args.url : undefined);
 
 /**
- * The base tool set for one shared activation (docs/HOSTING-MODES-PLAN.md, section 7.2): workspace files for `files`,
- * filtered `web_fetch` for `web`, approved remote MCP tools, the task list, the harness's in-process host bindings, and
- * `promote_session` for promotable harnesses. Remote MCP sessions end with the activation.
+ * The base tool set for one shared activation (docs/HOSTING-MODES-PLAN.md, sections 7.2 to 7.4): workspace files for
+ * `files`, filtered `web_fetch` for `web`, approved remote MCP tools, the task list, the harness's in-process host
+ * bindings, `promote_session` for promotable harnesses, and an orchestrator coordinator's worker tools. Remote MCP
+ * sessions end with the activation.
  */
 export async function sharedToolset(
   plan: SharedActivationPlan,
@@ -71,9 +75,13 @@ export async function sharedToolset(
     if (!options.delegation) throw new Error("Container delegation is not configured on this shared worker.");
     entries.push(...delegationTools(bindings, session, plan.delegation, context, currentTurn, options.delegation));
   }
-  if (definition.hosting?.mode === "promotable") {
+  if (hostingModeOf(definition) === "promotable") {
     if (!options.promotion) throw new Error("Promotion is not configured on this shared worker.");
     entries.push(options.promotion(plan, session));
+  }
+  if (hostingModeOf(definition) === "orchestrator") {
+    if (!options.workers) throw new Error("Orchestrator workers are not configured on this shared worker.");
+    entries.push(...workerTools(plan, session, context, currentTurn, options.workers));
   }
   const rules = new Map<string, ToolRule>();
   for (const entry of entries) {

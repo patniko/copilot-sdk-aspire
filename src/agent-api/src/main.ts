@@ -1,6 +1,7 @@
 import { SessionContainerSettings, SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits } from "@copilot-agent/contracts";
 import {
-  AllocationStore, DelegationStore, HostStore, JobEventListener, JobStore, SessionContainerStore, SessionDirectory, SharedStore, migrate,
+  AllocationStore, DelegationStore, HostStore, JobEventListener, JobStore, SessionContainerStore, SessionDirectory, SharedStore, WorkerStore,
+  migrate,
 } from "@copilot-agent/job-store";
 import {
   ApiKeyAuthenticator,
@@ -35,6 +36,11 @@ const hostOwner = optionalEnv("DEMO_HOST_OWNER", "").toLowerCase();
 const hostPrincipal = "dev";
 const sessionSettings = optionalEnv("SESSION_CONTAINER_SETTINGS", "");
 const sessionContainers = sessionSettings ? SessionContainerSettings.parse(JSON.parse(sessionSettings)) : undefined;
+const orchestratorWorkers = optionalEnv("ORCHESTRATOR_WORKERS", "false");
+if (!["true", "false"].includes(orchestratorWorkers)) throw new Error("ORCHESTRATOR_WORKERS must be true or false.");
+if (orchestratorWorkers === "true" && (!sessionContainers || !process.env.SHARED_WORKER_KEY)) {
+  throw new Error("Orchestrator workers need the shared worker and session containers.");
+}
 const deployment = hostingDeployment({
   executor: execution,
   ...(hostOwner ? {
@@ -44,6 +50,7 @@ const deployment = hostingDeployment({
   sessionContainers: !!sessionContainers,
   // The AppHost gives the shared worker the same session-container settings, so it can promote into them.
   promotion: !!sessionContainers && !!process.env.SHARED_WORKER_KEY,
+  workerContainers: orchestratorWorkers === "true",
 });
 const listener = new JobEventListener(pool);
 await listener.start();
@@ -63,7 +70,7 @@ const app = buildApi({
   hosting,
   ...(process.env.SHARED_WORKER_KEY ? { shared: {
     url: serviceUrl("session-host"), key: requireEnv("SHARED_WORKER_KEY"), brokerUrl: requireEnv("CONNECTION_BROKER_URL"),
-  } } : {}),
+  }, workers: new WorkerStore(pool, sharedStore, new AllocationStore(pool, sharedStore)) } : {}),
   ...(sessionContainers ? {
     containers: new ContainerSessionService({
       store: new SessionContainerStore(pool, sharedStore), allocations: new AllocationStore(pool, sharedStore), directory: new SessionDirectory(pool),

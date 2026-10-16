@@ -160,6 +160,22 @@ Hosted conversations share one permission policy: [`hosted-policy.ts`](../src/ha
 denies tools the harness did not admit and returns no result for `ask`, so the attached AHP participant owns the
 prompt. The demo host and session containers both import it; the application never fabricates approval.
 
+The local hybrid worker is the shared host. [`SharedAdmission`](../src/session-host/src/admission.ts) evaluates a
+harness against the same deployment description and stores the admitted snapshot; every activation re-checks it
+against current policy. [`sharedSessionSettings`](../src/session-host/src/harness-session.ts) maps the harness to
+SDK session settings the way `buildSessionOptions(..., "conversation")` does, except that skills come from a provider
+and built-in tool groups become application tools ([`toolkit.ts`](../src/session-host/src/toolkit.ts)). When you add
+a harness field that conversations see, update both mappings and the parity cases in
+[`shared-tools.test.ts`](../tests/unit/shared-tools.test.ts). An in-process binding (`shared:*`) must be listed in
+the conversation profile's `toolBindings` and `inProcessBindings`; batch and demo-host admission reject these
+bindings. A custom approval handler is reviewed code registered by name in
+[`permission-handlers.ts`](../src/session-host/src/permission-handlers.ts); the profile's `permissionHandlers` and
+the policy must also name it. Shared-worker unit suites need no runtime:
+
+```powershell
+pnpm exec vitest run --project unit tests\unit\shared-admission.test.ts tests\unit\shared-permissions.test.ts tests\unit\shared-tools.test.ts tests\unit\shared-api.test.ts tests\unit\shared-residency.test.ts
+```
+
 GitHub-native mode instead starts host-owned sessions through the released CLI server pinned in the host
 package. It supplies no app factories or custom provider and uses the standard Mission Control owner binding.
 Keep it independent of the deferred managed-runtime flags. Its Copilot models, permissions, and billing are
@@ -197,10 +213,16 @@ catalogs on one runtime. On the experimental hybrid branch, `tests/package.json`
 sibling `copilot-agent-runtime-hybrid` worktree. Build that SDK before restoring this application's
 dependencies. Existing batch/host package pins remain independent; this link does not upgrade a deployed service.
 
-The runtime worktree tracks `patniko/aspire-ahp-runtime-patches` and preserves the existing proposals.
+The runtime worktree tracks `patniko-runtime-capabilities-for-hosting-modes` (at least `62a6b07a10a`). That
+branch builds on `patniko/aspire-ahp-runtime-patches` and adds host approval-mode ceilings
+(`startAhpHost({ approvalModes })`), inherited human authority for assisted-approval judges, judge verdicts in SDK
+permission handlers (`followAssistedApproval`), and a CLI fix for `--ahp` resumes of sessions previously attached
+over the relay. Its in-process AHP host needs the `copilot-host` branch `patniko/hosting-modes-approval-ceiling`
+(at least `006b030`). The [qualification record](HOSTING-MODES-PLAN.md#runtime-capabilities) lists the exact
+revisions and artifact hashes.
 Follow its native build instructions and build the Node SDK from `src/sdk/nodejs`. Stage the resulting
 native launcher and its matching library together; set `COPILOT_CLI_PATH` to the launcher's absolute path
-before running `pnpm test:runtime`. The suite refuses a missing local artifact rather than downloading
+before running `pnpm test:runtime`. The linked SDK and the native pair must come from the same build. The suite refuses a missing local artifact rather than downloading
 or falling back to a published runtime. Local native builds and their SDK outputs are not committed here.
 Leave `COPILOT_AHP_FACTORY_PROFILE` unset for this primitive suite: it includes default-host controls
 without application factories. The shared-owner integration tests below explicitly require the managed
@@ -215,7 +237,7 @@ those source snapshots with the runtime's unchanged generated Bazel definitions.
 ```powershell
 .\deploy\build-hybrid-runtime.ps1 `
   -RuntimeRepository C:\projects\copilot-agent-runtime-hybrid `
-  -HostingRepository C:\projects\copilot-host-hybrid `
+  -HostingRepository C:\projects\copilot-host-hosting-modes `
   -MxcRepository C:\projects\mxc-pinned `
   -OutputDirectory C:\projects\copilot-sdk-aspire-hybrid\.runtime-artifacts\hybrid-linux
 ```
@@ -305,8 +327,8 @@ first CLI and shared worker, starts a replacement worker behind the same broker,
 PostgreSQL-backed conversation with a new ticket, and attaches a fresh CLI. It checks replayed history and
 prior-turn context in the next model request, with native anchors still empty. It does not contact a paid
 model provider or qualify two-account operation, process-crash recovery, or multi-replica failover.
-On Windows, the native pair must include runtime `0a32c39595f`'s workspace path-spelling fix; an older
-launcher refuses every CLI attachment with `application session resume failed`. For example:
+On Windows, use the native pair built with the linked SDK. A launcher without runtime `0a32c39595f`'s
+workspace path-spelling fix refuses every CLI attachment with `application session resume failed`. For example:
 
 ```powershell
 # Use the actual paths to your locally built, matching artifacts.
@@ -329,6 +351,11 @@ covers frame boundaries, ticket refusal, forwarded-only placement ingress, and `
 `tests/integration/connection-broker.test.ts` covers the real dispatcher and API routes, including live
 connections across an `agent-api` restart and a test-only placement change.
 
+The same flag enables `shared-approvals.test.ts`, which drives the in-process runtime against synthetic inference
+with no client attached: `allow-all` runs, `manual` never runs, the `assisted` judge is called through the gateway,
+what it approves runs and a decline or judge error does not, custom handlers approve, deny, and deny when they fail
+or time out, and managed settings refuse a mode the policy does not allow.
+
 The same flag enables `shared-egress-runtime.test.ts` for the
 [shared-placement egress library](SECURITY.md#shared-placement-egress-and-remote-mcp). A
 `SharedSessionRuntime` conversation driven by synthetic inference calls the filtered `web_fetch` and
@@ -342,6 +369,16 @@ no runtime or Docker:
 ```powershell
 pnpm exec vitest run --project unit tests\unit\egress-filter.test.ts tests\unit\remote-mcp.test.ts tests\unit\web-fetch-tool.test.ts tests\unit\shared-egress.test.ts
 ```
+
+`HYBRID_CLI_TESTS=1` also enables two shared-harness gates with the real CLI and synthetic inference.
+`shared-gate.test.ts` serves two harnesses to two API principals from one worker over direct WSS through the
+broker, with filtered web access and a fake remote MCP server, and checks principal and ticket isolation,
+`transport_unsupported` for the relay, refused internal addresses, credential redaction, and zero container
+allocations. Both principals bind to the one authorized GitHub account. `shared-approval-cli.test.ts` routes
+requests the `assisted` judge declines to the CLI's approval prompt, approves one and denies another, runs a request
+the judge approves without a prompt, and checks that the CLI's picker offers exactly the policy's modes and that a
+switch to another mode is refused. The approval gates need runtime `d89cfe45b29` (host `006b030`) or later, whose
+SDK passes the judge's verdict to the handler and whose host enforces `startAhpHost({ approvalModes })`.
 
 For the complete local CLI/container gate, build `copilot-hybrid-executor:local` (or set
 `HYBRID_EXECUTOR_IMAGE` to another tag), set the matching native/CLI paths and explicit account opt-in

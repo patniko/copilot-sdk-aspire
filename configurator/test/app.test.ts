@@ -441,6 +441,37 @@ describe("templates and imports", () => {
     expect(body.report.needsWork.join("\n")).toContain("override");
     expect(body.report.notApplicable.join("\n")).toContain("hooks");
   });
+
+  it("opens an exported crafted worker definition as an unsaved draft", async () => {
+    const definition = {
+      schemaVersion: "1", name: "notes-worker", version: "1.0.0-crafted", description: "A worker crafted by lead from crafting template 'general'.",
+      interaction: "conversation", instructions: "Keep concise notes in notes.md.", prompt: { mode: "append" },
+      model: { preferred: "grok-4.6", allowed: ["grok-4.6"] }, tools: [], builtinTools: ["files"],
+      permissions: { default: "ask", approvalMode: "manual" },
+      input: { schema: { type: "object", additionalProperties: false } }, output: { schema: { type: "object" } },
+      limits: { maxDurationSeconds: 900, maxInferenceTokens: 100000 }, retry: { safeToRetry: false, maxAttempts: 1 },
+      runners: { allowedProfiles: ["node-ts-agent"], defaultProfile: "node-ts-agent" },
+    };
+    const exported = {
+      workerId: "6f1c1f39-3f43-4b60-8d0e-6a4f5a7b1c2d", sessionId: "0b7a2c5e-2d7f-4b8a-9d1e-3c4b5a6d7e8f", name: "notes-worker",
+      source: "crafted", template: "general", digest: `sha256:${"c".repeat(64)}`, toolCallId: "call-1", createdAt: "2026-10-15T12:00:00.000Z", definition,
+    };
+    const response = await app.inject({ method: "POST", url: "/api/import/definition", headers: headers(), payload: { definition: exported } });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body.document).toMatchObject({
+      folder: "notes-worker", instructions: "Keep concise notes in notes.md.", skills: [],
+      manifest: { name: "notes-worker", version: "1.0.0", instructionsFile: "instructions.md", builtinTools: ["files"], permissions: { approvalMode: "manual" } },
+    });
+    expect(body.document.manifest.instructions).toBeUndefined();
+    expect(body.report.needsWork.join("\n")).toContain("crafting template 'general'");
+    expect(body.issues.filter((issue: { level: string }) => issue.level === "error")).toEqual([]);
+    const renamed = await app.inject({ method: "POST", url: "/api/import/definition", headers: headers(), payload: { definition, name: "Team Notes" } });
+    expect(renamed.json().document.manifest).toMatchObject({ name: "team-notes", version: "1.0.0" });
+    const invalid = await app.inject({ method: "POST", url: "/api/import/definition", headers: headers(), payload: { definition: { ...definition, name: "X" } } });
+    expect(invalid.statusCode).toBe(400);
+    await expect(readFile(join(root, "harnesses", "notes-worker", "harness.json"), "utf8")).rejects.toThrow();
+  });
 });
 
 describe("policy", () => {

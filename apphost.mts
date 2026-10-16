@@ -16,10 +16,28 @@ import {
 } from './.aspire/modules/aspire.mjs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { access } from 'node:fs/promises';
+import { access, readdir, readFile } from 'node:fs/promises';
 import { SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits } from './contracts/src/shared.js';
 import { SessionContainerSettings } from './contracts/src/session-container.js';
 import { CUSTOMER_WORKSPACE_DIR, ensureCustomerWorkspace } from './configurator/server/workspace.js';
+
+/** Secret references (`mcpServers.*.auth.secret`) in the customer's base policy and per-harness overrides. */
+async function mcpSecretReferences(configRoot: string): Promise<string[]> {
+  const policy = join(configRoot, 'policy');
+  const read = async (file: string) => JSON.parse(await readFile(join(policy, file), 'utf8')) as { mcpServers?: unknown; overrides?: { mcpServers?: unknown } };
+  const catalogs: unknown[] = [(await read('execution-policy.json')).mcpServers];
+  for (const name of (await readdir(join(policy, 'harnesses')).catch(() => [] as string[])).filter((entry) => entry.endsWith('.json'))) {
+    catalogs.push((await read(join('harnesses', name))).overrides?.mcpServers);
+  }
+  const secrets = new Set<string>();
+  for (const catalog of catalogs) {
+    for (const server of Object.values(catalog && typeof catalog === 'object' ? catalog : {})) {
+      const secret = (server as { auth?: { secret?: unknown } } | undefined)?.auth?.secret;
+      if (typeof secret === 'string' && /^[a-z][a-z0-9-]{1,62}$/.test(secret)) secrets.add(secret);
+    }
+  }
+  return [...secrets].sort();
+}
 
 const builder = await createBuilder();
 const isPublish = await builder.executionContext().isPublishMode();
@@ -154,8 +172,6 @@ const api = await service('agent-api')
 if (hybridEnabled === 'true') {
   const principals = SharedPrincipalBindings.parse(JSON.parse(await configured('Parameters:hybrid-principals', '{}')));
   if (!principals.dev) throw new Error('Map the local dev API principal to an approved numeric GitHub account in hybrid-principals.');
-  const model = await configured('Parameters:hybrid-model', '');
-  if (!model) throw new Error('Configure an approved hybrid-model before enabling shared hosting.');
   const runtimePath = await configured('Parameters:hybrid-runtime-path', '');
   if (!runtimePath) throw new Error('Configure hybrid-runtime-path to the qualified native launcher for this host OS.');
   await access(runtimePath);
@@ -179,10 +195,13 @@ if (hybridEnabled === 'true') {
     .withEnvironment('SHARED_WORKER_KEY', workerKey)
     .withEnvironment('CONNECTION_BROKER_KEY', brokerKey)
     .withEnvironment('SHARED_PRINCIPALS', JSON.stringify(principals))
-    .withEnvironment('SHARED_MODEL', model)
     .withEnvironment('SHARED_JOB_HARNESSES', await configured('Parameters:hybrid-harnesses', 'text-summarizer,copilot-coding-agent'))
     .withEnvironment('SHARED_WORKER_LIMITS', JSON.stringify(workerLimits))
     .withEnvironment('SHARED_SESSION_LIMITS', JSON.stringify(sessionLimits));
+  // Each remote MCP credential the customer policy references is an Aspire secret parameter, resolved only by the worker.
+  for (const secret of await mcpSecretReferences(customerConfigRoot)) {
+    await shared.withEnvironment(`MCP_SECRET_${secret.toUpperCase().replaceAll('-', '_')}`, await builder.addParameter(`mcp-secret-${secret}`, { secret: true }));
+  }
   const sharedEndpoint = await shared.getEndpoint('http');
   // CLI clients attach only through the broker, which consumes their tickets through the dispatcher and forwards to the
   // session's placement. It is separate from agent-api so that API restarts leave live connections up.

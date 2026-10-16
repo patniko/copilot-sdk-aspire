@@ -355,8 +355,10 @@ supplied custom statistics tool is pre-approved by its host binding and does not
 The interactive permission handler should not be mistaken for a generic approval wrapper around any future custom
 tool implementation.
 
-Local and remote MCP hosting are **not implemented**, even though the design and some contract vocabulary anticipate
-them. The configurator imports earlier Harness Builder plans with a report of unsupported/unmapped features;
+Remote MCP tools are available only to `shared` harnesses on the experimental local hybrid worker: the operator's
+catalog names each server and its approved tools, the worker connects over Streamable HTTP through an egress filter,
+and the server's credential stays in the host ([security](SECURITY.md#shared-placement-egress-and-remote-mcp)).
+Batch jobs and isolated hosts have no MCP connection, and local (stdio) MCP is **not implemented**. The configurator imports earlier Harness Builder plans with a report of unsupported/unmapped features;
 importing a plan does not make those features run.
 
 The configurator also offers [description-first Copilot authoring](CONFIGURATOR.md#copilot-assisted-authoring)

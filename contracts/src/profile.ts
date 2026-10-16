@@ -112,6 +112,8 @@ export const WorkerPolicy = z
     maxLifetimeSeconds: z.number().int().min(60).max(86_400).optional(),
     /** Whether coordinator harnesses may set `hosting.workers.humanAuthority: "inherit"`. */
     allowInheritedAuthority: z.boolean().optional(),
+    /** Whether a coordinator may answer its workers' questions. Permission requests always go to a person. */
+    allowCoordinatorAnswers: z.boolean().optional(),
   })
   .strict();
 export type WorkerPolicy = z.infer<typeof WorkerPolicy>;
@@ -123,6 +125,7 @@ export const DEFAULT_WORKER_POLICY: Readonly<Required<WorkerPolicy>> = Object.fr
   idleSeconds: 900,
   maxLifetimeSeconds: 3600,
   allowInheritedAuthority: false,
+  allowCoordinatorAnswers: false,
 });
 
 /** The ceiling for worker harnesses a coordinator crafts at runtime. Crafted definitions can only narrow it. */

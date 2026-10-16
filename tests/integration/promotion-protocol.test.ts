@@ -334,14 +334,16 @@ describe("promotion protocol", () => {
     });
     const host = buildSharedHost(service, workerKey, brokerKey);
     await host.listen({ port: 0, host: "127.0.0.1" });
+    const harnesses = new Map(registry.harnesses);
+    const profiles = new Map(registry.profiles);
     const catalog = {
-      harnesses: registry.harnesses, profiles: registry.profiles, policies: registry.policies,
+      harnesses, profiles, policies: registry.policies,
       deployment: hostingDeployment({ executor: "on-demand", sharedWorker: true, sessionContainers: true, promotion: true }),
     };
     const jobs = new JobStore(pool);
     const api = buildApi({
-      store: jobs, listener: new JobEventListener(pool), harnesses: registry.harnesses,
-      admission: new Admission({ harnesses: registry.harnesses, profiles: registry.profiles, policies: registry.policies }),
+      store: jobs, listener: new JobEventListener(pool), harnesses,
+      admission: new Admission({ harnesses, profiles, policies: registry.policies }),
       maxOpenJobsPerPrincipal: 10, console: false, authenticator: new ApiKeyAuthenticator(`${principal}:${apiKey}`), hosting: catalog,
       delegations: new DelegationStore(pool, shared, jobs),
       shared: { url: `http://127.0.0.1:${(host.server.address() as AddressInfo).port}`, key: workerKey, brokerUrl: "http://127.0.0.1:47001" },

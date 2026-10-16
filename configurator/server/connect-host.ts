@@ -69,9 +69,10 @@ async function main(): Promise<void> {
     console.log(`Resume later with: pnpm host:connect --harness ${harness} --resume ${connection.sessionId}`);
     // The launcher stays attached: when the session moves (for example after promotion), it reconnects the CLI.
     const script = /\.(?:cjs|mjs|js)$/i.test(values.cli);
+    const requested = values.transport;
     process.exitCode = await superviseSessionCli({
       command: script ? process.execPath : values.cli, args: [...(script ? [resolve(values.cli)] : []), ...args], env, connection,
-      provision: () => sharedConnection(api, { harness, transport: values.transport, resume: connection.sessionId }),
+      provision: () => sharedConnection(api, { harness, transport: requested, resume: connection.sessionId }),
     });
     return;
   } else {

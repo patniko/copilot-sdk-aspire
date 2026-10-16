@@ -1,4 +1,6 @@
-import { type HostingDeployment, SESSION_CONTAINER_FEATURES, SHARED_WORKER_FEATURES } from "@copilot-agent/contracts";
+import {
+  type HostingDeployment, SESSION_CONTAINER_FEATURES, SHARED_WORKER_FEATURES, WORKER_CONTAINER_FEATURES,
+} from "@copilot-agent/contracts";
 import { DEMO_HOST_FEATURES } from "@copilot-agent/service-defaults";
 
 /** The deployment configuration agent-api receives from the AppHost, as hosting inputs. */
@@ -19,6 +21,8 @@ export interface HostingConfiguration {
    * with the same session-container settings.
    */
   promotion?: boolean;
+  /** Whether orchestrator workers run in session containers (`ORCHESTRATOR_WORKERS`). */
+  workerContainers?: boolean;
 }
 
 /**
@@ -26,7 +30,8 @@ export interface HostingConfiguration {
  * The demo host is an isolated host for its one harness over direct WSS, the GitHub relay, or both; with the
  * `github` transport it runs GitHub-native sessions instead of the harness and adds no host. The local hybrid worker
  * is the shared worker, over direct WSS, with SHARED_WORKER_FEATURES. Session containers serve isolated harnesses for
- * any principal over direct WSS, with SESSION_CONTAINER_FEATURES.
+ * any principal over direct WSS, with SESSION_CONTAINER_FEATURES. Worker containers run orchestrator workers, with
+ * WORKER_CONTAINER_FEATURES.
  */
 export function hostingDeployment(configuration: HostingConfiguration): HostingDeployment {
   const demo = configuration.demoHost;
@@ -41,5 +46,6 @@ export function hostingDeployment(configuration: HostingConfiguration): HostingD
     ...(configuration.sharedWorker ? { sharedWorker: { transports: ["direct"], features: [
       ...SHARED_WORKER_FEATURES, ...(configuration.promotion && configuration.sessionContainers ? ["promotion" as const] : []),
     ] } } : {}),
+    ...(configuration.workerContainers ? { workerContainers: { features: [...WORKER_CONTAINER_FEATURES] } } : {}),
   };
 }
