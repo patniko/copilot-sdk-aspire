@@ -42,8 +42,9 @@ const jobs = new JobStore(pool);
 const delegations = new DelegationStore(pool, store, jobs);
 const jobAdmissions = new WeakMap<SharedRegistry, Admission>();
 const publicUrl = () => requireEnv("SHARED_PUBLIC_URL");
+const listener = new URL(publicUrl());
 const egress = createSharedEgress({
-  internal: [{ host: "127.0.0.1", port: Number(new URL(publicUrl()).port) }],
+  internal: [{ host: "127.0.0.1", port: Number(listener.port || (["https:", "wss:"].includes(listener.protocol) ? 443 : 80)) }],
   report: (event, detail) => logger.info({ event, ...detail }, "shared egress"),
 });
 const service = new SharedSessionService({

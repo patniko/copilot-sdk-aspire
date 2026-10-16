@@ -37,7 +37,7 @@ Store no credentials there, protect its delivery like application configuration,
 | Gap | Current state | Path to close |
 | --- | --- | --- |
 | Full diagnostic capture can retain sensitive workload content | When explicitly enabled, prompts, responses, reasoning, tool arguments/results, and SDK metadata are stored in PostgreSQL and returned to the job principal. Key-name redaction and size bounds do not detect secrets embedded in arbitrary text, and there is no per-field classification or separate retention policy. | Keep capture disabled in shared environments; add tenant-managed encryption, retention/deletion controls, content classification, and audit access before broader use. |
-| Egress is not enforced | Acknowledged (`egress-not-enforced`) and recorded on every job. Runners can open arbitrary outbound connections; they hold no credentials besides their capability. This matters more for harnesses with shell or web tools: an approved (or `allow`ed) command can reach the internet and internal endpoints. A per-harness override can require or acknowledge egress differently, but no shipped executor enforces it, so requiring it without acknowledgement leaves that harness's jobs queued. | Enforcement must be identical locally and in Azure. Container Apps grants neither `NET_ADMIN` nor user/network namespaces (probed 2026-10-07), so it needs a separately networked executor environment, which the Aspire 13.6 TypeScript AppHost cannot yet wire (see [plan](PLAN.md#per-harness-egress-allowlists-deferred)). Remove the acknowledgement only once both targets enforce it. |
+| Egress is not enforced | Acknowledged (`egress-not-enforced`) and recorded on every job. Runners can open arbitrary outbound connections; they hold no credentials besides their capability. This matters more for harnesses with shell or web tools: an approved (or `allow`ed) command can reach the internet and internal endpoints. A per-harness override can require or acknowledge egress differently, but no shipped executor enforces it, so requiring it without acknowledgement leaves that harness's jobs queued. The [shared-placement egress filter](#shared-placement-egress-and-remote-mcp) covers only requests a shared worker makes through it, not containers. | Enforcement must be identical locally and in Azure. Container Apps grants neither `NET_ADMIN` nor user/network namespaces (probed 2026-10-07), so it needs a separately networked executor environment, which the Aspire 13.6 TypeScript AppHost cannot yet wire (see [plan](PLAN.md#per-harness-egress-allowlists-deferred)). Remove the acknowledgement only once both targets enforce it. |
 | `allow` (yolo) permissions | When the policy allows it, a harness can approve shell commands, file writes and web access without review. The blast radius is the attempt's workspace, the runner user's view of the container, and the network (see egress). | Keep `allow` out of the policy for shared deployments; prefer `ask`. Per-job sandboxes would bound it further. |
 | Approver identity | The person who can answer a request is the job's principal (its API key). There is no separate approver role yet. | Entra ID callers and an approvers list per harness. |
 | Copilot runtime OS sandbox not enabled | SDK 1.0.16 exposes it experimentally (`session.rpc.options.update({ sandboxConfig })`), but its Linux backend reports network sandboxing unsupported in the executor container: Docker's default profile and Container Apps refuse the unprivileged user and network namespaces Bubblewrap needs (probed 2026-10-07). | Revisit on compute that permits namespaces; enable before untrusted initialization once supported. |
@@ -46,7 +46,7 @@ Store no credentials there, protect its delivery like application configuration,
 | PostgreSQL network exposure | Public endpoint with the "allow Azure services" firewall rule; password authentication disabled (Entra only). The API and dispatcher identities are Entra administrators. | Private networking and least-privilege database roles. |
 | Service keys are Container Apps secrets | Dispatcher, executor, and gateway keys plus the capability signing key are generated parameters stored as Container Apps secrets. | Key Vault references and a rotation procedure. |
 | API keys for callers | Suitable for development and service-to-service use. | Microsoft Entra ID authentication with application authorization. |
-| MCP not implemented | Local and remote MCP placements from the plan are not yet available. | Implement with the same capability and gateway model. |
+| MCP partially implemented | Local (stdio) MCP is not available, and remote MCP is available only in shared placement, through the [remote MCP client](#shared-placement-egress-and-remote-mcp) with one service credential per server. Per-user sign-in (OAuth) is not implemented. | Implement local MCP with the same capability and gateway model; extend remote MCP to container placements; add per-user OAuth. |
 | Single trust boundary per deployment | Principals are isolated in the API and ledger, but share execution infrastructure. | Do not market as cross-customer isolation. |
 
 ## Local authoring boundaries
@@ -162,3 +162,50 @@ untrusted model data; automatic completion turns are bounded and cannot delegate
 Ambiguous completion delivery is visible through session/job notification status instead of being
 silently replayed. A public service, Azure adapter, robust hostile-tenant containment and crash/failover
 qualification remain outside the proven local scope.
+
+### Shared-placement egress and remote MCP
+
+Status: the harness-driven shared worker uses this code for `web` and remote MCP; served-harness evidence is in
+the [shared mode record](HOSTING-MODES-PLAN.md#stage-2-harness-driven-shared-mode). The filter, client, and tools
+were verified locally by unit tests and an opt-in in-process runtime test, recorded in the
+[egress qualification record](HOSTING-MODES-PLAN.md#stage-2-shared-placement-egress-and-remote-mcp).
+
+A shared worker can reach PostgreSQL, internal services, and cloud metadata endpoints, so web and remote
+MCP requests it makes for an agent must not. [`EgressFilter`](../src/service-defaults/src/egress.ts) is an
+in-process filter for the requests made through it: the shared replacement for the runtime's `web_fetch`
+and the [remote MCP client](../src/service-defaults/src/remote-mcp.ts).
+
+- It refuses every destination that is not global unicast: loopback, unspecified, RFC 1918, shared
+  (CGNAT), link-local, IPv6 unique-local and site-local, multicast, broadcast, reserved, documentation and
+  benchmarking ranges, IPv4-mapped, IPv4-compatible and NAT64 forms, 6to4 and Teredo, and cloud metadata and
+  platform addresses such as `169.254.169.254`, `fd00:ec2::254`, and `168.63.129.16`. Special-use names
+  (`localhost`, `.local`, `.internal`, `.arpa`, and others) and single-label names are refused before DNS.
+- It refuses the deployment's own endpoints, by name and by resolved address and port, even when public.
+  The shared worker's adapter (`createSharedEgress`) configures them from Aspire service discovery and
+  connection strings, plus any operator-supplied hosts and networks. Until each configured host name has
+  resolved once, outbound requests are paused rather than allowed.
+- It resolves DNS once per hop, refuses the request if any answer is disallowed, and pins the connection to
+  the vetted addresses, so a second lookup cannot rebind it. Every redirect hop is vetted again, and
+  HTTPS-to-HTTP redirects are refused.
+- One deadline bounds each request, including redirects and the body; the body is bounded after
+  decompression. Credentials go only to the configured origin on the first hop, never after a redirect,
+  and only over HTTPS to public addresses. Native network errors, which can name internal addresses, are
+  replaced with generic messages.
+
+`web_fetch` keeps the runtime's permission request, so the host's permission handler decides each call, and
+it also applies the harness `url` rule itself: `deny` never fetches and only `allow` follows a redirect to
+another host. The remote MCP client refuses all redirects, exposes only tools in both the operator catalog
+and the harness request, resolves each server's single credential inside the host from a secret reference
+(`MCP_SECRET_<NAME>` environment variables locally), and redacts the credential and common encodings of it
+from tool descriptions, schemas, results, and errors. Redaction guards against accidental echo; a server
+can always disclose its own credential deliberately. A server's read-only hint never relaxes approval.
+
+An operator can set `allowPrivateNetwork` on one catalog server for development. Only that exact origin may
+then use a local or single-label host name, resolve to loopback, private, shared, or unique-local
+addresses, and use plain HTTP; link-local and metadata addresses, the deployment's internal endpoints, and
+redirects stay refused.
+
+Not covered: traffic that does not use the filter, including the runtime's own networking, other code in
+the process, and every container, so egress remains unenforced there. The filter is not a network sandbox
+and does not contain a compromised worker; the Azure design adds an egress proxy in front of the shared
+worker. Fetched pages and remote MCP tool descriptions, schemas, and results remain untrusted model input.

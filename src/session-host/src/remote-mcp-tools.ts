@@ -22,9 +22,9 @@ export function remoteMcpTools(descriptors: readonly RemoteMcpToolDescriptor[], 
   }));
 }
 
-/** Finds the remote MCP tool behind an exposed tool name, for permission prompts (`server:tool`, read-only hint). */
-export function remoteMcpToolFor(descriptors: readonly RemoteMcpToolDescriptor[], toolName: string): Pick<RemoteMcpToolDescriptor, "server" | "tool" | "readOnly"> | undefined {
+/** Finds the remote MCP tool behind an exposed tool name, for permission prompts. `readOnly` is always false: server hints never relax approval. */
+export function remoteMcpToolFor(descriptors: readonly RemoteMcpToolDescriptor[], toolName: string): Pick<RemoteMcpToolDescriptor, "server" | "tool" | "readOnly" | "readOnlyHint"> | undefined {
   const name = toolName.startsWith("custom:") ? toolName.slice("custom:".length) : toolName;
   const descriptor = descriptors.find((entry) => entry.name === name);
-  return descriptor ? { server: descriptor.server, tool: descriptor.tool, readOnly: descriptor.readOnly } : undefined;
+  return descriptor ? { server: descriptor.server, tool: descriptor.tool, readOnly: descriptor.readOnly, readOnlyHint: descriptor.readOnlyHint } : undefined;
 }
