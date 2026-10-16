@@ -160,8 +160,9 @@ deployed. The [hosting views](#hosting-views) show whether a harness can be crea
 | --- | --- | --- |
 | `POST` | `/v1/sessions` | Body `{ "harness": "<published conversation harness>", "version": "<optional>", "label": "<optional>" }`; the harness's hosting mode decides placement (`shared` on the shared worker, `isolated` in a [session container](#session-containers)). `201` with a retained session, including its harness, mode, placement, and current segment, and `Location`. Does not allocate an execution container or activate a runtime session. |
 | `GET` | `/v1/sessions` | `{ sessions }`, up to 100 recent principal-owned sessions, including closed ones |
-| `GET` | `/v1/sessions/{id}` | The session view: `harness` (`name`, `version`, `digest`), `mode`, `placement` (`shared` or `container`), the current `segment` (`generation`, `placement`, `harness`, `ahpSessionId`, `startedAt`), a session container's `container` status, admitted model, limits, activity timestamp, closed/online state, used/reserved/remaining budget, and jobs and continuation counts |
-| `POST` | `/v1/sessions/{id}/connection` | Body `{ "transport": "direct" }` (the default; `github` returns the harness's hosting error, such as `422 transport_unsupported` for shared hosting). Activate/resume, then return `{ sessionId, destination, transport: "direct", ahpSessionId, url, token, expiresAt, serverKey }` with `Cache-Control: no-store`. `destination` is `shared` or `container`; `url` is the connection broker's `/sessions/{id}` path; resume `ahpSessionId` after attaching |
+| `GET` | `/v1/sessions/{id}` | The session view: `harness` (`name`, `version`, `digest`), `mode`, `placement` (`shared` or `container`), the current `segment` (`generation`, `placement`, `harness`, `ahpSessionId`, `startedAt`), the latest [`promotion`](#promotion) if any, a session container's `container` status, admitted model, limits, activity timestamp, closed/online state, used/reserved/remaining budget, and jobs and continuation counts |
+| `POST` | `/v1/sessions/{id}/connection` | Body `{ "transport": "direct" }` (the default; `github` returns the harness's hosting error, such as `422 transport_unsupported` for shared hosting). Activate/resume, then return `{ sessionId, destination, transport: "direct", ahpSessionId, url, token, expiresAt, serverKey }` with `Cache-Control: no-store`. `destination` is `shared` or `container`; `url` is the connection broker's `/sessions/{id}` path; resume `ahpSessionId` (the current segment's runtime session) after attaching |
+| `POST` | `/v1/sessions/{id}/promote` | One-way [promotion](#promotion) of a `promotable` session into its own container; `202` when created, `200` with the existing promotion |
 | `GET` | `/v1/sessions/{id}/jobs` | Child job IDs/states and completion-notification state/error, including `needs_review` |
 | `GET` | `/v1/sessions/{id}/handoffs` | `{ handoffs }`: the session's [handoffs](#handoffs), newest first, up to 50 |
 | `POST` | `/v1/sessions/{id}/close` | Body `{ "cancelChildren": false }` by default; prevents new work and disconnects runtime residency without deleting retained data |
@@ -194,8 +195,10 @@ among the modes the effective policy allows. With nobody attached, a request tha
 
 If a session's placement changes while a client is attached, the broker closes the WebSocket with code `4301`
 and reason `moved` after any frame already in flight. Request a new connection for the same session and
-reconnect to the same URL, resuming the `ahpSessionId` the new connection returns. A [handoff](#handoffs) closes
-attached clients this way when the target's segment starts. Other closes, such as idle eviction, pass through unchanged.
+reconnect to the same URL, resuming the `ahpSessionId` the new connection returns. [Promotion](#promotion) moves a
+session from `shared` to `container`, and its clients are closed this way when the move begins; a [handoff](#handoffs)
+closes them when the target's segment starts, or when its move into the target's container begins.
+`pnpm host:connect` reconnects for the person. Other closes, such as idle eviction, pass through unchanged.
 
 Idle eviction disconnects the CLI but preserves history/files. Closure does not cancel already-admitted
 children unless `cancelChildren` is true. Child outputs remain available through job/artifact endpoints.
@@ -313,6 +316,47 @@ container and releases its retained volume.
 
 Container sessions have no delegated jobs, so their jobs route returns an empty list.
 
+### Promotion
+
+A session of a `promotable` harness starts on the shared worker and can move, one way, into its own
+[session container](#session-containers). The deployment must run both, with the shared worker given the
+session-container settings; the [hosting views](#hosting-views) then list `promotion` among the shared worker's
+features. The conversation's agent asks with the `promote_session` tool, which only promotable harnesses get, or the
+session's owner asks through the API:
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `POST` | `/v1/sessions/{id}/promote` | Body `{ "reason": "<optional, up to 500 characters>" }` and an optional `Idempotency-Key` header (`[A-Za-z0-9._:-]{1,128}`). `202` with `{ sessionId, created: true, promotion }` for a new promotion; `200` with `created: false` and the session's open or committed promotion otherwise, including for a session already promoted |
+
+`promotion` is `{ id, state, source, reason, size, requestedAt, committedAt?, failedAt?, error? }` and also appears in
+the session view. `source` is `tool` or `api`. `state` moves from `requested` through `moving` and `starting` to
+`committed`, or ends `failed`. The size is the harness's effective `hosting.promotion.size`. With
+`hosting.promotion.approval: "ask"` the tool call goes through the session's approval flow, so under `manual` the
+attached person decides; a declined call records nothing. With `allow` it runs without a prompt.
+
+A promotion asked for during a turn starts when that turn ends; one asked through the API while no turn runs starts
+at once. While it is open the session admits no new turns, a connection request returns `409 promotion_in_progress`,
+and clients attached to the shared worker are closed with `4301 moved`. When the container reports ready it commits
+the cutover: the view changes to `placement: "container"` (its `mode` stays `promotable`) with the next `segment`
+(`generation`, `placement: "container"`, the same `ahpSessionId`), and the conversation continues there with its
+history and workspace files. The agent receives one system note that names the move and maps the old workspace path to the new
+one. Interrupted work is not replayed. After the cutover the session behaves as a [container session](#session-containers),
+including idle stops and resumes from its volume. Nothing moves it back.
+
+A failure before the cutover leaves the session shared and accepting turns, releases the container, and fails the
+promotion with an `error.code`. An agent that asked through the tool is told why once; an API caller reads it from
+the promotion.
+
+| Code | Status from the API | Meaning |
+| --- | --- | --- |
+| `promotion_not_allowed` | `409` | The harness is not promotable or its promotion settings are no longer allowed |
+| `promotion_unavailable` | `409` | The shared worker cannot start session containers (`prerequisite` `session-containers`) |
+| `promotion_capacity` | `429` | No container capacity now |
+| `snapshot_failed`, `snapshot_stale` | (in `error`) | The conversation's storage was still held or unreadable, or it changed after the snapshot |
+| `allocation_failed`, `startup_failed`, `restore_failed` | (in `error`) | The container could not be reserved, stopped before it was ready, or could not restore the snapshot |
+| `session_changed` | (in `error`) | The session closed or changed placement during the move |
+| `promotion_timeout` | (in `error`) | The container did not report ready within its startup limit plus a minute |
+
 ## Orchestrator workers
 
 An `orchestrator` coordinator's workers are child sessions of a shared conversation, each with its own harness, size,
@@ -372,7 +416,8 @@ no connection material, and change nothing. Any authenticated principal can read
 the calling principal. The [hosting modes plan](HOSTING-MODES-PLAN.md) describes the modes. Today conversations run
 in `isolated` mode on an optional [agent host](#experimental-demo-host-control) (the demo host or a local per-harness
 owner host) or in [session containers](#session-containers), in `shared` mode on the local hybrid worker
-([shared conversations](#experimental-shared-conversations)), and in `orchestrator` mode on the shared worker with
+([shared conversations](#experimental-shared-conversations)), which also starts `promotable` conversations and
+[promotes](#promotion) them into session containers, and in `orchestrator` mode on the shared worker with
 [workers](#orchestrator-workers) in session containers; batch harnesses run as jobs.
 Implemented in [hosting-routes.ts](../src/agent-api/src/hosting-routes.ts) with contracts in
 [hosting.ts](../contracts/src/hosting.ts).
@@ -381,8 +426,8 @@ Implemented in [hosting-routes.ts](../src/agent-api/src/hosting-routes.ts) with 
 `executor` (`pool` or `dedicated`), `isolatedHosts` (each managed agent host and the harness it serves, with its
 transports), `sharedWorker` (the local hybrid worker), `sessionContainers` (per-session containers, when enabled), and
 `workerContainers` (orchestrator workers, when enabled). Each host lists the harness `features` it implements: the
-shared worker implements `remote-mcp`, `approval-modes`, `custom-approval`, and `handoffs`, plus `promotion` when
-session containers are enabled; worker containers implement `approval-modes`, `crafted-workers`,
+shared worker implements `remote-mcp`, `approval-modes`, `custom-approval`, and `handoffs`, plus `promotion` when it
+has the session-container settings; worker containers implement `approval-modes`, `crafted-workers`,
 `inherited-authority`, and `shared-storage`; agent hosts and session containers implement none.
 GitHub-native demo hosting runs Copilot's own sessions rather than a harness, so it adds no isolated host. Owner
 principals are not returned.

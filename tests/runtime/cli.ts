@@ -28,6 +28,7 @@ export class QualificationCli {
   readonly #secrets = new Set<string>();
   /** Status lines the launcher's supervisor printed, and an incomplete trailing line. */
   readonly #launcher: string[] = [];
+  readonly #sequences = new Set<string>();
   #line = "";
   /** Output since the current CLI started (a launcher restart starts it afresh). */
   #current = "";
@@ -134,7 +135,7 @@ export class QualificationCli {
     this.#exit = new Promise((resolveExit) => this.#terminal!.onExit(() => { this.#exited = true; resolveExit(); }));
   }
 
-  /** Records completed `[launcher]` status lines; true when one announces a CLI restart. */
+  /** Records completed `[launcher]` status lines once each; true when a new one announces a CLI restart. */
   #scanLauncher(text: string): boolean {
     let restarted = false;
     this.#line = (this.#line + text).slice(-10_000);
@@ -143,8 +144,15 @@ export class QualificationCli {
       this.#line = this.#line.slice(end + 1);
       const at = line.indexOf("[launcher]");
       if (at < 0) continue;
-      this.#launcher.push(line.slice(at).trim());
-      if (line.includes("Resuming session")) restarted = true;
+      const entry = line.slice(at).trim();
+      // Windows ConPTY repaints earlier output when the screen changes; a numbered line already seen is a repaint.
+      const sequence = /^\[launcher\] #(\d+) /.exec(entry)?.[1];
+      if (sequence !== undefined) {
+        if (this.#sequences.has(sequence)) continue;
+        this.#sequences.add(sequence);
+      }
+      this.#launcher.push(entry);
+      if (entry.includes("Resuming session")) restarted = true;
     }
     return restarted;
   }

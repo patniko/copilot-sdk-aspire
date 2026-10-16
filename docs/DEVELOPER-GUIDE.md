@@ -298,7 +298,8 @@ storage quotas. The initial bounds are eight MiB per file, 64 MiB and 2,048 entr
 Metadata/listing queries do not load file payloads. This is bounded session storage, not the large-job artifact
 store; append rewrites a bounded file and needs measurement before high-volume transcript use.
 The `postgresSessionFilesystem` adapter supplies that storage to the shared-host library without native
-filesystem I/O. Windows provider keys are case-folded within their namespace.
+filesystem I/O. Windows provider keys are case-folded within their namespace; each entry keeps the name it was
+created with (`session_files.display_name`), which listings and promotion snapshots return.
 
 `SharedSessionRuntime` is a local prototype owner over one in-process client. It publishes one
 account/workspace-scoped AHP listener per admitted conversation, backed by PostgreSQL session files.
@@ -371,7 +372,9 @@ PostgreSQL without a native runtime and cover atomic admission, scopes, quotas, 
 The connection broker's ordinary suites need no native runtime: `tests/unit/connection-broker.test.ts`
 covers frame boundaries, ticket refusal, forwarded-only placement ingress, and `moved` closes, and
 `tests/integration/connection-broker.test.ts` covers the real dispatcher and API routes, including live
-connections across an `agent-api` restart and a test-only placement change.
+connections across an `agent-api` restart and a test-only placement change. The frame parsing lives in
+`service-defaults` ([`websocket-frames.ts`](../src/service-defaults/src/websocket-frames.ts)), shared with the
+launcher's supervisor.
 
 The same flag enables `shared-approvals.test.ts`, which drives the in-process runtime against synthetic inference
 with no client attached: `allow-all` runs, `manual` never runs, the `assisted` judge is called through the gateway,
@@ -510,6 +513,43 @@ request queue and never for the coordinator; that the judge allows a write the p
 only the coordinator asked for reaches a person; that the coordinator's file tools read the workers' shared files;
 and that after archiving, no containers remain and capacity returns to zero. It removes the volumes it created and
 uses no paid model or Azure resource.
+
+[Promotion](ARCHITECTURE.md#promotion) has ordinary suites and two opt-in gates. Without a native runtime or Docker:
+
+- `tests/integration/promotions.test.ts`: the ledger. Idempotent requests; capture under a fenced lease with kept
+  names and the consent files left behind; snapshot pages served only to their allocation; restore; the cutover
+  commit with fencing and the one-way trigger; failures before cutover; and moves that continue an earlier segment's
+  runtime session.
+- `tests/integration/promotion-protocol.test.ts`: the shared worker's coordinator, the real dispatcher routes,
+  broker route checks, the agent API and the shared worker's control routes, with a simulated container. Every
+  failure before cutover leaves the session shared, a handoff-shaped move installs its target, and a promoted
+  session gets a new container after an idle stop.
+- `tests/unit/promotion.test.ts`: restore integrity, the tool's approval rules, the hosting offer, and the moved close
+  code.
+- `tests/unit/cli-supervisor.test.ts`, `tests/integration/cli-supervision.test.ts`: the launcher's supervisor against
+  a fake CLI, and against the real broker with a test-only placement change.
+
+`HYBRID_PROMOTION_TESTS=1` enables `promotion-transplant.test.ts`, the history-transplant gate. A conversation written
+through the PostgreSQL-backed shared runtime, on this host and in the shared-worker image (`HYBRID_SESSION_IMAGE`),
+is snapshotted, restored into a Linux container at `/workspace`, and resumed with its history, prior-turn context,
+and mixed-case file names. With `HYBRID_CLI_TESTS=1` as well, `promotion-cli.test.ts` is the promotion exit gate: a
+real CLI runs under the launcher's supervisor in one pseudo-terminal
+([`supervised-cli.ts`](../tests/runtime/supervised-cli.ts)); the conversation writes notes, calls `promote_session`
+mid-task, and continues in a real session container with the shell and the same files, in the same terminal. It then
+kills that container: the next connection starts a replacement from the session volume, and the launcher restarts the
+CLI against it in the same terminal. Set the
+native pair, CLI path and account opt-in above, build the shared-worker, session-container and executor images
+(`HYBRID_EXECUTOR_IMAGE`, as for the session-container gate), then run:
+
+```powershell
+$env:HYBRID_PROMOTION_TESTS = '1'
+$env:HYBRID_CLI_TESTS = '1'
+$env:HYBRID_SESSION_IMAGE = 'copilot-hybrid-session-host:local'          # or your branch's tag
+$env:HYBRID_SESSION_CONTAINER_IMAGE = 'copilot-session-container:local'  # or your branch's tag
+pnpm exec vitest run --project integration tests\integration\promotion-transplant.test.ts tests\integration\promotion-cli.test.ts
+```
+
+Both use synthetic inference and remove the containers and volumes they create.
 
 The separate `tests/integration/github-native-host.test.ts` opt-in uses `DEMO_GITHUB_HOST_TESTS=1`,
 the same explicit GitHub credential variables, and `copilot-aspire-agent-host:native-demo` (or
