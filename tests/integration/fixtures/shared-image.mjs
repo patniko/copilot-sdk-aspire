@@ -5,7 +5,7 @@ import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import pg from "pg";
 import { SharedSessionDefinition, SharedSessionLimits, SharedWorkerLimits } from "@copilot-agent/contracts";
-import { migrate, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
+import { migrate, PlacementStore, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
 import { SharedSessionService } from "./dist/service.js";
 
 assert.equal(process.platform, "linux");
@@ -43,7 +43,6 @@ try {
     }),
     limits: SharedWorkerLimits.parse({}),
     gatewayUrl: `http://127.0.0.1:${upstream.address().port}`,
-    publicUrl: () => "http://127.0.0.1:8080",
     mintToken: async (lease, turn) => { await store.grant(lease, turn.id); return "synthetic-unused"; },
     report: (event) => { if (event.endsWith("_failed")) console.error(event); },
   };
@@ -52,8 +51,12 @@ try {
   sessionId = (await service.create(principal, "image qualification")).id;
   const connection = await service.connection(principal, sessionId);
   assert.ok(connection.serverKey.publicKey);
-  assert.ok(await service.resolveConnection(`/sessions/${sessionId}`, connection.token));
-  assert.equal(await service.resolveConnection(`/sessions/${sessionId}`, connection.token), undefined);
+  const placements = new PlacementStore(pool);
+  const route = await placements.consumeTicket(sessionId, connection.token);
+  assert.equal(route?.kind, "shared");
+  assert.equal(await placements.consumeTicket(sessionId, connection.token), undefined);
+  assert.equal(await service.resolveForwarded(`/sessions/${sessionId}`, randomUUID()), undefined);
+  assert.ok(await service.resolveForwarded(`/sessions/${sessionId}`, route.epoch));
   await service.continueConversation(principal, sessionId, notice, "Reply briefly.");
   const deadline = Date.now() + 30_000;
   while (requests === 0 || service.busy(sessionId)) {
@@ -67,7 +70,7 @@ try {
   await service.ensure(principal, sessionId);
   assert.equal(await service.continueConversation(principal, sessionId, notice, "Do not replay."), "already-delivered");
   assert.equal(requests, 1);
-  console.log("Linux shared image passed: unprivileged in-process worker, PostgreSQL state, one-use ticket, replacement and no replay.");
+  console.log("Linux shared image passed: unprivileged in-process worker, PostgreSQL state, one-use brokered ticket, forwarded-only ingress, replacement and no replay.");
 } finally {
   try { await service?.stop(); }
   finally {

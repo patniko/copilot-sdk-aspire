@@ -13,6 +13,7 @@ import { CompletionPump } from "./completions.js";
 
 const logger = createLogger("session-host");
 const key = requireEnv("SHARED_WORKER_KEY");
+const brokerKey = requireEnv("CONNECTION_BROKER_KEY");
 const principals = SharedPrincipalBindings.parse(JSON.parse(requireEnv("SHARED_PRINCIPALS")));
 const limits = SharedWorkerLimits.parse(JSON.parse(optionalEnv("SHARED_WORKER_LIMITS", "{}")));
 const policies = await loadPolicySet();
@@ -39,7 +40,6 @@ const service = new SharedSessionService({
   root: optionalEnv("SHARED_SESSION_DATA", join(process.cwd(), ".shared-session-data")),
   store, files: new SessionFileStore(pool), principals, definition, limits,
   gatewayUrl: `${serviceUrl("inference-gateway")}/openai/v1`,
-  publicUrl: () => requireEnv("SHARED_PUBLIC_URL"),
   mintToken: async (lease, turn) => {
     const response = await fetch(`${serviceUrl("job-dispatcher")}/internal/shared/grant`, {
       method: "POST", headers: { "content-type": "application/json", "x-internal-key": key },
@@ -52,7 +52,7 @@ const service = new SharedSessionService({
   tools: (session, context, currentTurn) => coordinatorTools(session, context, currentTurn,
     { admission, profiles, jobs, delegations, maxOpenJobs: policies.base.maxQueuedJobsPerPrincipal }),
 });
-const app = buildSharedHost(service, key);
+const app = buildSharedHost(service, key, brokerKey);
 const completions = new CompletionPump(service, delegations, jobs, logger);
 app.addHook("preClose", async () => { await completions.stop(); });
 app.addHook("onClose", async () => { await pool.end(); });

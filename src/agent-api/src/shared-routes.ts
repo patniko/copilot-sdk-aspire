@@ -1,12 +1,29 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { SharedConnection, SharedSessionClosure, SharedSessionCreation, SharedSessionView } from "@copilot-agent/contracts";
+import { ConnectionTicket, SharedConnection, SharedSessionClosure, SharedSessionCreation, SharedSessionView } from "@copilot-agent/contracts";
 import { HttpError } from "@copilot-agent/service-defaults";
 import type { DelegationStore } from "@copilot-agent/job-store";
 
-export interface SharedApiDependencies { url: string; key: string }
+/** `url` and `key` reach the shared worker's control API; `brokerUrl` is the connection broker's public origin. */
+export interface SharedApiDependencies { url: string; key: string; brokerUrl: string }
+
+/** The broker's public WebSocket origin; connection responses add `/sessions/{id}`. */
+export function brokerOrigin(value: string): URL {
+  const url = new URL(value);
+  if (url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+    throw new Error("The connection broker URL must be an origin without credentials, a path, a query, or a fragment.");
+  }
+  if (url.protocol === "http:") url.protocol = "ws:";
+  else if (url.protocol === "https:") url.protocol = "wss:";
+  if (url.protocol !== "ws:" && url.protocol !== "wss:") throw new Error("The connection broker URL must use HTTP(S) or WS(S).");
+  if (url.protocol === "ws:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
+    throw new Error("Unencrypted CLI connections are restricted to a loopback connection broker.");
+  }
+  return url;
+}
 
 export function registerSharedSessionRoutes(app: FastifyInstance, deps: SharedApiDependencies, principalOf: (request: FastifyRequest) => string, delegations?: DelegationStore): void {
+  const broker = brokerOrigin(deps.brokerUrl);
   const idOf = (request: FastifyRequest): string => {
     const parsed = z.object({ id: z.string().uuid() }).safeParse(request.params);
     if (!parsed.success) throw new HttpError(404, "not_found", "The shared conversation was not found.");
@@ -58,7 +75,10 @@ export function registerSharedSessionRoutes(app: FastifyInstance, deps: SharedAp
   });
   app.post("/v1/sessions/:id/connection", async (request, reply) => {
     reply.header("cache-control", "no-store");
-    return control(principalOf(request), { operation: "connect", id: idOf(request) }, SharedConnection);
+    const id = idOf(request);
+    const ticket = await control(principalOf(request), { operation: "connect", id }, ConnectionTicket);
+    if (ticket.sessionId !== id) throw new HttpError(502, "invalid_shared_response", "The shared service returned an invalid response.");
+    return SharedConnection.parse({ ...ticket, destination: "shared", url: new URL(`/sessions/${id}`, broker).href });
   });
   app.post("/v1/sessions/:id/close", async (request) => {
     const principal = principalOf(request);

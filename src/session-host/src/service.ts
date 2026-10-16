@@ -1,7 +1,7 @@
 import type { SessionConfig } from "@github/copilot-sdk";
-import { SharedPrincipalBindings, SharedSessionDefinition, SharedWorkerLimits, type SharedConnection } from "@copilot-agent/contracts";
+import { SharedPrincipalBindings, SharedSessionDefinition, SharedWorkerLimits, type ConnectionTicket } from "@copilot-agent/contracts";
 import { SessionFileStore, SharedStore, StoreError, type SessionFileLease, type SharedSessionRecord, type SharedTurn } from "@copilot-agent/job-store";
-import { readServerKey } from "@copilot-agent/service-defaults";
+import { readServerKey, type AhpProxyTarget } from "@copilot-agent/service-defaults";
 import { SharedSessionRuntime, type SharedActivationContext } from "./runtime.js";
 import { SharedTurnScheduler } from "./scheduler.js";
 
@@ -22,13 +22,15 @@ export interface SharedServiceOptions {
   definition: SharedSessionDefinition;
   limits: SharedWorkerLimits;
   gatewayUrl: string;
-  publicUrl: () => string;
   mintToken: (lease: SessionFileLease, turn: SharedTurn) => Promise<string>;
   report: (event: string, id: string) => void;
   tools?: (record: SharedSessionRecord, context: SharedActivationContext, currentTurn: () => SharedTurn) => NonNullable<SessionConfig["tools"]>;
 }
 
-/** One shared runtime owner; public callers receive activation-bound tickets, never native listener secrets. */
+/**
+ * One shared runtime owner. Callers receive activation-bound one-use tickets, which only the connection broker
+ * consumes; native listener secrets never leave this process.
+ */
 export class SharedSessionService {
   readonly #runtime: SharedSessionRuntime;
   readonly #scheduler: SharedTurnScheduler;
@@ -101,26 +103,22 @@ export class SharedSessionService {
     return row;
   }
 
-  async connection(principal: string, id: string): Promise<SharedConnection> {
+  /** Activates the session and issues a one-use ticket; the API adds the broker URL. */
+  async connection(principal: string, id: string): Promise<ConnectionTicket> {
     await this.ensure(principal, id);
-    const ticket = await this.options.store.issueTicket(principal, id);
-    const url = new URL(this.options.publicUrl());
-    if (url.username || url.password || url.search || url.hash || !["http:", "https:", "ws:", "wss:"].includes(url.protocol)) {
-      throw new Error("Invalid public shared-worker URL.");
-    }
-    url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
-    if (url.protocol === "ws:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
-      throw new Error("Unencrypted shared CLI connections are restricted to loopback.");
-    }
-    url.pathname = `/sessions/${id}`;
-    return { sessionId: id, destination: "shared", url: url.href, ...ticket };
+    return { sessionId: id, ...(await this.options.store.issueTicket(principal, id)) };
   }
 
-  async resolveConnection(path: string, ticket: string): Promise<{ token: string; targetPort: number } | undefined> {
-    const match = /^\/sessions\/([0-9a-f-]{36})$/i.exec(path);
-    const resident = match ? this.#residents.get(match[1]!) : undefined;
-    if (!resident?.connection || resident.closing || resident.controller.signal.aborted) return undefined;
-    if (!(await this.options.store.consumeTicket(resident.context.lease, ticket))) return undefined;
+  /**
+   * Resolves a connection the broker forwarded after consuming a ticket for `epoch`. A replaced, closing, or evicted
+   * activation refuses it, so a ticket attaches only to the activation it was issued for.
+   */
+  async resolveForwarded(path: string, epoch: string | undefined): Promise<AhpProxyTarget | undefined> {
+    const match = /^\/sessions\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.exec(path);
+    const resident = match ? this.#residents.get(match[1]!.toLowerCase()) : undefined;
+    if (!epoch || !resident?.connection || resident.closing || resident.controller.signal.aborted || resident.context.lease.epoch !== epoch) {
+      return undefined;
+    }
     resident.lastActivity = Date.now();
     return { token: resident.connection.token, targetPort: Number(new URL(resident.connection.url).port) };
   }
