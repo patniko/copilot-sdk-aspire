@@ -57,9 +57,10 @@ export async function sharedToolset(
     }), egressContext);
     for (const tool of connection.tools) {
       const remote = remoteMcpToolFor(connection.descriptors, tool.name);
+      // A remote server's read-only hint is untrusted, so remote tools never run quietly under `ask`.
       entries.push({
         tool,
-        rule: { kind: "mcp", quietUnderAsk: remote?.readOnly === true, target: () => (remote ? `${remote.server}:${remote.tool}` : undefined) },
+        rule: { kind: "mcp", target: () => (remote ? `${remote.server}:${remote.tool}` : undefined) },
       });
     }
   }
