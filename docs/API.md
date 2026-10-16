@@ -186,8 +186,9 @@ requires its exact current etag. Arbitrary attempt files and runtime history are
 whether this deployment can host it, from the harness's optional `hosting` block, its effective policy (the base
 policy plus any override), and the hosts the deployment provides. They are read-only: they create no session, issue
 no connection material, and change nothing. Any authenticated principal can read them; transports are evaluated for
-the calling principal. The [hosting modes plan](HOSTING-MODES-PLAN.md) describes the modes; today only `isolated`
-conversations run, on the optional [demo host](#experimental-demo-host-control), and batch harnesses run as jobs.
+the calling principal. The [hosting modes plan](HOSTING-MODES-PLAN.md) describes the modes. Today harness-driven
+conversations run only in `isolated` mode, on the optional [demo host](#experimental-demo-host-control); batch
+harnesses run as jobs, and the local hybrid worker still runs only its fixed coordinator.
 Implemented in [hosting-routes.ts](../src/agent-api/src/hosting-routes.ts) with contracts in
 [hosting.ts](../contracts/src/hosting.ts).
 
@@ -229,8 +230,7 @@ in the AppHost), so other principals see `hosting_unavailable` for direct WSS, n
 `relay_owner_only` for the GitHub relay. `ready` for `shared` reflects that the local hybrid worker is deployed;
 harness-driven shared sessions are not implemented yet.
 
-Unknown harnesses or versions return `404 harness_not_found`; an invalid `version` or other query parameter
-returns `400 invalid_request`.
+Unknown harnesses or versions return `404 harness_not_found`; an invalid `version` returns `400 invalid_request`.
 
 ## Events
 

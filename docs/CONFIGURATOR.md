@@ -82,8 +82,8 @@ controls for them yet, so edit `harness.json` or the policy files in the workspa
 the same contracts as the API, at their field paths: for example `hosting.mode` when the effective policy does not
 allow the mode, or `mcpServers.0.server` for a server outside the catalog. Saving a harness override from the Policy
 page keeps the values the override already has for these fields, and their issues are listed under **Applies to**.
-Only `isolated` conversations run today; the API's [hosting views](API.md#hosting-views) show what the running
-deployment can host.
+Harness-driven conversations run only in `isolated` mode today; the API's [hosting views](API.md#hosting-views) show
+what the running deployment can host.
 
 ## Hosting and topology
 
