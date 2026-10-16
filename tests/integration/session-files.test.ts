@@ -77,11 +77,42 @@ describe("leased session files in PostgreSQL", () => {
     await provider.writeFile("C:\\virtual\\workspace\\File.TXT", "provider content");
     expect(await provider.readFile("c:\\VIRTUAL\\workspace\\file.txt")).toBe("provider content");
     expect(await provider.readFile("\\\\?\\C:\\virtual\\workspace\\file.txt")).toBe("provider content");
-    expect(await provider.readdirWithTypes("C:\\virtual\\workspace")).toEqual([{ name: "file.txt", type: "file" }]);
+    expect(await provider.readdirWithTypes("C:\\virtual\\workspace")).toEqual([{ name: "File.TXT", type: "file" }]);
     await expect(provider.readFile("\\\\remote\\share\\file")).rejects.toMatchObject({ code: "EINVAL" });
     await expect(provider.readFile("C:\\virtual\\..\\other")).rejects.toMatchObject({ code: "EINVAL" });
     const other = await store.acquire(id(), "bob", "worker");
     expect(await store.stat(other, "/c/virtual/workspace/file.txt")).toBeUndefined();
+  });
+
+  it("keeps the names Windows-convention entries were created with while lookups stay case-insensitive", async () => {
+    const lease = await store.acquire(id(), "alice", "worker");
+    const provider = postgresSessionFilesystem(store, lease, "windows");
+    await provider.writeFile("C:\\Anchor\\Src\\MyComponent\\Index.ts", "first");
+    expect(await provider.readdir("c:\\anchor")).toEqual(["Src"]);
+    expect(await provider.readdir("C:\\ANCHOR\\SRC")).toEqual(["MyComponent"]);
+    await provider.writeFile("c:\\anchor\\src\\mycomponent\\INDEX.TS", "second");
+    expect(await provider.readdir("c:\\anchor\\src\\mycomponent")).toEqual(["Index.ts"]);
+    expect(await provider.readFile("C:\\Anchor\\Src\\MyComponent\\Index.ts")).toBe("second");
+    await provider.rename("C:\\Anchor\\Src\\MyComponent", "C:\\Anchor\\Src\\Renamed");
+    expect(await provider.readdir("c:\\anchor\\src")).toEqual(["Renamed"]);
+    expect(await provider.readdir("c:\\anchor\\src\\renamed")).toEqual(["Index.ts"]);
+    await provider.rename("C:\\Anchor\\Src\\Renamed\\Index.ts", "C:\\Anchor\\Src\\Renamed\\index.TS");
+    expect(await provider.readdir("c:\\anchor\\src\\renamed")).toEqual(["index.TS"]);
+    await provider.rename("C:\\Anchor\\Src\\Renamed\\index.TS", "C:\\Anchor\\Src\\Renamed\\index.ts");
+    expect(await provider.readdir("c:\\anchor\\src\\renamed")).toEqual(["index.ts"]);
+    expect((await pool.query("SELECT path,display_name FROM session_files WHERE namespace_id=$1 ORDER BY path", [lease.id])).rows).toEqual([
+      { path: "/", display_name: null },
+      { path: "/c", display_name: null },
+      { path: "/c/anchor", display_name: "Anchor" },
+      { path: "/c/anchor/src", display_name: "Src" },
+      { path: "/c/anchor/src/renamed", display_name: "Renamed" },
+      { path: "/c/anchor/src/renamed/index.ts", display_name: null },
+    ]);
+    await expect(store.write(lease, "/c/anchor/other", Buffer.from("x"), false, "/c/Anchor/Different")).rejects.toMatchObject({ code: "EINVAL" });
+    const posix = postgresSessionFilesystem(store, await store.acquire(id(), "alice", "worker"), "posix");
+    await posix.writeFile("/Workspace/MixedCase.md", "posix keys keep their case");
+    expect(await posix.readdir("/Workspace")).toEqual(["MixedCase.md"]);
+    await expect(posix.readFile("/workspace/mixedcase.md")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("retains admitted storage quotas when an activation resumes", async () => {

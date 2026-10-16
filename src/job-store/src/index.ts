@@ -9,3 +9,4 @@ export * from "./allocations.js";
 export * from "./placements.js";
 export * from "./session-directory.js";
 export * from "./session-containers.js";
+export * from "./promotions.js";
