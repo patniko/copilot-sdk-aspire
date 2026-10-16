@@ -1,9 +1,14 @@
 import { mkdir, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
-import { CopilotClient, RuntimeConnection, type AhpHost, type CopilotSession, type SessionConfig, type SessionEvent } from "@github/copilot-sdk";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  CopilotClient, RuntimeConnection, type AhpHost, type AhpHostOptions, type CopilotSession, type PermissionHandler, type SessionConfig,
+  type SessionEvent,
+} from "@github/copilot-sdk";
+import type { RuntimeApprovalMode } from "@copilot-agent/contracts";
 import { SessionFileStore, type SessionFileLease } from "@copilot-agent/job-store";
 import { z } from "zod";
+import type { SharedSessionSettings } from "./harness-session.js";
 import { postgresSessionFilesystem } from "./postgres-filesystem.js";
 import { SessionWorkspace } from "./workspace.js";
 
@@ -11,15 +16,32 @@ export interface SharedActivationContext {
   lease: SessionFileLease;
   signal: AbortSignal;
   workspace: SessionWorkspace;
+  /** Provider path for application state kept with the session's history, outside the user-visible workspace. */
+  stateDirectory: string;
+}
+/** The approval modes an activation starts in and offers to attached clients. */
+export interface SharedApprovalModes {
+  initial: RuntimeApprovalMode;
+  available: RuntimeApprovalMode[];
+  /** The assisted judge's model; the session model when omitted. */
+  judgeModel?: string;
 }
 export interface SharedSessionOptions {
   id: string;
   principal: string;
   githubUserId: number;
   model: string;
-  instructions: string;
+  /** Shorthand for a replacing system message when `settings` is omitted. */
+  instructions?: string;
+  /** Harness-derived session settings; see `sharedSessionSettings`. */
+  settings?: Omit<SharedSessionSettings, "builtinTools"> & { builtinTools?: string[]; managedSettings?: SessionConfig["managedSettings"] };
+  /** Identity of the session's immutable configuration; a retained session resumes only with the same identity. */
+  configuration?: string;
   provider: NonNullable<SessionConfig["provider"]> | ((context: SharedActivationContext) => NonNullable<SessionConfig["provider"]>);
-  tools?: SessionConfig["tools"] | ((context: SharedActivationContext) => NonNullable<SessionConfig["tools"]>);
+  tools?: SessionConfig["tools"] | ((context: SharedActivationContext) => NonNullable<SessionConfig["tools"]> | Promise<NonNullable<SessionConfig["tools"]>>);
+  /** Answers the runtime's permission requests; omitted means every request is refused. */
+  permissions?: (context: SharedActivationContext) => PermissionHandler;
+  approval?: SharedApprovalModes;
   hooks?: (context: SharedActivationContext) => SessionConfig["hooks"];
   onEvent?: (context: SharedActivationContext, event: SessionEvent) => void;
   onActivity?: (context: SharedActivationContext) => void;
@@ -33,12 +55,11 @@ interface Activation {
   close?: Promise<void>;
 }
 const snapshot = z.object({
-  schemaVersion: z.literal(1),
-  model: z.string(),
-  instructions: z.string(),
+  schemaVersion: z.literal(2),
+  configuration: z.string().min(1).max(500),
   githubUserId: z.number().int().positive(),
-  tools: z.array(z.string()),
 }).strict();
+const rejectAll: PermissionHandler = async () => ({ kind: "reject", feedback: "This shared session permits only its application tools." });
 
 /**
  * A bounded local prototype: many published conversations share one in-process SDK client.
@@ -121,32 +142,40 @@ export class SharedSessionRuntime {
       const storage = postgresSessionFilesystem(this.files, lease, process.platform === "win32" ? "windows" : "posix");
       await storage.mkdir(anchor, true);
       const workspace = new SessionWorkspace(anchor, storage, lifetime.signal, (operation) => this.report(`session.fs.${operation}.failed`, options.id));
-      const context: SharedActivationContext = { lease, signal: lifetime.signal, workspace };
-      const tools = typeof options.tools === "function" ? options.tools(context) : options.tools ?? [];
-      const metadataPath = join(this.root, "session-state", "application-snapshot.json");
+      const stateDirectory = join(this.root, "session-state");
+      const context: SharedActivationContext = { lease, signal: lifetime.signal, workspace, stateDirectory };
+      const tools = typeof options.tools === "function" ? await options.tools(context) : options.tools ?? [];
+      const metadataPath = join(stateDirectory, "application-snapshot.json");
       const current = snapshot.parse({
-        schemaVersion: 1, model: options.model, instructions: options.instructions, githubUserId: options.githubUserId,
-        tools: tools.map((tool) => tool.name).sort(),
+        schemaVersion: 2, githubUserId: options.githubUserId,
+        configuration: options.configuration ?? `sha256:${createHash("sha256").update(`${options.model}\0${options.instructions ?? ""}`).digest("hex")}`,
       });
       const resume = await storage.exists(metadataPath);
       if (resume) {
-        const retained = snapshot.parse(JSON.parse(await storage.readFile(metadataPath)));
-        if (JSON.stringify(retained) !== JSON.stringify(current)) throw new Error("The retained session configuration differs; create a new session rather than replacing its policy.");
+        const retained = snapshot.safeParse(JSON.parse(await storage.readFile(metadataPath)));
+        if (!retained.success || JSON.stringify(retained.data) !== JSON.stringify(current)) {
+          throw new Error("The retained session configuration differs; create a new session rather than replacing its policy.");
+        }
       } else {
         await storage.writeFile(metadataPath, JSON.stringify(current));
       }
+      const { builtinTools = [], managedSettings, ...settings } = options.settings ?? {
+        systemMessage: { mode: "replace" as const, content: options.instructions ?? "" }, excludedBuiltinAgents: [],
+      };
+      if (!settings.systemMessage.content && settings.systemMessage.mode === "replace") throw new Error("A shared session needs instructions.");
       const config: SessionConfig = {
+        ...settings,
         sessionId: options.id,
         workingDirectory: anchor,
         model: options.model,
         provider: typeof options.provider === "function" ? options.provider(context) : options.provider,
         tools,
-        availableTools: tools.map((tool) => `custom:${tool.name}`),
-        systemMessage: { mode: "replace", content: options.instructions },
+        availableTools: [...tools.map((tool) => `custom:${tool.name}`), ...builtinTools.map((name) => `builtin:${name}`)],
+        ...(managedSettings ? { managedSettings } : {}),
         enableConfigDiscovery: false,
         skipCustomInstructions: true,
         streaming: true,
-        onPermissionRequest: async () => ({ kind: "reject", feedback: "This shared session permits only its application tools." }),
+        onPermissionRequest: options.permissions?.(context) ?? rejectAll,
         createSessionFsProvider: () => workspace.sessionFs,
         hooks: options.hooks?.(context),
       };
@@ -155,11 +184,21 @@ export class SharedSessionRuntime {
         : await this.#client.createSession(config);
       const original = session;
       session.on((event) => options.onEvent?.(context, event));
-      host = await this.#client.startAhpHost({
+      const approval = options.approval;
+      // A resumed session keeps the mode the runtime last confirmed; managed settings and the host ceiling clamp it.
+      if (!resume && approval && approval.initial !== "manual") {
+        const applied = await session.rpc.permissions.setMode({
+          mode: approval.initial, ...(approval.initial === "assisted" && approval.judgeModel ? { assistedApprovalModel: approval.judgeModel } : {}),
+        });
+        if (!applied.success || applied.mode !== approval.initial) throw new Error("The runtime refused the session's approval mode.");
+      }
+      const hostOptions: AhpHostOptions & { approvalModes?: { available: RuntimeApprovalMode[]; default: RuntimeApprovalMode } } = {
         computeId: options.id,
         workingDirectory: anchor,
         expectedOwner: { githubApiUrl: "https://api.github.com", userId: options.githubUserId },
         localServer: { hostname: "127.0.0.1", port: 0 },
+        // The ceiling an attached client can switch within; SDKs without the option ignore it.
+        ...(approval ? { approvalModes: { available: [...approval.available], default: approval.initial } } : {}),
         onWorkspaceResource: (request, invocation) => {
           options.onActivity?.(context);
           return workspace.onResource(request, invocation);
@@ -176,7 +215,8 @@ export class SharedSessionRuntime {
           this.report("session.host_exited", options.id);
           void this.close(options.id).catch(() => this.report("session.close_failed", options.id));
         },
-      });
+      };
+      host = await this.#client.startAhpHost(hostOptions);
       const publication = await host.publishSession(options.id);
       if (!host.url || !host.token || lifetime.signal.aborted || this.#stopping) throw new Error("Shared host startup did not complete.");
       this.#activations.set(options.id, { lease, lifetime, host, session, heartbeat });
