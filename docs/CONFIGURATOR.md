@@ -39,8 +39,10 @@ CONFIGURATOR_GITHUB_CLIENT_ID=your-oauth-app-client-id
    blocked while there are errors. If content diverges from a matching platform example without a version bump, the
    editor offers a one-click bump.
 3. **Policy**: approved agent profiles and models, limits, the built-in tool groups and permission modes harnesses
-   may use, model-option ceilings (maximum reasoning effort, long context), required controls, and acknowledged
-   security gaps. **Applies to** switches between the base policy (all harnesses) and one harness: turn on
+   may use, approval modes and custom permission handlers, the remote MCP server catalog, model-option ceilings
+   (maximum reasoning effort, long context), hosting ceilings, required controls, and acknowledged security gaps
+   (see [Hosting, approvals and remote MCP](#hosting-approvals-and-remote-mcp)). **Applies to** switches between the
+   base policy (all harnesses) and one harness: turn on
    **Override for this harness** on a card to replace those settings for every version of that harness only; the
    other cards inherit the base policy. Lease timing and per-caller limits are always global. The harness overview
    and its decision list show when an override applies, and **Deploy** preflight fails if an override names a
@@ -74,27 +76,88 @@ Command output streams into the task drawer at the bottom; long tasks can be can
 deliberately not committed with the platform source. Back it up or version it in a separate customer-owned
 repository if it must be shared or audited.
 
-**Hosting and approval settings.** A conversation harness can request a [hosting mode](HOSTING-MODES-PLAN.md)
-(`hosting`), remote MCP tools from the operator's catalog (`mcpServers`), and an approval mode
-(`permissions.approvalMode`, `judgeModel`, `handler`); the policy sets their ceilings in `approvalModes`,
-`permissionHandlers`, `mcpServers`, and `hosting`, overridable per harness. The editor and the Policy page have no
-controls for them yet, so edit `harness.json` or the policy files in the workspace. Validation already checks them with
-the same contracts as the API, at their field paths: for example `hosting.mode` when the effective policy does not
-allow the mode, or `mcpServers.0.server` for a server outside the catalog. Saving a harness override from the Policy
-page keeps the values the override already has for these fields, and their issues are listed under **Applies to**.
-Harness-driven conversations run only in `isolated` mode today; the API's [hosting views](API.md#hosting-views) show
-what the running deployment can host.
+## Hosting, approvals and remote MCP
+
+![Hosting section of the harness editor with synthetic harnesses](images/configurator-hosting.png)
+
+The harness editor's **Hosting** tab and three Policy cards edit the `hosting`, `mcpServers`, and approval-mode
+fields that the [hosting modes plan](HOSTING-MODES-PLAN.md#3-per-harness-configuration-proposed-contract) introduced.
+They are validated as you type with the same contracts as hosted admission, and problems appear at their field
+paths: for example `hosting.mode` when the effective policy does not allow the mode, or `mcpServers.0.server` for a
+server outside the catalog. Choosing a mode records a request; whether a deployment can host it is reported by the
+running service (see [Hosting and topology](#hosting-and-topology)), with no fallback to another mode.
+
+On the **Hosting** tab:
+
+- **Interaction**: batch jobs (the default) or conversations that Copilot CLI attaches to. Conversations need the
+  `node-ts-agent` profile; switching back to batch jobs removes hosting, remote MCP servers and the approval mode,
+  which batch harnesses cannot use.
+- **Hosting mode**: cards for isolated, shared, promotable and orchestrator hosting with their gains and costs.
+  Modes the effective policy does not allow, and every mode except isolated for a batch harness, are disabled and say
+  why. While the local stack runs and has loaded this exact definition, the selected card shows the service's status.
+  Choosing isolated without handoffs removes the `hosting` block, so the harness keeps its digest.
+- **Promotion** (promotable) and **Workers** (orchestrator): sizes from the operator's catalog, promotion approval,
+  worker harnesses (only isolated conversation harnesses qualify; others say why), concurrency within the policy
+  ceilings, shared storage, inherited human authority when the policy allows it, and an optional crafting template.
+- **Handoffs**: other conversation harnesses whose own policy allows their hosting mode, each with a description for
+  the model, a history policy and an approval.
+- **Approval mode**: manual, assisted with an optional judge model from the harness's approved models, allow all, or a
+  custom handler that the policy allows and the TypeScript conversation profile provides. The per-kind rules on the
+  **Permissions** tab still run first and deny always wins; the approval mode decides only requests those rules
+  would send to a person. The Permissions presets keep the approval mode.
+- **Remote MCP servers**: servers and tools from the operator's catalog, shown by name, description and approved
+  tools; the editor never shows a server's URL or secret reference.
+- **In the running service**: while the local stack runs, the agent-api's [hosting view](API.md#hosting-views) of the
+  saved version, with its status, first blocking problem and prerequisite, and transports. It says so when the service
+  loaded a different definition.
+
+On the **Policy** page, each card can be overridden per harness through **Applies to**. An overridden card writes all
+of its fields, and an overridden `hosting` block replaces the base block whole, so its omitted fields take the
+documented defaults rather than the base policy's values.
+
+- **Approval modes**: the modes harnesses may use and the custom permission handlers they may select; handlers that
+  execution profiles provide are suggested. Assisted is the runtime's safety judge: guidance that reduces prompts, not
+  a security boundary.
+- **Remote MCP servers**: the catalog of name, URL, description, approved tools, an optional credential by **secret
+  name** with an optional header, and a development-only private-network allowance. The secret field accepts only a
+  lowercase name and discards input that looks like a credential instead of keeping it in the browser draft; the
+  hosting process [resolves the name](SECURITY.md#shared-placement-egress-and-remote-mcp).
+- **Hosting**: allowed modes and client transports, promotion approval, the container size catalog and default size,
+  worker limits including inherited human authority, and crafting templates.
+
+Policy validation also warns about settings that cannot take effect, such as a permission handler no profile
+provides, shared modes without the direct transport, inherited authority without the assisted mode, or a crafting
+template that names an unapproved model or an unknown binding. [Copilot-assisted authoring](#copilot-assisted-authoring)
+never edits these fields.
 
 ## Hosting and topology
 
-**Hosting** shows selectable maps for the default pool stack, experimental local hybrid path, and the
-separately labeled, unqualified Azure hybrid proposal.
+**Hosting** lists how each harness is hosted, then shows selectable maps for the default pool stack, experimental
+local hybrid path, and the separately labeled, unqualified Azure hybrid proposal.
+
+![Harness hosting rows on the Hosting page with synthetic harnesses](images/configurator-hosting-rows.png)
+
+**Harness hosting** rows come from the chosen target's agent-api and its read-only
+[hosting views](API.md#hosting-views): local rows while the local stack runs, or the selected Azure target's
+deployed API. Each row shows the effective mode or batch jobs, the status with the first blocking problem and its
+prerequisite, the host (executor pool, owner host, session containers, or shared worker) with a cost note that says
+when the host is always on, and the client transports with whether policy allows them and the host provides them.
+Harness versions saved in the workspace that the service has not loaded, or has loaded with different content, are
+listed above the rows: **Reload harnesses** from Local run, or deploy, to apply them. The rows start no hosts and grant
+no connections.
+
+Connection actions copy a `pnpm host:connect --harness <name> --target <local|azure> --transport <direct|github>`
+launcher command for a ready harness whose transport is available: on an owner host the service reports for that
+harness, or on the local shared worker, which accepts direct connections only. Otherwise the action is disabled and
+says why: the row's problem and prerequisite, an unavailable transport, per-session containers the launcher cannot
+reach yet, or shared hosting on Azure, which is not qualified. Batch rows link to **Try it** instead.
+
 Choose local or the selected Azure target, select a node to inspect its responsibility and limitations, or
 expand the text connection map. The canvas groups components into color-coded responsibility zones, highlights
 the routes connected to the selected component, and keeps proposed nodes and connections visually distinct.
 Keyboard selection, horizontal scrolling, narrow layouts, and light/dark themes are supported.
 
-This first view is a configured architecture, not live telemetry. It shows available resource observations
+The maps show a configured architecture, not live telemetry. They show available resource observations
 without treating missing data as a running or stopped service. Those observations have no freshness guarantee.
 The preview does not deploy resources or modify settings, and planned nodes are visibly marked.
 Native container-host inference is shown separately from the managed Foundry route.
@@ -148,6 +211,7 @@ The editor has one section per part of the harness contract:
 | Model | Preferred model (from the policy-approved list), allowed models as an ordered fallback list, reasoning effort and context tier (options above the policy ceilings are disabled) |
 | Tools | Custom harness tool bindings from the execution profiles (**Delegated only** hides one from the coordinator), and **Built-in Copilot tools** in groups: files, shell, web, built-in agents |
 | Permissions | What happens when the agent asks to read or write a file, run a command or fetch a URL: deny, ask you (Copilot CLI defaults, where workspace reads and read-only commands run without a prompt), or allow (yolo), per kind with a default; whether the agent can ask you questions; how long a request waits |
+| Hosting | Batch jobs or conversations; for conversations the hosting mode and its settings, handoffs, the approval mode, and remote MCP servers from the operator's catalog, plus the running service's view of this version (see [Hosting, approvals and remote MCP](#hosting-approvals-and-remote-mcp)) |
 | Sub-agents | Read-only built-in agent status (controlled by the Tools tab), plus custom specialists: instructions, a subset of the tools, preloaded skills, model |
 | Skills | Markdown procedures stored as `skills/<name>/SKILL.md` in the harness folder |
 | Input, Output | JSON Schemas (2020-12) and an example input |
@@ -239,7 +303,7 @@ attempt deadline. Only the job's caller (its API key) can answer. The REST endpo
 | What | Where | Commit? |
 | --- | --- | --- |
 | Customer harnesses | `.copilot-agent-workspace/harnesses/<name>/` and `<name>@<version>/` (`harness.json`, instructions, `skills/<name>/SKILL.md`) | No; use separate customer-owned version control if needed |
-| Customer execution policy | `.copilot-agent-workspace/policy/execution-policy.json` (base) and `policy/harnesses/<harness>.json` (per-harness overrides) | No; use separate customer-owned version control if needed |
+| Customer execution policy | `.copilot-agent-workspace/policy/execution-policy.json` (base) and `policy/harnesses/<harness>.json` (per-harness overrides); remote MCP credentials appear only as secret names | No; use separate customer-owned version control if needed |
 | Shipped starter examples | `examples/customer-config/harnesses/` and `examples/customer-config/policy/` | Yes; platform-owned and not edited by the configurator |
 | Execution profiles and implementations | `execution-profiles/`, `src/`, and `tools/` | Yes; platform-owned |
 | Unsaved harness and policy drafts | Browser local storage for the configurator origin | No |
@@ -280,7 +344,9 @@ Generated sub-agents, skills, and existing tool configurations are checked again
 effective per-harness policy, and execution profiles. Valid results open in the full editor as **unsaved changes**;
 review and edit them before **Save changes**. They use the existing undo/redo, browser draft, validation and
 version-save behavior. Copilot cannot invent installed bindings or grant a sub-agent tools/skills the harness
-does not contain. Invalid results produce an error without changing the draft.
+does not contain. For a conversation harness whose mode runs on the shared worker, the catalog lists only bindings
+the conversation profile marks safe to run in process, and a draft that placement cannot run is rejected. Invalid
+results produce an error without changing the draft.
 
 On Tools, choose **Existing binding** to configure packaged code, or **New tool code proposal** to request
 source, tests and integration guidance for a new implementation. The latter is **not a Copilot built-in**:

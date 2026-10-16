@@ -1018,7 +1018,83 @@ Limitations:
 
 ### Stage 1: configurator hosting editor and views
 
-Pending.
+Recorded 2026-10-15 on branch `patniko-configurator-hosting-editor`: commits `6658c02` (editor, Policy cards, and
+Hosting rows), `501357c` (merge of the stage 1 integration; read availability from the API's hosting views
+instead of evaluating it locally), `c71eaaa` (Permissions presets keep the approval mode), `bf72916` (launcher actions
+for harness-driven shared mode), `92b2c6d` and `863b67e` (tests and review fixes), `1e81cd9` (documentation), merges
+of the integration branch at `9c6b918` and `4272621`, and the commit that adds this record.
+
+Delivered:
+
+- **Harness editor**: a **Hosting** tab with the interaction; mode cards with their gains and costs; promotion,
+  workers, and handoffs; the approval mode with its judge model or custom handler; and remote MCP servers and tools
+  from the operator's catalog. Choices the effective policy, the harness's interaction, or the conversation profile
+  rule out are disabled and say why. Worker and handoff targets show why other harnesses do not qualify. An
+  **In the running service** panel shows the local API's view of the saved version and flags a definition the
+  service has not loaded. Isolated hosting without handoffs removes the `hosting` block, so the digest stays as it
+  was, and switching to batch jobs removes the fields batch harnesses reject. The Permissions tab's presets now keep
+  `approvalMode`, `judgeModel`, and `handler`, which resolves that stage 1 limitation.
+- **Validation**: conversation harnesses are checked with `conversationPolicyProblems`, the same contract helper
+  hosted admission uses, against their effective per-harness policy and the latest version of each worker and
+  handoff target, without repeating problems the editor already reports. Hosting rules still apply while other
+  fields fail schema validation. Policy validation adds warnings for a development network allowance, shared modes
+  without the direct transport, inherited authority without the assisted mode, and crafting templates that name
+  unknown bindings.
+- **Policy page**: **Approval modes** (modes, and permission handlers with the ones profiles provide suggested),
+  **Remote MCP servers** (URL, description, tools, a credential by secret name with an optional header, and
+  `allowPrivateNetwork`), and **Hosting** (modes, transports, promotion approval, size catalog and default size,
+  worker limits including inherited authority, and crafting templates). Each card can be overridden per harness
+  through the existing workflow, so no policy group is left without a card. The harness editor receives the
+  catalog's server names, descriptions, and tools only, never URLs or secret references, and the secret field
+  discards input that looks like a credential.
+- **Hosting page**: per-harness rows from `GET /v1/hosting` on the local or selected Azure API, with the effective
+  mode, status, first problem and its prerequisite, host, cost note, and transports, plus workspace versions the
+  service has not loaded. Connection actions copy `pnpm host:connect --harness <name> --target <target> --transport
+  <transport>` for owner hosts the service reports and for the local shared worker over direct WSS; other actions are
+  disabled and say why. The previous shared-coordinator card now targets `--harness hybrid-coordinator`.
+- **Authoring**: for conversation harnesses whose mode runs on the shared worker, Copilot is offered only the host
+  bindings the conversation profile marks safe in process, and a draft that placement cannot run is rejected at its
+  field path. Authoring never emits hosting, MCP, or approval fields.
+
+| Exit evidence | Result |
+| --- | --- |
+| Configurator editing | [`hosting-editor.test.tsx`](../configurator/test/hosting-editor.test.tsx): mode cards, approval modes and judge models, MCP catalog selection, worker and handoff eligibility, promotion sizes and approvals, field routing to the tab, and presets keeping the approval mode. [`policy-cards.test.tsx`](../configurator/test/policy-cards.test.tsx) and [`policy-model.test.tsx`](../configurator/test/policy-model.test.tsx): the three cards, secret names only, documented defaults, and overrides that write explicit values so they do not inherit |
+| Invalid combinations and disallowed modes fail with field-scoped errors | [`hosting-editor-validation.test.ts`](../configurator/test/hosting-editor-validation.test.ts): `hosting.mode` for a disallowed mode while other fields are invalid, `runners.allowedProfiles` for the conversation profile, `mcpServers.0` for malformed entries, the policy warnings, and `tools.0.kind` for an authored Python tool on a shared harness; stage 1's [`hosting-validation.test.ts`](../configurator/test/hosting-validation.test.ts) still passes |
+| Unavailable modes name their prerequisite | [`hosting.test.tsx`](../configurator/test/hosting.test.tsx) (`harnessHostRow`: a missing shared worker disables the connection with "Needs the harness-driven shared worker"), the `ServiceViewRow` case in `hosting-editor.test.tsx`, and [`hosting-server.test.ts`](../configurator/test/hosting-server.test.ts): views are forwarded from the API and parsed with the contract schemas, never evaluated locally, and unloaded versions are listed |
+| A read-only per-harness hosting view | The Hosting page and the editor panel against a running agent-api, below |
+
+Live check: the built agent-api (`node src/agent-api/dist/main.js`) ran against a throwaway PostgreSQL 17 container
+with a synthetic workspace, a demo host configured for one harness, and a shared worker key, so its views reported an
+owner host and the shared worker without starting either. A session-local wrapper started the configurator server
+with its `hostingViewFetcher` pointed at that API and reported the local stack as running; the full Aspire stack was
+not started because it needs Foundry parameters. The rows showed ready shared and owner-host harnesses with their
+launchers, a batch harness, and a harness without a host naming its prerequisite with disabled actions, as in the
+[screenshots](CONFIGURATOR.md#hosting-approvals-and-remote-mcp). The container and processes were removed afterwards.
+
+Commands and results, Windows ARM64 with Node 24.19, pnpm 10.34.5, and Docker Desktop, on `ea87cdd` (this branch
+with the integration branch at `4272621` merged):
+
+| Command | Result |
+| --- | --- |
+| `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build` | Passed |
+| `pnpm typecheck` | Passed. The first run in this new worktree failed only because the AppHost's generated `.aspire` modules were missing; `aspire restore --apphost apphost.mts` generated them, as the [developer guide](DEVELOPER-GUIDE.md#build-and-check) describes |
+| `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint` | Passed |
+| `pnpm test:unit` | 550 passed, 1 skipped |
+| `pnpm test:integration` | 61 passed, 10 opt-in skipped |
+| `pnpm exec vitest run --project unit configurator/test` | 25 files, 244 passed |
+
+Limitations:
+
+- The configurator does not evaluate deployments. The editor shows the running service's view of the saved and
+  loaded version only, so unsaved edits show policy problems but not host availability until they are saved and
+  reloaded.
+- Local rows need the local stack running. Azure rows read the selected target's deployed API; no Azure target was
+  exercised, because this work is local only.
+- Connection actions cover owner hosts the service reports and the local shared worker. Per-session containers, and
+  shared hosting on Azure, stay disabled until the launcher and later stages support them.
+- The configurator never handles remote MCP credentials. The secret-name field's credential check guards against
+  accidental pastes and is not a secret scanner.
+- No controls exist for policy ceilings on handoff approval or history, which stage 6 may add.
 
 ### Stage 2: connection broker
 
