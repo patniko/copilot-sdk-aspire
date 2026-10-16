@@ -197,10 +197,16 @@ catalogs on one runtime. On the experimental hybrid branch, `tests/package.json`
 sibling `copilot-agent-runtime-hybrid` worktree. Build that SDK before restoring this application's
 dependencies. Existing batch/host package pins remain independent; this link does not upgrade a deployed service.
 
-The runtime worktree tracks `patniko/aspire-ahp-runtime-patches` and preserves the existing proposals.
+The runtime worktree tracks `patniko-runtime-capabilities-for-hosting-modes` (at least `62a6b07a10a`). That
+branch builds on `patniko/aspire-ahp-runtime-patches` and adds host approval-mode ceilings
+(`startAhpHost({ approvalModes })`), inherited human authority for assisted-approval judges, judge verdicts in SDK
+permission handlers (`followAssistedApproval`), and a CLI fix for `--ahp` resumes of sessions previously attached
+over the relay. Its in-process AHP host needs the `copilot-host` branch `patniko/hosting-modes-approval-ceiling`
+(at least `006b030`). The [qualification record](HOSTING-MODES-PLAN.md#runtime-capabilities) lists the exact
+revisions and artifact hashes.
 Follow its native build instructions and build the Node SDK from `src/sdk/nodejs`. Stage the resulting
 native launcher and its matching library together; set `COPILOT_CLI_PATH` to the launcher's absolute path
-before running `pnpm test:runtime`. The suite refuses a missing local artifact rather than downloading
+before running `pnpm test:runtime`. The linked SDK and the native pair must come from the same build. The suite refuses a missing local artifact rather than downloading
 or falling back to a published runtime. Local native builds and their SDK outputs are not committed here.
 Leave `COPILOT_AHP_FACTORY_PROFILE` unset for this primitive suite: it includes default-host controls
 without application factories. The shared-owner integration tests below explicitly require the managed
@@ -215,7 +221,7 @@ those source snapshots with the runtime's unchanged generated Bazel definitions.
 ```powershell
 .\deploy\build-hybrid-runtime.ps1 `
   -RuntimeRepository C:\projects\copilot-agent-runtime-hybrid `
-  -HostingRepository C:\projects\copilot-host-hybrid `
+  -HostingRepository C:\projects\copilot-host-hosting-modes `
   -MxcRepository C:\projects\mxc-pinned `
   -OutputDirectory C:\projects\copilot-sdk-aspire-hybrid\.runtime-artifacts\hybrid-linux
 ```
@@ -305,8 +311,8 @@ first CLI and shared worker, starts a replacement worker behind the same broker,
 PostgreSQL-backed conversation with a new ticket, and attaches a fresh CLI. It checks replayed history and
 prior-turn context in the next model request, with native anchors still empty. It does not contact a paid
 model provider or qualify two-account operation, process-crash recovery, or multi-replica failover.
-On Windows, the native pair must include runtime `0a32c39595f`'s workspace path-spelling fix; an older
-launcher refuses every CLI attachment with `application session resume failed`. For example:
+On Windows, use the native pair built with the linked SDK. A launcher without runtime `0a32c39595f`'s
+workspace path-spelling fix refuses every CLI attachment with `application session resume failed`. For example:
 
 ```powershell
 # Use the actual paths to your locally built, matching artifacts.

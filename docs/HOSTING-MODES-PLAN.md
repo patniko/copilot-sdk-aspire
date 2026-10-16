@@ -1383,4 +1383,52 @@ Pending.
 
 ### Runtime capabilities
 
-Pending.
+Recorded 2026-10-16 from the runtime session's handoff, plus a re-verification of this application on the new
+runtime. Runtime work lives in the adjacent repositories, not in this one.
+
+Branches (pushed, no pull requests):
+
+- Runtime `github/copilot-agent-runtime` branch `patniko-runtime-capabilities-for-hosting-modes`, head `62a6b07a10a`,
+  based on `patniko/aspire-ahp-runtime-patches` at `0a32c39595f`. Artifacts are built from `d89cfe45b29`; the
+  later commit adds only an end-to-end test and documentation. Commits: `7fb87d6e377` (inherited human authority and
+  host approval-mode ceilings across the contract, runtime, SDK, and CLI), `d124465cf1b` (judge verdicts in SDK
+  permission handlers and `followAssistedApproval`), `c8c5839effd` (CLI: an explicit `--ahp` host skips relay-resume
+  inference), `c18ef598c5f` (history-transplant and resume-configuration end-to-end tests), and documentation.
+- Hosting `github/copilot-host` branch `patniko/hosting-modes-approval-ceiling`, head `006b030`: `0430ab1` adds an
+  application approval-mode ceiling, and `006b030` grants the host its authority for an application mode adopted at
+  publication. Without `006b030`, an application-set `assisted` mode prompted for every judge approval.
+
+Results by plan item:
+
+| Item | Result | Evidence |
+| --- | --- | --- |
+| T2 history transplant | Works at a different absolute path; no rebase option is needed. The host exports the session's `sessionFs` state namespace to `<COPILOT_HOME>/session-state/<id>/` and the anchor files to the target workspace, then calls `resumeSession(id, { workingDirectory: "/workspace", ... })` and starts the AHP host with the same `workingDirectory`. A case-folded export breaks paths recorded in history, so original spellings must be preserved; spilled large tool output under `temp/` does not survive disconnection on any host | `session_transplant.e2e.test.ts` (Windows- and posix-convention providers); Windows→Linux run in a `linux/arm64` container with the bundle below. The application-level gate is in the [stage 5 record](#stage-5-promotion) |
+| T6 configuration change on resume | Works: a resumed session applies a new system message, tools, tool allowlist, custom agents, and agent on the next turn and keeps its history | `resume_configuration_change.e2e.test.ts` |
+| N7 inherited human authority | Implemented: `session.rpc.permissions.setInheritedHumanAuthority({ sourceSessionId, messages })`, bounded to 256 messages and 1,048,576 characters. Messages above the judge's 16,000-character authority limit are shown only as incomplete markers. Only this host call sets inherited authority; prompts sent with an `agent-…` source and model or tool text are context, not authority. It is recorded as a durable event and on each judged request, and restored on resume | Runtime `auto_approval` and `shared_api::permissions` tests; `inherited_human_authority.e2e.test.ts` (4) |
+| Approval modes | `setMode({ mode, assistedApprovalModel })` works with a custom provider, and the judge request uses the session's provider. Managed settings refuse `allow-all` and `assisted`. `startAhpHost({ approvalModes: { available, default } })` advertises and enforces the ceiling. Set the mode before publication; the host then adopts it with its authority | `approval_responders`, `ahp_approval_modes`, and `scenario_testing_permissions` end-to-end tests over the stdio and in-process transports |
+| N5 per-session host key | Not implemented: the host mints its key per process. Promotion continuity uses launcher supervision | — |
+
+Artifacts (ignored, not committed):
+
+- Windows `C:\projects\runtime-artifacts\win32-arm64-d89cfe45b29-host-006b030` (runtime `d89cfe45b29`, hosting
+  `006b030`, MXC `622d4f19`): `dist-cli/index.js` `e520ae56…`, `copilot-runtime.exe` `be1213d6…`, `runtime.node`
+  `2dd77fc0…`, `copilot-sdk.tgz` `1f056620…`.
+- Linux `arm64` `C:\projects\runtime-artifacts\hybrid-linux-arm64-d89cfe45b29-host-006b030`, built with
+  `deploy\build-hybrid-runtime.ps1 -Configuration fast` and qualified in-container: `copilot-runtime` `207690e4…`,
+  `runtime.node` `21aebad9…`, `sdk.tgz` `1f056620…` (the same SDK as Windows).
+
+Runtime-side verification: the filtered Bazel runtime tests (254 passed), SDK typecheck, lint, and unit tests
+(300 passed), the SDK end-to-end tests above over both transports (14 per transport), the relay-resume unit tests
+(19 passed), and the hosting crate tests (131 and 82 passed). Not run: Clippy, nightly rustfmt, the complete runtime
+suite, and the CLI end-to-end suite.
+
+Application re-verification on 2026-10-16: the sibling runtime worktree now tracks the runtime branch above. Its SDK
+was rebuilt there, byte-identical to the runtime session's build, and its `dist-cli` holds the matching Windows build.
+On integration commit `19da17a`, `pnpm build` passed, and with `COPILOT_AHP_FACTORY_PROFILE=managed`,
+`HYBRID_SESSION_RUNTIME_TESTS=1`, `HYBRID_CLI_TESTS=1`, and `HYBRID_USE_GH_ACCOUNT=1`, the `shared-service`,
+`shared-session-runtime`, `shared-egress-runtime`, and `shared-cli` suites passed (4 files, 5 tests).
+
+Limitations: N5 is not implemented. An application `setMode` after publication does not move the host's selection.
+The host does not project answers from the owning SDK client, so an attached client can keep showing a confirmation
+that the application already answered until the tool completes. Handler verdicts and `followAssistedApproval` exist
+only in the Node SDK. These are local builds from unmerged branches, not released runtime artifacts.
