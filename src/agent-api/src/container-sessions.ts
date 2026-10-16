@@ -55,8 +55,11 @@ export class ContainerSessionService {
     return identity;
   }
 
-  /** Admits the harness's hosting under its current effective policy and this deployment, or throws its first problem. */
-  private evaluate(snapshot: HarnessSnapshot, principal: string) {
+  /**
+   * Admits the harness's hosting under its current effective policy and this deployment, or throws its first problem.
+   * A `promotable` harness starts shared, so only a session promoted into its container (`promoted`) runs it here.
+   */
+  private evaluate(snapshot: HarnessSnapshot, principal: string, promoted = false) {
     const { catalog } = this.deps;
     const policy = policyFor(catalog.policies, snapshot.definition.name);
     const lookup = (harness: string): HostingTarget | undefined => {
@@ -69,7 +72,7 @@ export class ContainerSessionService {
     }
     const problem = connectionProblem(evaluation, "direct");
     if (problem) throw hostingError(problem);
-    if (evaluation.placement !== "container") {
+    if (evaluation.placement !== "container" && !(promoted && evaluation.mode === "promotable")) {
       throw hostingError({ code: "hosting_unavailable", message: `${evaluation.mode} sessions are not served by session containers.`,
         prerequisite: { kind: "host", name: "shared-worker" } });
     }
@@ -108,6 +111,12 @@ export class ContainerSessionService {
     return (await this.deps.store.get(principal, id)) !== undefined;
   }
 
+  /** The committed promotion that moved a shared conversation into this container, if it was promoted. */
+  async promotion(principal: string, id: string): Promise<SharedSessionView["promotion"]> {
+    const promotion = (await this.view(principal, id))?.promotion;
+    return promotion?.state === "committed" ? promotion : undefined;
+  }
+
   async view(principal: string, id: string): Promise<SharedSessionView | undefined> {
     return this.deps.directory.get(principal, this.identity(principal), id);
   }
@@ -131,8 +140,10 @@ export class ContainerSessionService {
   async connect(principal: string, id: string, request: SharedConnectionRequest): Promise<SharedConnection> {
     const record = await this.deps.store.get(principal, id);
     if (!record || record.closed || record.githubUserId !== this.identity(principal)) throw new HttpError(404, "not_found", "The conversation was not found.");
+    // A promoted `promotable` session runs here from its committed promotion on, including after an idle stop.
+    const promoted = async () => (await this.promotion(principal, id)) !== undefined;
     if (request.transport !== "direct") {
-      const { evaluation } = this.evaluate(record.harness, principal);
+      const { evaluation } = this.evaluate(record.harness, principal, await promoted());
       throw hostingError(connectionProblem(evaluation, request.transport) ?? {
         code: "hosting_unavailable", message: "Session containers accept direct WSS connections only.", prerequisite: { kind: "transport", name: request.transport },
       });
@@ -144,8 +155,10 @@ export class ContainerSessionService {
       const active = allocation && allocation.state !== "retired" ? allocation : undefined;
       if (active?.ready) {
         const ticket = await store(() => this.deps.store.issueTicket(principal, id, active.id));
+        // The runtime session of the current segment, which a handoff may have replaced; the broker path stays the session's.
+        const ahpSessionId = (await this.view(principal, id))?.segment.ahpSessionId ?? id;
         return {
-          sessionId: id, destination: "container", transport: "direct", ahpSessionId: id,
+          sessionId: id, destination: "container", transport: "direct", ahpSessionId,
           url: new URL(`/sessions/${id}`, this.#broker).href,
           token: ticket.token, expiresAt: ticket.expiresAt, serverKey: ticket.serverKey,
         };
@@ -154,7 +167,7 @@ export class ContainerSessionService {
         if (requested && allocation?.id === requested) {
           throw new HttpError(503, "container_unavailable", `The session container could not start: ${allocation.error ?? "it stopped before becoming ready."}`);
         }
-        this.evaluate(record.harness, principal);
+        this.evaluate(record.harness, principal, await promoted());
         const created = await store(() => this.deps.allocations.request({
           sessionId: id, principal, purpose: "session", size: record.size, resources: record.resources,
           volumes: [{ purpose: "session", sessionId: id, target: "/data", readOnly: false }],

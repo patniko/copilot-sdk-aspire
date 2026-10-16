@@ -3,12 +3,14 @@ import { z } from "zod";
 import {
   SessionContainerSettings, SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits, WORKER_CONTAINER_FEATURES,
 } from "@copilot-agent/contracts";
-import { AllocationStore, DelegationStore, JobStore, migrate, SessionFileStore, SharedStore, WorkerStore } from "@copilot-agent/job-store";
+import {
+  AllocationStore, DelegationStore, JobStore, migrate, PromotionStore, SessionFileStore, SharedStore, WorkerStore,
+} from "@copilot-agent/job-store";
 import {
   Admission, assertOverridesMatchHarnesses, createLogger, createPostgresPool, listen, listenPort, loadHarnesses, loadProfiles,
   loadPolicySet, optionalEnv, readPostgresConnection, requireEnv, serviceUrl,
 } from "@copilot-agent/service-defaults";
-import { SHARED_WORKER_DEPLOYMENT, SharedAdmission } from "./admission.js";
+import { SharedAdmission, sharedWorkerDeployment } from "./admission.js";
 import { CompletionPump } from "./completions.js";
 import { SharedConfiguration, type SharedRegistry } from "./configuration.js";
 import { PERMISSION_HANDLERS } from "./permission-handlers.js";
@@ -40,19 +42,23 @@ for (const name of delegationHarnesses) {
   const harness = initial.harnesses.get(name)?.[0];
   if (!harness || harness.definition.interaction === "conversation") throw new Error("SHARED_JOB_HARNESSES must identify published batch harnesses.");
 }
+// With session containers deployed, `promotable` conversations can move into them one way.
+const sessionSettings = optionalEnv("SESSION_CONTAINER_SETTINGS", "");
+const sessionContainers = sessionSettings ? SessionContainerSettings.parse(JSON.parse(sessionSettings)) : undefined;
 const admission = new SharedAdmission({
   configuration,
   sessionLimits: SharedSessionLimits.parse(JSON.parse(optionalEnv("SHARED_SESSION_LIMITS", "{}"))),
   delegationHarnesses,
   permissionHandlers: new Set(PERMISSION_HANDLERS.keys()),
-  ...(workerContainers ? { deployment: { ...SHARED_WORKER_DEPLOYMENT, workerContainers: { features: [...WORKER_CONTAINER_FEATURES] } } } : {}),
+  deployment: sharedWorkerDeployment({ promotion: !!sessionContainers, workerContainers: !!workerContainers }),
 });
 const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);
 const store = new SharedStore(pool);
 const jobs = new JobStore(pool);
 const delegations = new DelegationStore(pool, store, jobs);
-const workers = workerContainers ? new WorkerStore(pool, store, new AllocationStore(pool, store)) : undefined;
+const allocations = new AllocationStore(pool, store);
+const workers = workerContainers ? new WorkerStore(pool, store, allocations) : undefined;
 const jobAdmissions = new WeakMap<SharedRegistry, Admission>();
 const port = listenPort(8083);
 // Shared egress also refuses this deployment's own listeners: this worker and the connection broker.
@@ -103,6 +109,7 @@ const service = new SharedSessionService({
   },
   permissionHandlers: PERMISSION_HANDLERS,
   ...(workers ? { onHumanMessage: async (context) => { await workers.refreshAuthority(context.lease, await context.humanMessages()); } } : {}),
+  ...(sessionContainers ? { promotion: { store: new PromotionStore(pool, store, allocations), settings: sessionContainers } } : {}),
 });
 const app = buildSharedHost(service, key, brokerKey);
 const completions = new CompletionPump(service, delegations, jobs, logger);

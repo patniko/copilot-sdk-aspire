@@ -259,16 +259,18 @@ export class SharedSessionRuntime {
 
   /**
    * Provider keys of a session's runtime state directory and workspace anchor, derived exactly as `open` stores them:
-   * the areas a promotion snapshot reads.
+   * the areas a promotion snapshot reads. `workspacePath` is the anchor as the conversation's history names it.
    */
-  async storageAreas(id: string): Promise<{ state: string; workspace: string }> {
+  async storageAreas(id: string): Promise<{ state: string; workspace: string; workspacePath: string }> {
     if (!z.string().uuid().safeParse(id).success) throw new Error("Invalid shared session identity.");
     const anchorDirectory = join(this.root, "anchors", id);
     await mkdir(anchorDirectory, { recursive: true });
     const conventions = process.platform === "win32" ? "windows" : "posix";
+    const anchor = await realpath(anchorDirectory);
     return {
       state: providerKey(join(this.root, "session-state"), conventions).key,
-      workspace: providerKey(await realpath(anchorDirectory), conventions).key,
+      workspace: providerKey(anchor, conventions).key,
+      workspacePath: anchor,
     };
   }
 

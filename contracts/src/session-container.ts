@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { HarnessDefinition } from "./harness.js";
 import type { HostingFeature } from "./hosting.js";
+import { PromotionNotice, RuntimeSessionId } from "./promotion.js";
 import { SharedServerKey } from "./shared.js";
 
 /** Harness hosting features session containers implement. A harness that needs others is unavailable there. */
@@ -35,11 +36,30 @@ export const SessionContainerSpec = z.object({
   model: z.string().min(1).max(200),
   maxTurnSeconds: z.number().int().min(1).max(3600),
   heartbeatSeconds: z.number().int().min(2).max(60),
+  /**
+   * Present when the allocation was started to move a shared session here (a promotion or a handoff): restore this
+   * snapshot onto the volume before starting the session. The volume is not authoritative until the cutover commit.
+   */
+  promotion: z.object({
+    id: z.string().uuid(),
+    digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+    /** The workspace path the conversation's history names: the shared worker's anchor, in its original spelling. */
+    previousWorkspace: z.string().min(1).max(4096).optional(),
+    /** The runtime session the container runs: resumed from the snapshot's history, or created fresh without it. */
+    runtimeSessionId: RuntimeSessionId,
+    /** Whether the snapshot carries the runtime history; without it the container creates `runtimeSessionId`. */
+    history: z.boolean(),
+    /** Sent once after the session starts, in place of the standard move continuation; its first line deduplicates. */
+    notice: PromotionNotice.optional(),
+  }).strict().optional(),
 }).strict();
 export type SessionContainerSpec = z.infer<typeof SessionContainerSpec>;
 
 export const SessionContainerReady = z.object({ serverKey: SharedServerKey }).strict();
 export type SessionContainerReady = z.infer<typeof SessionContainerReady>;
+/** `promoted`: the readiness committed the promotion's cutover; the session's placement is now this container. */
+export const SessionContainerReadyResult = z.object({ ready: z.literal(true), promoted: z.string().uuid().optional() }).strict();
+export type SessionContainerReadyResult = z.infer<typeof SessionContainerReadyResult>;
 
 /** `activity`: a turn ran, a client connected, or session events occurred since the previous heartbeat. */
 export const SessionContainerHeartbeat = z.object({ activeTurn: z.boolean(), activity: z.boolean() }).strict();

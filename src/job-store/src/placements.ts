@@ -47,12 +47,19 @@ export class PlacementStore {
     return row ? PlacementRoute.parse({ kind: row.placement, sessionId, generation: row.generation, epoch: row.epoch }) : undefined;
   }
 
-  /** Current placements for the given sessions; unknown sessions are omitted. */
+  /**
+   * Current placements for the given sessions; unknown sessions are omitted. A session whose promotion has begun is
+   * marked `moving`: its shared activation is closing, so live routes to it should end with "moved".
+   */
   async current(sessionIds: readonly string[]): Promise<SessionPlacement[]> {
     if (!sessionIds.length) return [];
-    const rows = (await this.pool.query<{ id: string; placement: string; generation: number }>(
-      "SELECT id,placement,placement_generation AS generation FROM shared_sessions WHERE id=ANY($1::uuid[])", [sessionIds])).rows;
-    return rows.map((row) => SessionPlacement.parse({ sessionId: row.id, kind: row.placement, generation: row.generation }));
+    const rows = (await this.pool.query<{ id: string; placement: string; generation: number; moving: boolean }>(
+      `SELECT s.id,s.placement,s.placement_generation AS generation,
+         EXISTS (SELECT 1 FROM session_promotions p WHERE p.session_id=s.id AND p.state IN ('moving','starting')) AS moving
+       FROM shared_sessions s WHERE s.id=ANY($1::uuid[])`, [sessionIds])).rows;
+    return rows.map((row) => SessionPlacement.parse({
+      sessionId: row.id, kind: row.placement, generation: row.generation, ...(row.moving ? { moving: true } : {}),
+    }));
   }
 }
 

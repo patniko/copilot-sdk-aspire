@@ -293,6 +293,8 @@ if (hybridEnabled === 'true') {
     }));
     await controller.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings);
     await dispatcher.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings);
+    // The shared worker promotes `promotable` conversations into the same session containers.
+    await shared.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings);
     await api.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings)
       .withEnvironment('SHARED_PRINCIPALS', JSON.stringify(principals))
       .withEnvironment('SHARED_WORKER_LIMITS', JSON.stringify(workerLimits))
