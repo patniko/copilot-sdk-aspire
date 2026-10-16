@@ -93,18 +93,18 @@ export class SharedStore {
   async issueTicket(principal: string, id: string): Promise<{ token: string; expiresAt: string; serverKey: SharedServerKey }> {
     return this.transaction(async (db) => {
       await db.query("DELETE FROM shared_connection_tickets WHERE expires_at<clock_timestamp()");
-      const row = (await db.query<{ epoch: string; server_key: SharedServerKey }>(
-        `SELECT a.epoch,a.server_key FROM shared_sessions s JOIN shared_activations a ON a.session_id=s.id
+      const row = (await db.query<{ epoch: string; server_key: SharedServerKey; placement_generation: number }>(
+        `SELECT a.epoch,a.server_key,s.placement_generation FROM shared_sessions s JOIN shared_activations a ON a.session_id=s.id
          JOIN session_file_namespaces n ON n.id=s.id AND n.epoch=a.epoch AND n.principal=s.principal
-         WHERE s.id=$1 AND s.principal=$2 AND NOT s.closed AND n.lease_until>clock_timestamp()`, [id, principal])).rows[0];
+         WHERE s.id=$1 AND s.principal=$2 AND NOT s.closed AND s.placement='shared' AND n.lease_until>clock_timestamp()`, [id, principal])).rows[0];
       if (!row) throw new StoreError("not_found", "The shared conversation is unavailable.");
       const count = await db.query<{ count: number }>("SELECT count(*)::int AS count FROM shared_connection_tickets WHERE session_id=$1 AND used_at IS NULL", [id]);
       if (count.rows[0]!.count >= 16) throw new StoreError("quota_exceeded", "Too many outstanding connection tickets.");
       const token = randomBytes(32).toString("base64url");
       const inserted = await db.query<{ expires_at: Date }>(
-        `INSERT INTO shared_connection_tickets(digest,session_id,principal,epoch,expires_at)
-         VALUES($1,$2,$3,$4,clock_timestamp()+interval '60 seconds') RETURNING expires_at`,
-        [digest(token), id, principal, row.epoch]);
+        `INSERT INTO shared_connection_tickets(digest,session_id,principal,epoch,placement_generation,expires_at)
+         VALUES($1,$2,$3,$4,$5,clock_timestamp()+interval '60 seconds') RETURNING expires_at`,
+        [digest(token), id, principal, row.epoch, row.placement_generation]);
       return { token, expiresAt: inserted.rows[0]!.expires_at.toISOString(), serverKey: SharedServerKey.parse(row.server_key) };
     });
   }
@@ -116,6 +116,7 @@ export class SharedStore {
        WHERE t.digest=$1 AND t.session_id=$2 AND t.principal=$3 AND t.epoch=$4
          AND t.used_at IS NULL AND t.expires_at>clock_timestamp()
          AND s.id=t.session_id AND s.principal=t.principal AND NOT s.closed
+         AND s.placement='shared' AND s.placement_generation=t.placement_generation
          AND n.id=s.id AND n.principal=s.principal AND n.epoch=t.epoch AND n.lease_until>clock_timestamp()
        RETURNING t.digest`, [digest(ticket), lease.id, lease.principal, lease.epoch]);
     return result.rowCount === 1;
