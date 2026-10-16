@@ -45,6 +45,8 @@ afterEach(async () => {
 });
 afterAll(async () => { await pool.end(); });
 
+/** A refusal the coordinator's model can read: a `failure` result, never a thrown error that hides the reason. */
+const refusedWith = (pattern: RegExp) => ({ resultType: "failure", textResultForLlm: expect.stringMatching(pattern) });
 class FakeFiles implements SharedFileService {
   readonly contents = new Map<string, Buffer>();
   async list() { return [...this.contents.keys()].map((name) => ({ name, type: "file" as const })); }
@@ -120,11 +122,11 @@ describe("coordinator worker tools", () => {
     expect(first).toMatchObject({ accepted: true, worker: { name: "analysis", state: "starting", harness: "repo-analyst@1.0.0", size: "small", sharedVolume: "none" } });
     const replay = await c.call(WORKER_TOOLS.create, { name: "analysis", harness: "repo-analyst", task: "Map the repository." }, { toolCallId }) as Record<string, any>;
     expect(replay).toMatchObject({ accepted: true, worker: { id: first.worker.id }, message: expect.stringMatching(/already started/) });
-    await expect(c.call(WORKER_TOOLS.create, { name: "other", harness: "repo-analyst", task: "x" }, { toolCallId })).rejects.toThrow(/different arguments/);
-    await expect(c.call(WORKER_TOOLS.create, { name: "big", harness: "repo-analyst", task: "x", size: "large" })).rejects.toThrow(/argument: size/);
-    await expect(c.call(WORKER_TOOLS.create, { name: "img", harness: "repo-analyst", task: "x", image: "evil" })).rejects.toThrow(/Invalid arguments/);
-    await expect(c.call(WORKER_TOOLS.create, { name: "notes", craft: { instructions: "x" }, task: "x" })).rejects.toThrow(/crafting template/);
-    await expect(c.call(WORKER_TOOLS.create, { name: "sub", harness: "repo-analyst", task: "x" }, { agentId: "explore-1" })).rejects.toThrow(/root agent/);
+    expect(await c.call(WORKER_TOOLS.create, { name: "other", harness: "repo-analyst", task: "x" }, { toolCallId })).toEqual(refusedWith(/different arguments/));
+    expect(await c.call(WORKER_TOOLS.create, { name: "big", harness: "repo-analyst", task: "x", size: "large" })).toEqual(refusedWith(/argument: size/));
+    expect(await c.call(WORKER_TOOLS.create, { name: "img", harness: "repo-analyst", task: "x", image: "evil" })).toEqual(refusedWith(/Invalid arguments/));
+    expect(await c.call(WORKER_TOOLS.create, { name: "notes", craft: { instructions: "x" }, task: "x" })).toEqual(refusedWith(/crafting template/));
+    expect(await c.call(WORKER_TOOLS.create, { name: "sub", harness: "repo-analyst", task: "x" }, { agentId: "explore-1" })).toEqual(refusedWith(/root agent/));
   });
 
   it("message, inspect, interrupt, wait for, and archive workers", async () => {
@@ -143,8 +145,8 @@ describe("coordinator worker tools", () => {
     expect(listed.workers[0]!.result.text).toHaveLength(1000);
     expect(await c.call(WORKER_TOOLS.wait, {})).toMatchObject({ waiting: [{ name: "analysis", state: "idle" }], instruction: expect.stringMatching(/End your turn/) });
     expect(await c.call(WORKER_TOOLS.archive, { worker: "analysis" })).toEqual({ archived: true, worker: "analysis", state: "stopped", capacityReleased: false });
-    await expect(c.call(WORKER_TOOLS.send, { worker: "analysis", message: "More." })).rejects.toThrow(/has stopped/);
-    await expect(c.call(WORKER_TOOLS.get, { worker: "ghost" })).rejects.toThrow(/No worker/);
+    expect(await c.call(WORKER_TOOLS.send, { worker: "analysis", message: "More." })).toEqual(refusedWith(/has stopped/));
+    expect(await c.call(WORKER_TOOLS.get, { worker: "ghost" })).toEqual(refusedWith(/No worker/));
   });
 
   it("answer questions when allowed, never permission requests", async () => {
@@ -156,7 +158,7 @@ describe("coordinator worker tools", () => {
     await workers.turnStarted(created.worker.id, "turn-1");
     const question = await workers.createInputRequest(created.worker.id, "turn-1", "q-1", { kind: "question", question: "Which folder?", allowFreeform: true });
     const permission = await workers.createInputRequest(created.worker.id, "turn-1", "p-1", { kind: "permission", permission: { type: "shell", command: "rm -rf build" } });
-    await expect(c.call(WORKER_TOOLS.answer, { requestId: permission.id, answer: "approved" })).rejects.toThrow(/Only a person/);
+    expect(await c.call(WORKER_TOOLS.answer, { requestId: permission.id, answer: "approved" })).toEqual(refusedWith(/Only a person/));
     expect(await c.call(WORKER_TOOLS.answer, { requestId: question.id, answer: "src" })).toEqual({ answered: true, worker: "analysis", state: "answered" });
   });
 
@@ -183,7 +185,7 @@ describe("coordinator worker tools", () => {
     // Without the policy ceiling the coordinator cannot start inheriting workers at all.
     const strict = await workerRegistry([assisted, trusting], {}, { trusting: { hosting: { modes: ["orchestrator", "isolated"], workers: { allowInheritedAuthority: false } } } });
     const refused = await setup(trusting, { policy: strict });
-    await expect(refused.call(WORKER_TOOLS.create, { name: "judged", harness: "assisted-analyst", task: "x" })).rejects.toThrow(/inherit|authority/i);
+    expect(await refused.call(WORKER_TOOLS.create, { name: "judged", harness: "assisted-analyst", task: "x" })).toEqual(refusedWith(/inherit|authority/i));
   });
   it("reach the shared volume only through the bounded file service", async () => {
     const service = new FakeFiles();
@@ -191,8 +193,9 @@ describe("coordinator worker tools", () => {
     expect(await c.call(WORKER_TOOLS.writeFile, { path: "plan/notes.md", content: "# Plan" })).toEqual({ size: 6, etag: "etag" });
     expect(await c.call(WORKER_TOOLS.listFiles, {})).toEqual({ entries: [{ name: "plan/notes.md", type: "file" }] });
     expect(await c.call(WORKER_TOOLS.readFile, { path: "plan/notes.md" })).toMatchObject({ data: "# Plan", encoding: "utf-8", truncated: false });
-    await expect(c.call(WORKER_TOOLS.readFile, { path: "../etc/passwd" })).rejects.toThrow(/Invalid arguments/);
-    await expect(c.call(WORKER_TOOLS.writeFile, { path: "big.txt", content: "x".repeat(33 * 1024) })).rejects.toThrow(/Invalid arguments/);
+    expect(await c.call(WORKER_TOOLS.readFile, { path: "../etc/passwd" })).toEqual(refusedWith(/Invalid arguments/));
+    expect(await c.call(WORKER_TOOLS.readFile, { path: "missing.md" })).toEqual(refusedWith(/not found/));
+    expect(await c.call(WORKER_TOOLS.writeFile, { path: "big.txt", content: "x".repeat(33 * 1024) })).toEqual(refusedWith(/Invalid arguments/));
   });
 });
 

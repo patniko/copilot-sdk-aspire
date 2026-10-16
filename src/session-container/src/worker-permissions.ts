@@ -1,8 +1,21 @@
-import { followAssistedApproval, type PermissionHandler } from "@github/copilot-sdk";
+import { followAssistedApproval, type ManagedSettings, type PermissionHandler } from "@github/copilot-sdk";
 import { permissionModeFor, type InputRequestBody, type InputResponseBody, type WorkerContainerSpec } from "@copilot-agent/contracts";
 import { buildPermissionHandler, permissionPromptFor } from "@copilot-agent/harness-hosting";
 
 const RULE_KINDS = new Set(["read", "write", "shell", "url"]);
+
+/**
+ * Managed settings that let the worker's runtime hold only its admitted approval mode. A worker has no managed-settings
+ * source of its own, and an undetermined policy would fail closed, so the application states it explicitly.
+ */
+export function workerManagedSettings(approvalMode: WorkerContainerSpec["approvalMode"]): ManagedSettings {
+  return {
+    permissions: {
+      ...(approvalMode === "allow-all" ? {} : { disableBypassPermissionsMode: "disable" }),
+      ...(approvalMode === "assisted" ? {} : { disableAssistedPermissionsMode: true }),
+    },
+  };
+}
 
 /**
  * How a worker decides its permission requests (docs/HOSTING-MODES-PLAN.md, section 3, "Approval modes"). The

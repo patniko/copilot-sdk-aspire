@@ -9,7 +9,7 @@ import {
 } from "@copilot-agent/contracts";
 import { bindTools, buildSessionOptions, hostToolGuard } from "@copilot-agent/harness-hosting";
 import { WorkerSupervisorMessage, type WorkerOperation, type WorkerOwnerConfiguration } from "./protocol.js";
-import { workerPermissionHandler } from "./worker-permissions.js";
+import { workerManagedSettings, workerPermissionHandler } from "./worker-permissions.js";
 
 /**
  * The unprivileged owner of one orchestrator worker (docs/HOSTING-MODES-PLAN.md, section 7.4). It runs the worker's
@@ -223,6 +223,11 @@ async function start(config: WorkerOwnerConfiguration): Promise<void> {
   const models = [...new Set([spec.model, ...(spec.judgeModel ? [spec.judgeModel] : []), ...(definition.agents ?? []).flatMap((agent) => agent.model ? [agent.model] : [])])];
   // The in-process runtime uses this process's working directory; it cannot take a client-level one.
   process.chdir(workspace);
+  // The runtime offers assisted approval only behind its experimental AUTO_APPROVAL flag, which the in-process engine
+  // reads from this process's environment when it starts; without it, setMode("assisted") is ignored. Managed settings
+  // still refuse every mode except the worker's admitted one.
+  if (spec.approvalMode === "assisted") process.env.AUTO_APPROVAL = "true";
+  else delete process.env.AUTO_APPROVAL;
   client = new CopilotClient({
     connection: RuntimeConnection.forInProcess(),
     mode: "empty",
@@ -258,6 +263,7 @@ async function start(config: WorkerOwnerConfiguration): Promise<void> {
       },
     },
     onPermissionRequest: workerPermissionHandler(spec, workspace, askPerson),
+    managedSettings: workerManagedSettings(spec.approvalMode),
     ...(questions ? {
       onUserInputRequest: async (request: { question: string; choices?: string[]; allowFreeform?: boolean }) => {
         const choices = request.choices?.map((choice) => choice.slice(0, 500)).filter(Boolean).slice(0, 20);
@@ -271,6 +277,8 @@ async function start(config: WorkerOwnerConfiguration): Promise<void> {
     } : {}),
     hooks: {
       onPreToolUse: async (input) => {
+        // Only a `deny` rule decides here. Every other request takes the runtime's own permission flow, which carries
+        // the full action to the judge and the worker's handler; a hook confirmation would hide it.
         const decision = hostToolGuard(definition, availableTools, input.toolName);
         if (decision?.permissionDecision === "deny") return decision;
         try {
@@ -279,7 +287,7 @@ async function start(config: WorkerOwnerConfiguration): Promise<void> {
           return { permissionDecision: "deny", permissionDecisionReason: "The worker no longer has an active execution grant." };
         }
         activity();
-        return decision;
+        return undefined;
       },
     },
   };

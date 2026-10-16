@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { InputRequestBody, InputResponseBody } from "@copilot-agent/contracts";
-import { workerPermissionHandler } from "../../src/session-container/src/worker-permissions.js";
+import { workerManagedSettings, workerPermissionHandler } from "../../src/session-container/src/worker-permissions.js";
 import { sharedFileArguments } from "../../src/execution-controller/src/docker.js";
 import { sharedFileReply, SHARED_FILES_SCRIPT } from "../../src/execution-controller/src/shared-files.js";
 import { WorkerOwnerMessage, WorkerSupervisorMessage } from "../../src/session-container/src/protocol.js";
@@ -49,6 +49,13 @@ describe("worker permission decisions", () => {
   });
 });
 
+describe("worker managed settings", () => {
+  it("let the runtime hold only the worker's admitted approval mode", () => {
+    expect(workerManagedSettings("manual")).toEqual({ permissions: { disableBypassPermissionsMode: "disable", disableAssistedPermissionsMode: true } });
+    expect(workerManagedSettings("assisted")).toEqual({ permissions: { disableBypassPermissionsMode: "disable" } });
+    expect(workerManagedSettings("allow-all")).toEqual({ permissions: { disableAssistedPermissionsMode: true } });
+  });
+});
 describe("worker container protocol", () => {
   it("lets the owner request only the listed worker operations", () => {
     expect(WorkerOwnerMessage.safeParse({ kind: "call", id: crypto.randomUUID(), operation: "turns/started", body: { turnId: "t" } }).success).toBe(true);

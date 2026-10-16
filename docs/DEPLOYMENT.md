@@ -170,6 +170,7 @@ restart; retained sessions keep their admitted limits rather than silently recei
 | `session-containers` | `true` adds per-session containers for `isolated` conversation harnesses ([below](#session-containers)); requires `hybrid-hosting` |
 | `session-container-image` | Prebuilt session-container image, resolved to an immutable local image ID; default `copilot-session-container:local` |
 | `session-container-settings` | JSON matching `SessionContainerSettings`: idle seconds, allocation lifetime, startup and shutdown limits, heartbeat interval |
+| `orchestrator-workers` | `true` lets `orchestrator` conversation harnesses start workers in session containers ([below](#orchestrator-workers)); requires `session-containers` |
 
 For example, `{"executionContainers":1,"activeTurns":2,"residentSessions":16}` limits child execution to
 one physical allocation while permitting two model turns. By default one harness can hold at most 12 resident
@@ -233,6 +234,31 @@ directly. It holds only its allocation and ingress credentials: no database, Doc
 relay credential. A local gate has exercised a real CLI attaching through the broker over direct WSS, synthetic
 inference, idle stop, resume with history and files intact, and capacity returning to zero. This is not Azure or
 paid-model evidence.
+
+### Orchestrator workers
+
+An `orchestrator` conversation harness runs its coordinator on the shared worker, which starts each worker in its
+own session container ([architecture](ARCHITECTURE.md#orchestrator-workers)). Workers use the same
+[session-container image](#session-containers), so rebuild it from the same verified bundle after upgrading; the
+controller selects the worker supervisor for worker allocations. Enable them alongside session containers:
+
+```powershell
+aspire secret set "Parameters:session-containers" "true"
+aspire secret set "Parameters:orchestrator-workers" "true"
+```
+
+The AppHost then advertises worker containers in the [hosting views](API.md#hosting-views), enables the
+[worker routes](API.md#orchestrator-workers) on the API and dispatcher, and generates a persisted
+`shared-files-key` that only the shared worker and the execution controller's file service hold. Size each
+worker through the policy's `hosting.sizes` and `hosting.workers` ceilings and the coordinator harness's
+`hosting.workers` block; crafted workers also need a `hosting.crafting.templates` entry. Workers count against the
+same `executionContainers` and `containersPerPrincipal` limits as jobs and session containers.
+
+A worker's private volume and a conversation's shared volume are retained like session volumes: released when
+the worker stops or the coordinator closes, never deleted. File-service helper containers carry the
+`copilot.hybrid.managed=files` label and are removed after each operation. Workers are reachable only through
+their coordinator; there is no client attachment or relay for a worker. The local gate used synthetic
+inference; this is not Azure or paid-model evidence.
 
 ### Shared worker container
 
