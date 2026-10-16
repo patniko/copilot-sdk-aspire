@@ -20,7 +20,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { z, ZodError } from "zod";
 import { AuthoringError, AuthoringRequest, AuthoringService, type DraftGenerator } from "./authoring.js";
 import { GitHubAuthError, GitHubDeviceAuth } from "./github-auth.js";
-import { harnessHostingDetail, readServiceView, staleVersions } from "./hosting.js";
+import { harnessConnections, harnessHostingDetail, readOwnerHosts, readServiceView, staleVersions } from "./hosting.js";
 import { mapHarnessDefinition, mapPlannerPlan } from "./import.js";
 import { bumpPatch, compareVersions, Repo, RepoError } from "./repo.js";
 import { deployEnvironment, Settings, SettingsError } from "./settings.js";
@@ -689,9 +689,18 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       ),
       repo.listHarnesses(),
     ]);
-    return result.value
-      ? { target, overview: result.value, stale: staleVersions(documents, result.value) }
-      : { target, problem: result.problem, stale: [] };
+    if (!result.value) return { target, problem: result.problem, stale: [] };
+    const overview = result.value;
+    // The launcher prefers the caller's own owner host, so the page needs the same ownership facts it looks up.
+    const needsOwners = overview.hosts.isolatedHosts.length > 0
+      && overview.harnesses.some((view) => view.interaction === "conversation" && view.placement === "container");
+    const owners = needsOwners ? await readOwnerHosts(() => fetchHosting(target, "/v1/hosts")) : { hosts: [] };
+    return {
+      target,
+      overview,
+      stale: staleVersions(documents, overview),
+      connections: await harnessConnections(overview, owners, target),
+    };
   });
   app.get("/api/hosting/:harness", async (request): Promise<HarnessHostingInfo> => {
     const harness = harnessParam(request);

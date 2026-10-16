@@ -17,16 +17,20 @@ async function lookup(api: { apiUrl: string; key: string }, path: string): Promi
 }
 
 /**
- * Whether the caller owns a deployed managed owner host for `harness` that offers `transport` (`GET /v1/hosts/{harness}`).
- * A GitHub-native demo host is listed under its configured harness but runs Copilot's own sessions, so it never counts.
+ * Whether an owner host view is the caller's own managed host offering `transport`. A GitHub-native demo host is listed
+ * under its configured harness but runs Copilot's own sessions, so it never counts.
  */
+export function ownedManagedHostOffers(view: OwnerHostView, transport: HostingTransport): boolean {
+  return view.owned && view.execution === "managed" && ownerHostTransports(view.transport).includes(transport);
+}
+
+/** Whether the caller owns a deployed managed owner host for `harness` that offers `transport` (`GET /v1/hosts/{harness}`). */
 export async function ownedOwnerHostOffers(api: { apiUrl: string; key: string }, harness: string, transport: HostingTransport): Promise<boolean> {
   const response = await lookup(api, `/v1/hosts/${encodeURIComponent(harness)}`);
   // No owner-host routes, no such harness, or no host deployed for it.
   if (response.status === 404 || response.status === 409) return false;
   if (!response.ok) throw new Error(`The owner host lookup failed (${response.status}).`);
-  const view = OwnerHostView.parse(await response.json());
-  return view.owned && view.execution === "managed" && ownerHostTransports(view.transport).includes(transport);
+  return ownedManagedHostOffers(OwnerHostView.parse(await response.json()), transport);
 }
 
 /** Whether `id` is one of the caller's application sessions, shared or in a session container (`GET /v1/sessions/{id}`). */
