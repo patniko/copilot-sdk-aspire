@@ -258,6 +258,29 @@ export class AllocationStore {
     await this.pool.query("UPDATE execution_volumes SET observed_at=COALESCE(observed_at,clock_timestamp()) WHERE name=$1 AND namespace=$2", [name, lease.namespace]);
   }
 
+  /**
+   * An open orchestrator conversation's shared worker volume in this namespace, for the shared file service. It is
+   * recorded on first write (`create`), with the same name its workers mount; a released volume is refused.
+   */
+  async sharedVolume(lease: ControllerLease, sessionId: string, create: boolean): Promise<BoundVolume | undefined> {
+    return this.shared.transaction(async (db) => {
+      await this.assertLease(lease, db);
+      const session = (await db.query<{ principal: string; closed: boolean; mode: string | null }>(
+        "SELECT principal,closed,definition->'harness'->>'mode' AS mode FROM shared_sessions WHERE id=$1", [sessionId])).rows[0];
+      if (!session || session.closed || session.mode !== "orchestrator") throw new StoreError("not_found", "The coordinator conversation is unavailable.");
+      const name = `hybrid-${lease.namespace}-shared-${sessionId}`;
+      const existing = (await db.query<{ name: string; released_at: Date | null }>(
+        "SELECT name,released_at FROM execution_volumes WHERE namespace=$1 AND session_id=$2 AND purpose='shared'", [lease.namespace, sessionId])).rows[0];
+      if (existing?.released_at) throw new StoreError("invalid_state", "The shared volume has been released.");
+      if (!existing && !create) return undefined;
+      const record = existing ?? (await db.query<{ name: string }>(
+        `INSERT INTO execution_volumes(name,namespace,session_id,purpose,principal) VALUES($1,$2,$3,'shared',$4)
+         ON CONFLICT(namespace,session_id,purpose) DO UPDATE SET name=execution_volumes.name RETURNING name`,
+        [name, lease.namespace, sessionId, session.principal])).rows[0]!;
+      return { purpose: "shared", sessionId, target: "/shared", readOnly: false, name: record.name };
+    });
+  }
+
   /** Volume names recorded for the namespace, including released ones; the controller never deletes them. */
   async volumes(lease: ControllerLease): Promise<Set<string>> {
     await this.assertLease(lease);

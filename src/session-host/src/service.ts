@@ -1,5 +1,5 @@
 import {
-  SharedPrincipalBindings, SharedWorkerLimits,
+  humanAuthorityMessages, SharedPrincipalBindings, SharedWorkerLimits,
   type ConnectionTicket, type HostingTransport, type SharedSessionCreation,
 } from "@copilot-agent/contracts";
 import type { ManagedSettings } from "@github/copilot-sdk";
@@ -40,6 +40,11 @@ export interface SharedServiceOptions {
   /** Handlers for the `custom` approval mode, by name. */
   permissionHandlers?: ReadonlyMap<string, CustomPermissionHandler>;
   permissionHandlerTimeoutMs?: number;
+  /**
+   * Called after the person sends a message to a resident conversation, for example to refresh the authority grants of
+   * an orchestrator's workers from the recorded history.
+   */
+  onHumanMessage?: (context: SharedActivationContext) => Promise<void>;
 }
 
 /** Managed settings that keep the runtime from entering an approval mode the harness's policy does not allow. */
@@ -300,6 +305,9 @@ export class SharedSessionService {
               this.options.report("session.turn_settlement_failed", row.id);
               void this.deactivate(row.id).catch(() => this.options.report("session.deactivation_failed", row.id));
             });
+          }
+          if (event.type === "user.message" && this.options.onHumanMessage && humanAuthorityMessages([event]).length) {
+            void this.options.onHumanMessage(context).catch(() => this.options.report("session.authority_refresh_failed", row.id));
           }
         },
       });

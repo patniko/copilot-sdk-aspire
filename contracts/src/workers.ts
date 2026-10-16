@@ -580,8 +580,8 @@ function capitalize(value: string): string {
 /** A runtime session event, reduced to what the authority source reads. */
 export interface AuthorityEventLike {
   type: string;
-  agentId?: string;
-  data?: { content?: unknown; source?: unknown; isAutopilotContinuation?: unknown };
+  agentId?: string | undefined;
+  data?: unknown;
 }
 
 /**
@@ -595,7 +595,7 @@ export interface AuthorityEventLike {
 export function humanAuthorityMessages(events: readonly AuthorityEventLike[]): string[] {
   const messages = events.flatMap((event) => {
     if (event.type !== "user.message" || event.agentId) return [];
-    const data = event.data ?? {};
+    const data = (event.data && typeof event.data === "object" ? event.data : {}) as { content?: unknown; source?: unknown; isAutopilotContinuation?: unknown };
     if (data.source !== undefined && data.source !== null && data.source !== "user") return [];
     if (data.isAutopilotContinuation === true || typeof data.content !== "string") return [];
     return [data.content];

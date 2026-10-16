@@ -442,6 +442,10 @@ export class WorkerStore {
   async sweep(limit = 200): Promise<StoppedWorker[]> {
     return this.shared.transaction(async (db) => {
       await this.#expireInputs(db);
+      // A closed coordinator's shared volume is retained for the operator, but no new allocation may mount it.
+      await db.query(
+        `UPDATE execution_volumes v SET released_at=clock_timestamp() FROM shared_sessions s
+         WHERE v.session_id=s.id AND v.purpose='shared' AND v.released_at IS NULL AND s.closed`);
       const rows = (await db.query<WorkerRow & { session_closed: boolean; now: Date }>(
         `SELECT w.*,s.closed AS session_closed,clock_timestamp() AS now FROM session_workers w JOIN shared_sessions s ON s.id=w.session_id
          WHERE w.state<>'stopped' AND (s.closed OR w.expires_at<=clock_timestamp() OR w.tokens_used>=w.token_budget
@@ -1000,6 +1004,8 @@ export class WorkerStore {
     if (!updated.rowCount) return;
     await db.query("UPDATE worker_messages SET state='cancelled' WHERE worker_id=$1 AND state='pending'", [row.id]);
     await db.query("UPDATE worker_input_requests SET state='cancelled',resolved_at=clock_timestamp() WHERE worker_id=$1 AND state='pending'", [row.id]);
+    // The private volume is retained for the operator, but no new allocation may mount it.
+    await db.query("UPDATE execution_volumes SET released_at=COALESCE(released_at,clock_timestamp()) WHERE session_id=$1 AND purpose='worker'", [row.id]);
     if (reason === "failed") await this.#notify(db, row, "failed", { error: (error ?? "The worker failed.").slice(0, 1000) });
     else if (BACKSTOPS.has(reason)) await this.#notify(db, row, "stopped", { reason });
   }

@@ -15,6 +15,7 @@ import { PERMISSION_HANDLERS } from "./permission-handlers.js";
 import { buildSharedHost } from "./server.js";
 import { SharedSessionService } from "./service.js";
 import { createSharedEgress } from "./shared-egress.js";
+import { ControllerSharedFiles } from "./shared-files.js";
 import { WorkerInboxPump } from "./worker-inbox.js";
 
 const logger = createLogger("session-host");
@@ -96,10 +97,12 @@ const service = new SharedSessionService({
         workers, registry: () => configuration.current(), features: WORKER_CONTAINER_FEATURES,
         deploymentLimit: Math.max(1, limits.executionContainers),
         containers: { limits, startupSeconds: workerContainers.startupSeconds },
+        files: new ControllerSharedFiles(serviceUrl("execution-controller"), requireEnv("SHARED_FILES_KEY")),
       },
     } : {}),
   },
   permissionHandlers: PERMISSION_HANDLERS,
+  ...(workers ? { onHumanMessage: async (context) => { await workers.refreshAuthority(context.lease, await context.humanMessages()); } } : {}),
 });
 const app = buildSharedHost(service, key, brokerKey);
 const completions = new CompletionPump(service, delegations, jobs, logger);

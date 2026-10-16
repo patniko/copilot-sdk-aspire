@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import type { BoundVolume, ExecutionAllocation, JobAllocation, SessionAllocation } from "@copilot-agent/job-store";
 import type { ExecutionAdapter, ObservedContainer } from "../../../src/execution-controller/src/docker.js";
+import {
+  SharedFileError, type SharedFileEntry, type SharedFileOperation, type SharedFileResult,
+} from "../../../src/execution-controller/src/shared-files.js";
 
 interface FakeContainer extends ObservedContainer {
   allocation: string;
@@ -55,7 +58,10 @@ export class FakeAdapter implements ExecutionAdapter {
     for (const volume of allocation.volumes as BoundVolume[]) {
       if (!this.volumeLabels.has(volume.name)) throw new Error("A session container was created before its volume.");
     }
-    this.#add(allocation, "session", credentials.token, { "copilot.hybrid.kind": "session", "copilot.hybrid.session": allocation.sessionId });
+    this.#add(allocation, "session", credentials.token, {
+      "copilot.hybrid.kind": "session", "copilot.hybrid.session": allocation.sessionId,
+      ...(allocation.workerId ? { "copilot.hybrid.worker": allocation.workerId } : {}),
+    });
   }
 
   async start(container: ObservedContainer): Promise<void> {
@@ -87,10 +93,44 @@ export class FakeAdapter implements ExecutionAdapter {
   }
 
   async ensureVolume(volume: BoundVolume): Promise<void> {
+    await this.ensureNamedVolume(volume);
+  }
+
+  async ensureNamedVolume(volume: BoundVolume): Promise<void> {
     if (!this.volumeLabels.has(volume.name)) {
       this.operations.push(`volume:${volume.name}`);
       this.volumeLabels.set(volume.name, { "copilot.hybrid.namespace": this.namespace, "copilot.hybrid.session": volume.sessionId, "copilot.hybrid.purpose": volume.purpose });
     }
+  }
+
+  /** Shared-volume contents by volume name, as the helper container would see them. */
+  readonly files = new Map<string, Map<string, Buffer>>();
+
+  async sharedFiles(image: string, volume: BoundVolume, operation: SharedFileOperation): Promise<SharedFileResult> {
+    if (!Object.values(this.images).includes(image) || !this.volumeLabels.has(volume.name)) throw new Error("The helper needs a resolved image and an existing volume.");
+    this.operations.push(`files:${operation.kind}:${volume.name}`);
+    const files = this.files.get(volume.name) ?? new Map<string, Buffer>();
+    this.files.set(volume.name, files);
+    const etag = (content: Buffer) => createHash("sha256").update(content).digest("base64url");
+    if (operation.kind === "list") {
+      const prefix = operation.path ? `${operation.path}/` : "";
+      const names = new Map<string, SharedFileEntry>();
+      for (const [path, content] of files) {
+        if (!path.startsWith(prefix)) continue;
+        const [first, ...rest] = path.slice(prefix.length).split("/");
+        names.set(first!, rest.length ? { name: first!, type: "directory" } : { name: first!, type: "file", size: content.length });
+      }
+      if (operation.path && !names.size) throw new SharedFileError("not_found", "The directory was not found.");
+      return { entries: [...names.values()] };
+    }
+    const existing = files.get(operation.path);
+    if (operation.kind === "read") {
+      if (!existing) throw new SharedFileError("not_found", "The file was not found.");
+      return { content: existing };
+    }
+    if (existing && operation.ifMatch !== etag(existing)) throw new SharedFileError("conflict", "The file exists; read it first and pass its etag to replace it.");
+    files.set(operation.path, operation.content);
+    return { size: operation.content.length, etag: etag(operation.content) };
   }
 
   async volumes(): Promise<string[]> {

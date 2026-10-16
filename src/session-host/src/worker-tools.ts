@@ -112,6 +112,13 @@ export function workerTools(
   };
   const tool = (name: string, description: string, parameters: z.ZodType, handler: Tool["handler"], rule: SharedTool["rule"] = {}): SharedTool =>
     ({ rule, tool: { name, description, parameters: schema(parameters), handler } });
+  /**
+   * Inherited authority comes only from the person's recorded messages in this conversation's runtime history, never
+   * from tool arguments, and is recorded for the worker before its first task can rely on it.
+   */
+  const grant = async (view: WorkerView) => {
+    if (view.inheritsHumanAuthority && view.state !== "stopped") await deps.workers.grantAuthority(lease, view.id, await context.humanMessages());
+  };
 
   const tools: SharedTool[] = [
     tool(WORKER_TOOLS.create,
@@ -126,12 +133,16 @@ export function workerTools(
         const argumentsHash = sha256Hex(canonicalJson(args));
         return run(async () => {
           const existing = await deps.workers.find(lease, invocation.toolCallId, argumentsHash);
-          if (existing) return { accepted: true, worker: summary(existing), message: "This tool call already started the worker." };
+          if (existing) {
+            await grant(existing);
+            return { accepted: true, worker: summary(existing), message: "This tool call already started the worker." };
+          }
           const registry = await deps.registry();
           const { capacity, ...planned } = planWorker(registry,
             { definition: plan.definition, policy: policyFor(registry.policies, plan.harness.name) }, args, { features: deps.features });
           const admitted = await deps.workers.admit(lease, currentTurn().id, { ...planned, operationKey: invocation.toolCallId, argumentsHash },
             { ...capacity, deployment: deps.deploymentLimit }, deps.containers);
+          await grant(admitted.view);
           return {
             accepted: true, worker: summary(admitted.view),
             message: "The worker starts in its own container and reports back to this conversation. End your turn or continue with other work; do not poll.",
@@ -145,6 +156,8 @@ export function workerTools(
         rootOnly(invocation);
         const args = parse(WorkerMessageRequest, value);
         return run(async () => {
+          // The worker reads its authority before the message that may rely on it.
+          if (ceilings.inheritHumanAuthority) await deps.workers.refreshAuthority(lease, await context.humanMessages());
           const sent = await deps.workers.send(lease, invocation.toolCallId, sha256Hex(canonicalJson(args)), args.worker, args.message, args.delivery);
           return { accepted: true, worker: sent.worker.name, seq: sent.message.seq, delivery: sent.message.delivery, state: sent.worker.state };
         });
