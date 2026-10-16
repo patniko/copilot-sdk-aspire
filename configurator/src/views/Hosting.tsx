@@ -108,9 +108,9 @@ export function HostingView() {
           <div className="space-y-4">
             <div>
               <h3 className="font-semibold">Shared coordinator <Badge tone="amber">{sharedObserved ? "Local service observed" : "Local opt-in required"}</Badge></h3>
-              <p className="mt-1 text-sm fg-muted">Use the matching qualified CLI and an operator-bound GitHub account. Two-real-account and Azure qualification remain open.</p>
+              <p className="mt-1 text-sm fg-muted">The hybrid-coordinator harness on the shared worker. Use the matching qualified CLI and an operator-bound GitHub account. Two-real-account and Azure qualification remain open.</p>
               {sharedObserved
-                ? <CopyButton label="Copy shared CLI launcher" text="pnpm host:connect --destination shared --target local --transport direct" />
+                ? <CopyButton label="Copy shared CLI launcher" text="pnpm host:connect --harness hybrid-coordinator --target local --transport direct" />
                 : <button type="button" className="btn-secondary mt-2" disabled>Shared CLI launcher unavailable</button>}
             </div>
             <div className="border-t border-muted pt-4">

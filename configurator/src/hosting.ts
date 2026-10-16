@@ -172,12 +172,12 @@ export interface HarnessHostRow {
   connections: HarnessConnection[];
 }
 
-/** The existing launcher; it reaches the deployment's demo agent host, which serves one harness. */
-export function launcherCommand(target: TryTarget, transport: "direct" | "github"): string {
-  return `pnpm host:connect --target ${target} --transport ${transport}`;
+/** The launcher command for one harness: `pnpm host:connect --harness`, which routes by the service's placement. */
+export function launcherCommand(harness: string, target: TryTarget, transport: "direct" | "github"): string {
+  return `pnpm host:connect --harness ${harness} --target ${target} --transport ${transport}`;
 }
 
-export function harnessHostRow(view: HarnessHostingView, hosts: HostingHostsView, target: TryTarget, demoHost?: DemoHostSettings): HarnessHostRow {
+export function harnessHostRow(view: HarnessHostingView, hosts: HostingHostsView, target: TryTarget): HarnessHostRow {
   if (view.interaction === "batch") {
     return {
       host: hosts.executor ? "Executor pool" : "No executor",
@@ -210,7 +210,7 @@ export function harnessHostRow(view: HarnessHostingView, hosts: HostingHostsView
         ? "The shared worker is always on; a promoted session adds one container."
         : view.mode === "orchestrator"
           ? "The shared worker is always on; each worker adds container time."
-          : "The shared worker is always on and shared; sessions add no containers.";
+          : "The shared worker is always on and shared by many sessions; a session itself starts no container.";
   } else {
     host = "No shared worker";
     hostDetail = "This deployment has no harness-driven shared worker.";
@@ -222,14 +222,13 @@ export function harnessHostRow(view: HarnessHostingView, hosts: HostingHostsView
     if (problem || !transport.available) {
       return { transport: transport.transport, label, disabledReason: problem ? describeProblem(problem) : `${label} is not available.` };
     }
-    if (view.placement === "container" && ownerHost && demoHost?.harness === view.harness) {
-      return { transport: transport.transport, label, command: launcherCommand(target, transport.transport) };
+    if (view.placement === "shared") {
+      return target === "local"
+        ? { transport: transport.transport, label, command: launcherCommand(view.harness, target, transport.transport) }
+        : { transport: transport.transport, label, disabledReason: "The launcher connects to shared hosting locally only; Azure qualification remains open." };
     }
-    return {
-      transport: transport.transport,
-      label,
-      disabledReason: "The launcher connects only to the demo agent host today; per-harness connections need the launcher's --harness option.",
-    };
+    if (ownerHost) return { transport: transport.transport, label, command: launcherCommand(view.harness, target, transport.transport) };
+    return { transport: transport.transport, label, disabledReason: "The launcher cannot connect to per-session containers yet." };
   });
   return { host, hostDetail, ...(costNote ? { costNote } : {}), connections };
 }

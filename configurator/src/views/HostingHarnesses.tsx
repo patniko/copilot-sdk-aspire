@@ -11,7 +11,7 @@ import { useApp } from "../state";
  * `GET /v1/hosting` view: effective mode, status with prerequisites, host, transports and connection actions.
  */
 export function HarnessHostingRows({ target }: { target: TryTarget }) {
-  const { settings, local, workspace, setView } = useApp();
+  const { local, workspace, setView } = useApp();
   const [state, setState] = useState<{ info?: HostingPageInfo; loading: boolean; error?: string }>({ loading: false });
   const [refresh, setRefresh] = useState(0);
   // Reading the local view needs the stack; the Azure view reads the selected target's deployed agent-api.
@@ -28,8 +28,6 @@ export function HarnessHostingRows({ target }: { target: TryTarget }) {
       cancelled = true;
     };
   }, [target, enabled, workspaceKey, refresh]);
-  const deployment = settings?.targets.find((entry) => entry.name === settings.selectedTarget);
-  const demoHost = target === "local" ? settings?.local.demoHost : deployment?.demoHost;
   const info = enabled && state.info?.target === target ? state.info : undefined;
   const overview = info?.overview;
   return (
@@ -68,7 +66,7 @@ export function HarnessHostingRows({ target }: { target: TryTarget }) {
         )}
         {overview && overview.harnesses.length === 0 && <p className="text-sm fg-muted">The service has no published harnesses.</p>}
         {overview?.harnesses.map((view) => {
-          const row = harnessHostRow(view, overview.hosts, target, demoHost);
+          const row = harnessHostRow(view, overview.hosts, target);
           const status = STATUS_BADGES[view.status];
           return (
             <div key={view.harness} className="space-y-2 border-b border-muted pb-3 last:border-b-0 last:pb-0">
@@ -112,6 +110,9 @@ export function HarnessHostingRows({ target }: { target: TryTarget }) {
                   )
                 )}
               </div>
+              {view.placement === "shared" && row.connections.some((connection) => connection.command) && (
+                <p className="text-xs fg-muted">The launcher starts a new conversation and prints the --resume command for returning to it.</p>
+              )}
             </div>
           );
         })}
