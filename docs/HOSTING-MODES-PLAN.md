@@ -1591,11 +1591,12 @@ Recorded 2026-10-16 on branch `patniko-orchestrator-workers`: commits `ff764e7` 
 `9fdc798` (planning, coordinator inbox pump, worker API routes), `3533589` (coordinator tools and the coordinator
 policy recheck), `4cfafce` (workers on session-container allocations, ledger hardening), `75f6080` (dispatcher worker
 routes), `0fc7df3` (workers in session containers: supervisor and owner, approval modes, inherited authority, file
-service, AppHost), `8db3809` (real-container gate fixes and docs) and the commit that adds the examples and this
-record, merged with the integration branch at `6a62235` (connection broker, in `6c37dcf`), `3ad0c7d` (session
-containers, in `f73130d`), `27ff06c` (shared mode and this branch's phase-1 checkpoint, in `f7a720b`) and `3d327f6`
-(owner hosts, in `7158243`). Local only: Windows ARM64 host, Docker Desktop with linux/arm64 containers, disposable
-PostgreSQL 17, synthetic inference, one real GitHub account.
+service, AppHost), `8db3809` (real-container gate fixes and docs) and `5daec44` (examples and this record), merged
+with the integration branch at `6a62235` (connection broker, in `6c37dcf`), `3ad0c7d` (session containers, in
+`f73130d`), `27ff06c` (shared mode and this branch's phase-1 checkpoint, in `f7a720b`), `3d327f6` (owner hosts, in
+`7158243`) and `93bc644` (stage 5 promotion, in `0a6ea81`, where `supervisor.ts` stays the purpose-dispatching entry
+point and `session-supervisor.ts` takes stage 5's restore and readiness changes). Local only: Windows ARM64 host,
+Docker Desktop with linux/arm64 containers, disposable PostgreSQL 17, synthetic inference, one real GitHub account.
 
 Delivered:
 
@@ -1658,9 +1659,9 @@ Runtime artifacts: runtime `d89cfe45b2994fb3e955362f7e2f2c9d63879069` (branch
 `patniko-runtime-capabilities-for-hosting-modes` @ `62a6b07a10a`, which adds `setInheritedHumanAuthority`), hosting
 `006b0304155f26732b724de0a085ab81bc37e5a2`, mxc `622d4f197739692686f94ed6cd78ef4e5e03c82f`: Linux arm64 bundle
 `hybrid-linux-arm64-d89cfe45b29-host-006b030` (SHA-256 `copilot-runtime` `207690e4…`, `runtime.node` `21aebad9…`,
-`sdk.tgz` `1f056620…`) in image `copilot-session-container:patniko-orchestrator-workers` `sha256:b3c3fc6b…` (3.9 GB,
-built from the tree at `8db3809`), the matching Windows pair (`copilot-runtime.exe` `be1213d6…`, `runtime.node`
-`2dd77fc0…`), and `dist-cli/index.js`.
+`sdk.tgz` `1f056620…`) in image `copilot-session-container:patniko-orchestrator-workers` `sha256:4035b9a2…` (3.9 GB,
+rebuilt from the merged tree at `0a6ea81`; the pre-merge runs used `sha256:b3c3fc6b…` from `8db3809`), the matching
+Windows pair (`copilot-runtime.exe` `be1213d6…`, `runtime.node` `2dd77fc0…`), and `dist-cli/index.js`.
 
 Exit evidence ("A coordinator runs two differently sized workers concurrently on a shared volume, messages and
 interrupts them, receives their completions without polling, and archives them; worker requests that need approval
@@ -1670,8 +1671,9 @@ a crafted definition cannot exceed its template"), each command passing on the f
 
 - `HYBRID_WORKER_TESTS=1 HYBRID_USE_GH_ACCOUNT=1 COPILOT_AHP_FACTORY_PROFILE=managed` with
   `HYBRID_WORKER_IMAGE=copilot-session-container:patniko-orchestrator-workers`, `COPILOT_CLI_PATH`, and
-  `HYBRID_CLI_PATH`: `pnpm exec vitest run --project integration tests\integration\worker-runtime.test.ts` passed
-  twice on the final tree (59 s and 63 s), each with 38 synthetic inference requests. The real CLI attached through an
+  `HYBRID_CLI_PATH`: `pnpm exec vitest run --project integration tests\integration\worker-runtime.test.ts` passed on
+  `8db3809` (59 s), on `5daec44` (63 s), and on the merged tree `0a6ea81` with the rebuilt image (66 s), each with 38
+  synthetic inference requests. The real CLI attached through an
   in-process connection broker to an orchestrator coordinator on the shared worker. In one turn the coordinator wrote
   a plan to the shared volume, was refused a crafted worker asking for the `web` tools its template lacks ("The 'web'
   built-in tools are not in crafting template 'general'"), and started `alpha` (`manual`, `small`: 0.5 CPU, 1 GiB) and
@@ -1701,21 +1703,25 @@ a crafted definition cannot exceed its template"), each command passing on the f
   request expiry and person-only answers, crafted-definition limits and the shipped example, tool registration through
   `sharedToolset`, authority grants, the dispatcher's worker routes with credential scoping, the controller lifecycle
   for worker allocations and volumes, and the file service over HTTP.
-- Baseline: `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`, `pnpm typecheck`,
-  `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint`, `pnpm test:unit`
-  (672 passed, 1 opt-in skipped) and `pnpm test:integration` (131 passed, 21 opt-in skipped).
-- The opt-in suites this stage touches still pass with the same artifacts: `HYBRID_SESSION_CONTAINER_TESTS=1` with
-  this branch's image (`session-container-runtime`, 60 s: mode-1 sessions through the new entry point),
-  `HYBRID_SESSION_RUNTIME_TESTS=1` (`shared-approvals`, `shared-egress-runtime`, `shared-service`,
-  `shared-session-runtime`: 8 tests), and `HYBRID_CLI_TESTS=1` (`shared-approval-cli`, `shared-cli`, `shared-gate`:
-  3 tests).
-- AppHost: `aspire start --apphost apphost.mts --isolated` with `hybrid-hosting`, `session-containers`,
-  `orchestrator-workers`, the image above, a non-routable Foundry endpoint, and the Windows runtime pair started every
-  resource healthy, including the generated `shared-files-key`. `GET /v1/hosting` advertised `workerContainers` with
-  its four features and reported `hybrid-orchestrator` as orchestrator, shared, ready, with its effective worker
+- Baseline on the merged tree: `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`,
+  `pnpm typecheck`, `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint`,
+  `pnpm test:unit` (689 passed, 1 opt-in skipped) and `pnpm test:integration` (138 passed, 22 opt-in skipped); before
+  the stage 5 merge, 672 and 131 passed.
+- The opt-in suites this stage touches still pass on the merged tree with the same artifacts:
+  `HYBRID_SESSION_CONTAINER_TESTS=1` with this branch's image (`session-container-runtime`, 60 s: mode-1 sessions
+  through the new entry point), `HYBRID_PROMOTION_TESTS=1 HYBRID_CLI_TESTS=1` with this branch's image
+  (`promotion-cli`, 35 s: stage 5's promotion through the same entry point), `HYBRID_SESSION_RUNTIME_TESTS=1`
+  (`shared-approvals`, `shared-egress-runtime`, `shared-service`, `shared-session-runtime`: 8 tests), and
+  `HYBRID_CLI_TESTS=1` (`shared-approval-cli`, `shared-cli`, `shared-gate`: 3 tests).
+- AppHost, before and again after the stage 5 merge: `aspire start --apphost apphost.mts --isolated` with
+  `hybrid-hosting`, `session-containers`, `orchestrator-workers`, the image above, a non-routable Foundry endpoint,
+  and the Windows runtime pair started every resource healthy, including the generated `shared-files-key`.
+  `GET /v1/hosting` advertised `workerContainers` with its four features (and, after the merge, `promotion` on the
+  shared worker) and reported `hybrid-orchestrator` as orchestrator, shared, ready, with its effective worker
   settings; `POST /v1/sessions` created it (mode `orchestrator`, placement `shared`); its worker and request lists were
   empty; a direct connection returned the broker URL and a relay connection `422 transport_unsupported`; the real CLI
-  attached to the coordinator through the broker (no prompt sent); closing it left no containers.
+  attached to the coordinator through the broker (no prompt sent) with no warnings from the shared worker; closing it
+  left no containers.
 
 Remaining: worker requests reach a person only through the request queue, not as prompts in the coordinator's
 attached CLI, and clients cannot attach to workers; a stopped worker (archived, idle, out of lifetime or budget)

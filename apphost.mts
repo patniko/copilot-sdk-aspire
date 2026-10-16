@@ -301,12 +301,12 @@ if (hybridEnabled === 'true') {
       .withEnvironment('SHARED_SESSION_LIMITS', JSON.stringify(sessionLimits));
     if (orchestratorWorkersEnabled === 'true') {
       // Mode-4 workers: orchestrator coordinators run on the shared worker and start workers in session containers.
-      // The shared worker reaches a coordinator's shared volume only through the controller's file service.
+      // The shared worker reaches a coordinator's shared volume only through the controller's file service; it already
+      // has the session-container settings, which orchestrator workers require.
       const filesKey = await builder.addParameterWithGeneratedValue('shared-files-key', generated, { secret: true, persist: true });
       await controller.withEnvironment('SHARED_FILES_KEY', filesKey);
       await shared.withReference(await controller.getEndpoint('http'))
         .withEnvironment('ORCHESTRATOR_WORKERS', 'true')
-        .withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings)
         .withEnvironment('SHARED_FILES_KEY', filesKey);
       await api.withEnvironment('ORCHESTRATOR_WORKERS', 'true');
       await dispatcher.withEnvironment('ORCHESTRATOR_WORKERS', 'true');

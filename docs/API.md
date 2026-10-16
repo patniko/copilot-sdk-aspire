@@ -308,10 +308,11 @@ Implemented in [hosting-routes.ts](../src/agent-api/src/hosting-routes.ts) with 
 `executor` (`pool` or `dedicated`), `isolatedHosts` (each managed agent host and the harness it serves, with its
 transports), `sharedWorker` (the local hybrid worker), `sessionContainers` (per-session containers, when enabled), and
 `workerContainers` (orchestrator workers, when enabled). Each host lists the harness `features` it implements: the
-shared worker implements `remote-mcp`, `approval-modes`, and `custom-approval`; worker containers implement
-`approval-modes`, `crafted-workers`, `inherited-authority`, and `shared-storage`; agent hosts and session containers
-implement none, and no host implements handoffs or promotion yet. GitHub-native demo hosting runs Copilot's own
-sessions rather than a harness, so it adds no isolated host. Owner principals are not returned.
+shared worker implements `remote-mcp`, `approval-modes`, and `custom-approval`, plus `promotion` when session
+containers are enabled; worker containers implement `approval-modes`, `crafted-workers`, `inherited-authority`, and
+`shared-storage`; agent hosts and session containers implement none, and no host implements handoffs yet.
+GitHub-native demo hosting runs Copilot's own sessions rather than a harness, so it adds no isolated host. Owner
+principals are not returned.
 
 Each harness view (latest version, or `?version=` on the single-harness route) contains:
 
