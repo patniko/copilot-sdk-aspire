@@ -70,6 +70,23 @@ function argumentsFor(schema: unknown, command: string): Record<string, unknown>
   return args;
 }
 
+/** Approves each review prompt the CLI shows until `marker` appears; returns how many prompts the person approved. */
+async function approveUntil(cli: QualificationCli, marker: string, timeout = 120_000): Promise<number> {
+  const deadline = Date.now() + timeout;
+  let approved = 0;
+  for (;;) {
+    if (cli.screen.includes(marker) || cli.output.includes(marker)) return approved;
+    if (cli.screen.includes("Approve once")) {
+      await cli.press("\r");
+      approved++;
+      for (const until = Date.now() + 30_000; cli.screen.includes("Approve once") && Date.now() < until;) await new Promise((resolve) => setTimeout(resolve, 100));
+      continue;
+    }
+    if (Date.now() > deadline) throw new Error(`Neither a review prompt nor ${marker} appeared:\n${cli.screen}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out and resumes from its volume with history and files", async () => {
   const { credential, id: githubUserId } = await testGitHubAccount();
   docker("image", "inspect", image, "--format", "{{.Id}}");
@@ -165,7 +182,9 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
       description: "Synthetic mode-1 session container qualification.",
       instructions: "Use the shell in the session workspace when asked. Reply briefly.",
       model: { preferred: "grok-4.6", allowed: ["grok-4.6"] }, tools: [], builtinTools: ["files", "shell"],
-      permissions: { default: "allow" },
+      // The shipped interactive-demo's shape: a deny default with reads allowed and writes and commands reviewed. The host's
+      // guard asks a person to review each command, and only the attached person's answer lets it run.
+      permissions: { default: "deny", kinds: { read: "allow", write: "ask", shell: "ask" } },
       input: { schema: { type: "object" } }, output: { schema: { type: "object" } },
       limits: { maxDurationSeconds: 600, maxInferenceTokens: 100_000 }, retry: { safeToRetry: false, maxAttempts: 1 },
       runners: { allowedProfiles: ["node-ts-agent"], defaultProfile: "node-ts-agent" },
@@ -255,7 +274,8 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
     cli = new QualificationCli(root, credential);
     await cli.connect(first);
     await cli.send("CREATE_NOTE in the session workspace.");
-    await cli.waitFor(`NOTE_CREATED_${marker}`, 120_000);
+    // The command reaches the attached person, whose approval runs it.
+    expect(await approveUntil(cli, `NOTE_CREATED_${marker}`)).toBe(1);
     const created1 = JSON.stringify(requests.findLast((request) => JSON.stringify(request.messages).includes("CREATE_NOTE"))?.messages);
     expect(created1).toContain("10001");
     expect(created1).toContain("/data/execution/workspace");
@@ -278,7 +298,7 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
     await cli.connect(second);
     await cli.waitFor(`NOTE_CREATED_${marker}`, 120_000);
     await cli.send("READ_NOTE from the session workspace.");
-    await cli.waitFor(`NOTE_READ_${marker}`, 120_000);
+    expect(await approveUntil(cli, `NOTE_READ_${marker}`)).toBe(1);
     const resumed = JSON.stringify(requests.at(-1)?.messages);
     expect(resumed).toContain("CREATE_NOTE");
     expect(resumed).toContain(`NOTE_CREATED_${marker}`);
