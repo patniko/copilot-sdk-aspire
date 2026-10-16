@@ -37,7 +37,7 @@ The original plan is historical/design context and must not override the current
 | Package scripts, prerequisites, packaging, or test setup | [Developer guide](DEVELOPER-GUIDE.md), [user prerequisites](USER-GUIDE.md#before-you-start), README quick start if affected |
 | Security control, acknowledged gap, or isolation claim | [Security](SECURITY.md), diagrams and product/user claims that depend on it |
 | Product scope, non-goal, or implemented milestone | [Product contract](PRODUCT.md) and [detailed assessment](PRODUCT-OVERVIEW.md); add dated evidence to [plan status](PLAN.md#24-implementation-status) when warranted |
-| Hosting mode, promotion, worker, handoff, or crafted-harness behavior | Stage evidence in the [hosting modes plan](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates), then that plan's [documentation impact](HOSTING-MODES-PLAN.md#16-documentation-impact-as-slices-land) pages for the implemented slice |
+| Hosting mode, placement, broker, session container, owner host, worker, promotion, handoff, or crafted-harness behavior | The owning canonical pages from the hosting modes plan's [documentation impact](HOSTING-MODES-PLAN.md#16-documentation-impact-as-slices-land) map (API, architecture flows, security, deployment, user and configurator guides); dated evidence in its [qualification record](HOSTING-MODES-PLAN.md#17-qualification-record) and the stage status in its [delivery sequence](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates) |
 | Document name, heading, or file location | [Documentation hub](README.md), incoming links, README and contribution/agent guidance |
 
 Review does not require changing every listed file. If a behavior is unchanged, say why no documentation change
@@ -69,9 +69,9 @@ is needed in the PR rather than making cosmetic edits.
 | --- | --- | --- |
 | System overview | [`images/architecture.svg`](images/architecture.svg) itself | Update components, arrow direction, credential labels, and limitation note together |
 | Placement comparison | [`images/local-and-azure.svg`](images/local-and-azure.svg) itself | Compare with both AppHost execution modes and Docker stages |
-| Job execution, states, and interaction flows | Mermaid fences in [ARCHITECTURE.md](ARCHITECTURE.md) | Keep labels aligned with contract names and actual caller paths |
+| Job execution, states, interaction, and hosting flows (shared sessions, broker, session containers, workers, promotion, agent hosts) | Mermaid fences in [ARCHITECTURE.md](ARCHITECTURE.md) | Keep labels aligned with contract names and actual caller paths |
 | Detailed local/Azure product views and proposed comparison layer | Mermaid fences in [PRODUCT-OVERVIEW.md](PRODUCT-OVERVIEW.md) | Keep runtime views aligned with the architecture; preserve the future-work label on the comparison design |
-| Proposed hosting-mode topology, placement states, and promotion flow | Mermaid fences in [HOSTING-MODES-PLAN.md](HOSTING-MODES-PLAN.md) | Keep them labeled as proposals; move a flow into [ARCHITECTURE.md](ARCHITECTURE.md) only when its slice is implemented |
+| Hosting-mode design topology, session lifecycle, and promotion flow | Mermaid fences in [HOSTING-MODES-PLAN.md](HOSTING-MODES-PLAN.md) | Design record: keep them as recorded, note where the implementation differs, and link to the implemented flows in [ARCHITECTURE.md](ARCHITECTURE.md). When a slice lands, add or update its flow there rather than here; parts not yet implemented, such as Azure and handoffs from containers, stay labeled as proposals |
 | Configurator and job-console screenshots | PNGs in [`images`](images) | Recapture only when the pictured UI meaningfully changes, with synthetic data and no tokens |
 
 The SVGs are source-controlled drawings, not generated exports; **there is no second diagram source or render

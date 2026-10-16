@@ -66,6 +66,25 @@ describe("opt-in demo host", () => {
       .toEqual({ kind: "no-result" });
   });
 
+  it("leaves the host guard's review requests to a person under the gated tool's rule, not the harness default", async () => {
+    const invocation = { sessionId: randomUUID() };
+    const hook = (toolName: string) => ({ kind: "hook" as const, toolName, toolArgs: { command: "uname -a" }, hookMessage: "The host requires review for this action." });
+    const definition = (permissions: typeof harness.definition.permissions) => ({ ...harness.definition, permissions });
+    // A deny default must not reject what the guard sent for review: the attached person decides.
+    const denyDefault = definition({ default: "deny", kinds: { shell: "ask", write: "ask", read: "ask", url: "deny" } });
+    expect(hostToolGuard(denyDefault, ["builtin:bash"], "bash")?.permissionDecision).toBe("ask");
+    for (const tool of ["bash", "builtin:bash", "create", "view"]) {
+      expect(await hostPermissionHandler(denyDefault)(hook(tool), invocation)).toEqual({ kind: "no-result" });
+    }
+    // An allow default must not approve it either: the application never answers a review on a person's behalf.
+    const allowDefault = definition({ default: "allow", kinds: { shell: "ask" } });
+    expect(hostToolGuard(allowDefault, ["builtin:bash"], "bash")?.permissionDecision).toBe("ask");
+    expect(await hostPermissionHandler(allowDefault)(hook("bash"), invocation)).toEqual({ kind: "no-result" });
+    // A gated tool whose own kind is denied stays denied, and a tool no kind covers goes to a person.
+    expect(await hostPermissionHandler(denyDefault)(hook("web_fetch"), invocation)).toMatchObject({ kind: "reject" });
+    expect(await hostPermissionHandler(allowDefault)(hook("report_intent"), invocation)).toEqual({ kind: "no-result" });
+  });
+
   it("uses separate, validated session tokens rather than fake jobs", async () => {
     const key = "test-only-signing-key-".repeat(4);
     const id = randomUUID();

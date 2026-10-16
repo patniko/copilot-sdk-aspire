@@ -220,11 +220,12 @@ on a person's behalf ([`permissions.ts`](../src/session-host/src/permissions.ts)
   denies. The session stays in `manual`, so the runtime never approves without the handler.
 
 The worker starts each session in its harness's mode, and returns a resumed session to the mode its history records,
-before the AHP host publishes it. If the runtime will not hold that mode, activation fails rather than continuing in
-another one. Managed settings, always stated, refuse the runtime modes the policy does not allow, so a client cannot
-switch into them. The runtime offers assisted approval only behind its experimental `AUTO_APPROVAL` flag; the worker
-sets it in its own process, so assisted approval does not depend on the environment a host application supplies, and
-the flag alone admits no mode the policy disallows. Batch harnesses keep `manual`.
+before the AHP host publishes it. If the runtime will not hold that mode, activation fails with `409 hosting_unavailable`
+(prerequisite feature `approval-modes`) and the worker logs the lifecycle event `session.approval_mode_refused`, rather
+than continuing in another mode. Managed settings, always stated, refuse the runtime modes the policy does not allow, so
+a client cannot switch into them. The runtime offers assisted approval only behind its experimental `AUTO_APPROVAL`
+flag; the worker sets it in its own process, so assisted approval does not depend on the environment a host
+application supplies, and the flag alone admits no mode the policy disallows. Batch harnesses keep `manual`.
 
 ### Shared conversation handoffs
 
@@ -301,6 +302,13 @@ and the harness request, resolves each server's single credential inside the hos
 (`MCP_SECRET_<NAME>` environment variables locally), and redacts the credential and common encodings of it
 from tool descriptions, schemas, results, and errors. Redaction guards against accidental echo; a server
 can always disclose its own credential deliberately. A server's read-only hint never relaxes approval.
+
+The Copilot runtime moves a tool result above 20 KiB into a temporary file and gives the model a pointer to view it
+with tools that shared placement does not have. Shared sessions disable that, which holds for turns no client drives;
+with a client attached, runtime `d89cfe45b29` moves large results anyway. Remote MCP results are therefore bounded to
+16 KiB of UTF-8 text, with a note asking for a narrower result, and stay inline. A `web_fetch` page near its
+20,000-character maximum or a workspace read above 20 KiB can still be moved while a client is attached; smaller
+pages and ranges avoid it.
 
 An operator can set `allowPrivateNetwork` on one catalog server for development. Only that exact origin may
 then use a local or single-label host name, resolve to loopback, private, shared, or unique-local

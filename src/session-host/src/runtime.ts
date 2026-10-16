@@ -275,6 +275,9 @@ export class SharedSessionRuntime {
         ...(managedSettings ? { managedSettings } : {}),
         enableConfigDiscovery: false,
         skipCustomInstructions: true,
+        // The runtime would spill a tool result above 20 KiB to session-state/temp and point the model at grep and view,
+        // which shared placement does not have, naming a worker path. Every shared tool bounds its own result instead.
+        largeOutput: { enabled: false },
         streaming: true,
         onPermissionRequest: options.permissions?.(context) ?? rejectAll,
         createSessionFsProvider: () => workspace.sessionFs,

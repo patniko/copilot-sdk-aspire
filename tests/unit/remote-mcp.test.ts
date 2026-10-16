@@ -239,7 +239,7 @@ describe("remote MCP client", () => {
   it("bounds time, size, and protocol: timeouts, cancellation, oversized and truncated results, incompatible versions", async () => {
     const server = await fake({ credential });
     const { catalog } = client({ url: server.url, timeoutSeconds: 1, maxResponseBytes: 256 * 1024 });
-    const session = catalog.session([{ server: "docs-search", tools: ["slow", "big"] }]);
+    const session = catalog.session([{ server: "docs-search", tools: ["slow", "big", "search"] }]);
     const started = Date.now();
     const timedOut = await session.call("mcp_docs_search_slow", {});
     expect(timedOut).toMatchObject({ ok: false });
@@ -254,7 +254,17 @@ describe("remote MCP client", () => {
     expect(tooLarge.text).toContain("larger than the allowed size");
     const bounded = await session.call("mcp_docs_search_big", { bytes: 100_000 });
     expect(bounded).toMatchObject({ ok: true, truncated: true });
-    expect(bounded.text.length).toBeLessThan(70_000);
+    // Below the Copilot runtime's 20 KiB large-output threshold, so the result reaches the model inline.
+    expect(Buffer.byteLength(bounded.text)).toBeLessThan(17 * 1024);
+    expect(bounded.text).toMatch(/^x{16384}\n\[Result truncated at 16 KiB; ask for a narrower result to see more\.\]$/);
+    // The bound counts UTF-8 bytes and never splits a character, including surrogate pairs.
+    for (const character of ["é", "😀"]) {
+      const multibyte = await session.call("mcp_docs_search_search", { query: character.repeat(24_000 / Buffer.byteLength(character)) });
+      expect(multibyte).toMatchObject({ ok: true, truncated: true });
+      const body = multibyte.text.slice(0, multibyte.text.lastIndexOf("\n[Result truncated"));
+      expect(Buffer.byteLength(body)).toBeLessThanOrEqual(16 * 1024);
+      expect(body).toMatch(new RegExp(`^Results for (?:${character})+$`, "u"));
+    }
     await session.close();
 
     const old = await fake({ credential, protocolVersion: "2024-11-05" });
