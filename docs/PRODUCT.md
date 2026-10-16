@@ -132,9 +132,9 @@ detailed acceptance outcomes.
 
 A separate [hosting modes proposal](HOSTING-MODES-PLAN.md) would let each conversation harness choose an isolated
 container, a shared multi-tenant runtime, a shared runtime with one-way promotion into a container, or a shared
-coordinator that manages container workers, reachable from Copilot CLI and the GitHub Copilot app over GitHub relay
-and direct WSS. It also proposes handoffs and compares the design with OpenAI's Agents API. None of these modes is
-supported until its stage lands with evidence.
+coordinator that manages container workers. Its first delivery targets Copilot CLI over direct WSS, plus GitHub relay
+for isolated harness hosts; the GitHub Copilot app comes later. It also proposes handoffs and compares the design
+with OpenAI's Agents API. None of these modes is supported until its stage lands with evidence.
 
 ## Acceptance criteria for changes
 

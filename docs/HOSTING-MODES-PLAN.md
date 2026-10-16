@@ -13,9 +13,10 @@ guarantee. [Architecture](ARCHITECTURE.md), [deployment](DEPLOYMENT.md), [API](A
 ## 1. Purpose and agreed decisions
 
 Let each conversation harness choose where its agent loop runs, from a dedicated container to a shared
-multi-tenant runtime, and reach every choice from Copilot CLI and the GitHub Copilot app over AHP through both
-the GitHub relay and direct WSS paths. Hosting becomes a deliberate cost, latency, and isolation decision per
-harness instead of one deployment-wide shape.
+multi-tenant runtime, and reach every choice from Copilot CLI over AHP. Hosting becomes a deliberate cost,
+latency, and isolation decision per harness instead of one deployment-wide shape. The first delivery uses direct
+WSS for every mode and keeps the GitHub relay for isolated harness hosts; the GitHub Copilot app and relay for
+shared modes are later steps.
 
 The repository already contains the building blocks, each fixed to one deployment-wide configuration:
 
@@ -26,27 +27,36 @@ The repository already contains the building blocks, each fixed to one deploymen
 | Local hybrid `session-host` ([architecture](ARCHITECTURE.md#local-hybrid-hosting)) | Many principals on one in-process runtime with PostgreSQL-backed `sessionFs`, attached over direct WSS with one-use tickets | Harness-driven sessions (it runs one coordinator definition built from AppHost parameters), relay, Azure |
 | `delegate_job` and `execution-controller` | Model-directed one-shot child jobs in on-demand Docker containers with retained outputs | Long-lived workers, per-task sizes, shared storage, agent-managed lifecycle |
 
-Decisions agreed on 2026-10-15:
+Decisions agreed on 2026-10-15, including answers from the review of the first draft:
 
 | Decision | Agreed direction |
 | --- | --- |
-| Sequencing | Record this plan before implementation |
+| Sequencing | Record this plan before implementation. Build and verify every mode locally before any Azure work |
 | Granularity | Hosting is selected per harness, within operator policy |
-| GitHub relay for shared modes | Owner-scoped: shared hosts register Mission Control environments under one deployment-owner GitHub account. Direct WSS remains the multi-tenant path. Per-tenant relay is a runtime prerequisite |
+| Clients | Copilot CLI first. The GitHub Copilot app is deferred |
+| Transports | Direct WSS for every mode. GitHub relay for isolated harness hosts only, with one Mission Control environment per relay-enabled harness |
+| GitHub relay for shared modes | Not in the first delivery. An owner-scoped relay was agreed and then withdrawn the same day: with relay, GitHub identity rather than the integrator's own principals decides who can attach, which does not suit integrator-managed multi-tenancy. Per-tenant relay in the runtime is parked |
+| Shared-mode tools | Basic workspace tools, web access, remote MCP servers, and skills from an operator-defined skill store |
+| Permissions | Harness authors choose normal (`ask`), assisted, automatic (`allow`), or a custom handler written in code, within policy |
 | What a mode-4 container runs | An agent worker: its own child agent session from an approved harness, which the main agent creates, messages, monitors, and archives, as the GitHub Copilot app manages sessions. One-shot `delegate_job` remains the simple case |
+| Promotion | Resume the same session inside the container, transparently to the CLI user where possible |
 | Handoffs | Predefined handoff-target harnesses, plus an optional, policy-bounded ability for the main agent to craft a harness at runtime, comparable to OpenAI Agents SDK handoffs |
+| Measurement | Get it working first; no performance targets until the local prototype works |
 | External comparison | Compare the design with OpenAI's Agents API ([section 12](#12-comparison-with-openais-agents-api)) |
 
+The [decision register](#15-non-goals-and-decision-register) records every answer from the review and the items
+that remain open.
+
 The proposal introduces six pieces: a per-harness `hosting` contract and policy ceilings, a harness-driven
-shared worker, a resumable **session container**, a direct-WSS **connection broker**, owner-scoped relay
-environments, and coordinator tools for workers, promotion, and handoffs.
+shared worker, a resumable **session container**, a direct-WSS **connection broker**, per-harness relay
+environments for isolated hosts, and coordinator tools for workers, promotion, and handoffs.
 
 ## 2. The four modes
 
 | # | Mode (`hosting.mode`, proposed) | Where the main loop runs | Files | Containers | Intended use |
 | --- | --- | --- | --- | --- | --- |
 | 1 | `isolated`: isolated container (default) | Entirely inside a dedicated Linux container | Real filesystem in the container | One per host or session | Coding, shell, untrusted or long-running work; the most isolated choice |
-| 2 | `shared`: shared runtime | One in-process runtime shared by many sessions and principals | `sessionFs` only (PostgreSQL); no shell or host filesystem | None | Chat, and agents that need only virtual files and application tools |
+| 2 | `shared`: shared runtime | One in-process runtime shared by many sessions and principals | `sessionFs` only (PostgreSQL); no shell or host filesystem | None | Chat, and agents that work through web access, remote MCP servers, skills, and virtual files |
 | 3 | `promotable`: shared with one-way promotion | Starts as mode 2; on promotion the loop moves into a dedicated container | `sessionFs`, then a real filesystem seeded from it | One, after promotion | A cheap start with an escape hatch for real-filesystem or longer work |
 | 4 | `orchestrator`: shared brain, container workers | Coordinator on the shared runtime; each worker runs its own loop in a container | Coordinator: `sessionFs`; workers: real filesystem plus an optional shared session volume | Many, sized and managed by the coordinator | Parallel or heterogeneous work with low-cost coordination |
 
@@ -96,6 +106,10 @@ Illustrative harness block; final names, bounds, and defaults belong in `contrac
 ```jsonc
 {
   "interaction": "conversation",
+  "builtinTools": ["files", "web"],
+  "mcpServers": [{ "server": "docs-search", "tools": ["search", "fetch_page"] }],
+  "skillRefs": [{ "store": "team-skills", "name": "release-notes", "version": "1.2.0" }],
+  "permissions": { "default": "ask", "kinds": { "url": "allow" } },
   "hosting": {
     "mode": "orchestrator",
     "workers": {
@@ -115,35 +129,72 @@ Illustrative harness block; final names, bounds, and defaults belong in `contrac
 
 | Field | Modes | Meaning |
 | --- | --- | --- |
-| `mode` | All | `isolated` (default), `shared`, `promotable`, or `orchestrator` |
-| `promotion.size`, `promotion.approval` | `promotable` | Container size after promotion; whether a model-initiated promotion needs a person (`ask`) or is automatic (`allow`) |
-| `workers.harnesses` | `orchestrator` | Published conversation harnesses, each with effective mode `isolated`, that may run as workers |
-| `workers.sizes`, `maxConcurrent`, `maxPerSession` | `orchestrator` | Requested subset of operator sizes and concurrency, narrowed by policy |
-| `workers.sharedStorage` | `orchestrator` | `none` or `session` (one volume shared by that session's workers) |
-| `workers.crafting.template` | `orchestrator` | Optional operator crafting template; omitting it disables crafted workers |
-| `handoffs[]` | All conversation modes | Predefined targets, each with a description, a history policy (`full`, `summary`, or `none`), and an optional `approval` (`ask` or `allow`) |
+| `hosting.mode` | All | `isolated` (default), `shared`, `promotable`, or `orchestrator` |
+| `hosting.promotion.size`, `hosting.promotion.approval` | `promotable` | Container size after promotion; whether a model-initiated promotion needs a person (`ask`) or is automatic (`allow`) |
+| `hosting.workers.harnesses` | `orchestrator` | Published conversation harnesses, each with effective mode `isolated`, that may run as workers |
+| `hosting.workers.sizes`, `maxConcurrent`, `maxPerSession` | `orchestrator` | Requested subset of operator sizes and concurrency, narrowed by policy |
+| `hosting.workers.sharedStorage` | `orchestrator` | `none` or `session` (one volume shared by that session's workers) |
+| `hosting.workers.crafting.template` | `orchestrator` | Optional operator crafting template; omitting it disables crafted workers |
+| `hosting.handoffs[]` | All conversation modes | Predefined targets, each with a description, a history policy (`full`, `summary`, or `none`), and an optional `approval` (`ask` or `allow`) |
+| `mcpServers[]` (new) | All | Remote MCP servers from the operator's catalog, with the tools this harness requests |
+| `skillRefs[]` (new) | All | Skills from an operator-approved skill store, pinned by digest when a session starts; inline `skills` remain supported |
+| `permissions` modes | All | Adds `assisted` and `custom` to today's `deny`, `ask`, and `allow` ([permission modes](#permission-modes)) |
 
 Validation rules:
 
 - Modes 2 to 4 require `interaction: "conversation"`. Batch harnesses keep executor semantics; running batch
   jobs on shared placement is outside this plan.
-- Shared placement cannot run `shell`, `python`, or `mcp-local` tools, which need a process and real files.
+- Shared placement cannot run `shell`, `python`, or local (stdio) MCP tools, which need a process and real files.
   `shared` rejects them, `promotable` activates them only after promotion, and `orchestrator` reaches them
   through workers. A `kind: "host"` binding runs in the shared worker only if its execution profile marks it
-  safe for in-process use (a new profile field).
+  safe for in-process use (a new profile field). Remote MCP servers and store-provided skills work in every
+  placement.
 - The `files` group maps first to provider-backed workspace tools. SDK built-in file tools over `sessionFs` need
-  separate qualification. `web` is disabled in shared placement unless policy allows it, because its requests
-  leave from the shared worker.
+  separate qualification.
+- `web` is available in shared placement when the harness requests it and policy allows it; the default policy
+  allows it. Requests leave from the shared worker, which can reach PostgreSQL, internal services, and cloud
+  metadata endpoints. The worker must therefore refuse loopback, private, link-local (including metadata), and
+  internal service addresses, recheck every redirect, and preferably send requests through an egress proxy.
+- Remote MCP credentials are operator secret references resolved by the host process. The model never sees them,
+  and a harness can request only servers and tools in the operator's catalog.
 - `promotion` is valid only with `promotable`, and `workers` only with `orchestrator`. A handoff target must be
   a published conversation harness whose own mode is allowed; it cannot be the source harness.
-- `hosting` is part of the digest when present. Omitting it keeps existing digests, following the optional-field
-  convention in [`harness.ts`](../contracts/src/harness.ts).
+- New fields are part of the digest when present. Omitting them keeps existing digests, following the
+  optional-field convention in [`harness.ts`](../contracts/src/harness.ts).
+
+### Permission modes
+
+Harness authors choose how an agent's permission requests are decided, extending today's
+[`PermissionsConfig`](../contracts/src/harness.ts); effective policy bounds the choice:
+
+| Mode | Behavior |
+| --- | --- |
+| `ask` (normal) | A person approves; read-only actions follow Copilot CLI defaults, as today |
+| `assisted` | An approver agent decides requests that fall inside policy-defined bounds and escalates the rest to a person. For a worker, the approver is its coordinator |
+| `allow` (automatic) | Requests are approved automatically, as today, when policy allows it |
+| `custom` | A permission handler written in code and registered by name, like a tool binding, decides each request |
+| `deny` | Requests are refused; this remains the default |
+
+Custom handlers are integrator code, reviewed and packaged like tool implementations; a harness selects one by
+name and cannot embed code. Hosted conversations are TypeScript-only, so extending custom handlers to batch jobs
+would also require a Python implementation. `assisted` is a model judging another model's request, so it is off
+unless policy allows it, every decision is recorded, and requests outside its bounds always reach a person.
 
 Illustrative operator policy additions, overridable per harness through the existing
 [`HarnessPolicyOverride`](../contracts/src/profile.ts) mechanism:
 
 ```jsonc
 {
+  "permissionModes": ["ask", "assisted", "allow", "custom"],
+  "permissionHandlers": ["acme-approvals"],
+  "mcpServers": {
+    "docs-search": {
+      "url": "https://mcp.example.com/docs",
+      "auth": { "secret": "docs-search-token" },
+      "tools": ["search", "fetch_page"]
+    }
+  },
+  "skillStores": { "team-skills": { "source": "<operator-defined store>" } },
   "hosting": {
     "modes": ["isolated", "shared", "promotable", "orchestrator"],
     "transports": ["direct", "github"],
@@ -166,6 +217,8 @@ Illustrative operator policy additions, overridable per harness through the exis
 }
 ```
 
+The `github` transport applies only to isolated harness hosts in the first delivery.
+
 Sizes map to Docker CPU and memory locally, within the existing
 [`ExecutionContainerSettings`](../contracts/src/artifacts.ts) bounds, and to combinations the selected Azure
 backend accepts. The model chooses a size by name only. It never supplies images, commands, mounts, or
@@ -184,10 +237,7 @@ keep state.
 
 ```mermaid
 flowchart LR
-    subgraph Clients["AHP clients"]
-        CLI["Copilot CLI"]
-        App["GitHub Copilot app"]
-    end
+    CLI["Copilot CLI"]
     API["agent-api<br/>provisioning and tickets"]
     Broker["Connection broker<br/>direct WSS"]
     Relay["GitHub relay<br/>Mission Control / WPS<br/>owner only"]
@@ -196,15 +246,13 @@ flowchart LR
         Owner["Per-harness owner host<br/>mode 1"]
         Session["Session containers<br/>mode 1 per session,<br/>mode 3 after promotion"]
     end
-    Clients -->|"1. provision"| API
-    Clients -->|"2a. WSS + one-use ticket"| Broker
-    Clients -->|"2b. relay"| Relay
+    CLI -->|"1. provision"| API
+    CLI -->|"2a. WSS + one-use ticket"| Broker
+    CLI -->|"2b. relay, isolated hosts only"| Relay
     Broker --> Shared
     Broker --> Owner
     Broker --> Session
-    Relay --> Shared
     Relay --> Owner
-    Relay -.->|"optional"| Session
 ```
 
 ```mermaid
@@ -219,6 +267,7 @@ flowchart LR
     Volumes[("Session and shared volumes")]
     Gateway["inference-gateway"]
     Foundry["Foundry"]
+    External["Web, remote MCP servers,<br/>skill store"]
     Shared -->|"sessionFs, turns, requests"| DB
     Controller -->|"allocation ledger"| DB
     Controller -->|"create, stop, reconcile"| Allocated
@@ -226,36 +275,51 @@ flowchart LR
     Shared -->|"turn grants"| Gateway
     Allocated -->|"session grants"| Gateway
     Gateway --> Foundry
+    Shared -->|"filtered egress"| External
+    Allocated --> External
 ```
 
 The diagrams show every proposed component; a deployment includes only the hosts its harnesses' modes need.
-Arrows are application traffic, not a network allowlist, and the dashed arrow is optional. Whether the GitHub
-Copilot app can use direct WSS is still to be qualified ([section 5](#5-client-connections)). The per-harness owner
-host keeps the existing host's retained volume and its managed or GitHub-native inference routes, shown in the
+Arrows are application traffic, not a network allowlist. The per-harness owner host keeps the existing host's
+retained volume and its managed or GitHub-native inference routes, shown in the
 [optional demo agent host](ARCHITECTURE.md#optional-demo-agent-host) diagram.
 
 | Host shape | Serves | Tenancy | Client transports | Status |
 | --- | --- | --- | --- | --- |
 | Per-harness owner host (container) | Mode 1 for one owner and one harness | One GitHub owner | Relay, direct, or both | One deployment-wide `agent-host` exists; one host per isolated harness is proposed |
-| Session container | Mode 1 per session; mode 3 after promotion | One application session | Direct through the broker; relay only by registering its own owner environment | Proposed |
-| Shared worker | Mode 2, mode 3 before promotion, mode-4 coordinators | Many principals over direct; the owner only over relay | Direct through the broker; relay through per-harness environments | Local direct path implemented for the fixed coordinator; harness-driven hosting proposed |
+| Session container | Mode 1 per session; mode 3 after promotion | One application session | Direct through the broker | Proposed |
+| Shared worker | Mode 2, mode 3 before promotion, mode-4 coordinators | Many principals | Direct through the broker | Local direct path implemented for the fixed coordinator; harness-driven hosting proposed |
 | Worker container | Mode-4 workers | One coordinator session | None initially; the coordinator mediates control | Proposed; one-shot job containers exist locally |
 
 The **connection broker** gives direct-WSS clients one stable endpoint and path per application session
 (`/sessions/{id}`). It consumes one-use tickets and routes bytes to the session's current placement without
 interpreting AHP, reusing the existing [proxy pattern](../src/service-defaults/src/ahp-proxy.ts). Today the
 container host and the shared worker each terminate their own direct connections; a broker is what lets a
-promoted session keep its URL. Whether it belongs in `agent-api` or a separate service is an
-[open decision](#15-non-goals-and-decision-register).
+promoted session keep its URL. In Azure it also receives the outbound tunnels from session containers.
+
+Where the broker runs, compared:
+
+| Concern | Inside `agent-api` | Separate broker service |
+| --- | --- | --- |
+| Restarts and deployments | Every API restart, including the configurator's **Reload harnesses**, drops every attached CLI | API restarts and harness reloads leave CLI connections up |
+| Container tunnels | Long-lived tunnels and the client streams paired with them must land on the same API replica | Can stay single-replica, or add tunnel-aware routing, without changing the API |
+| Privilege | Shares a process with caller API keys, admission, and database access | Verifies tickets and resolves placement through an internal dispatcher route, as today's host proxy does, without caller keys or database credentials |
+| Moving parts and cost | No new service | One more small, always-on service and ingress endpoint |
+| Client setup | Same host name as the API | Unchanged: the API returns the broker URL in the connection response |
+
+**Recommendation: a separate broker service.** Live CLI sessions should not depend on the API process, which the
+configurator restarts on every harness reload. The cost is one small service.
 
 ## 5. Client connections
 
-| Mode | CLI, direct WSS, local | CLI, direct WSS, Azure | CLI, GitHub relay | Copilot app, relay | Copilot app, direct WSS |
-| --- | --- | --- | --- | --- | --- |
-| `isolated` | Exists for the one configured harness; managed profile behind its [compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate) | Exists, behind the same gate | Exists for the GitHub-native profile; [client eligibility](DEPLOYMENT.md#github-native-client-eligibility) applies | Host exists; app attachment not yet recorded | Unknown; qualify |
-| `shared` | Implemented for the fixed coordinator; proposed per harness | Proposed | Proposed, owner only | Proposed, owner only; qualify | Unknown; qualify |
-| `promotable` | Proposed; the broker reroutes after promotion | Proposed; needs Azure container reachability | Proposed; the client switches environments unless the runtime forwards sessions | As CLI relay; qualify | Unknown; qualify |
-| `orchestrator` | Coordinator as `shared`; workers not attachable initially | As `shared` | Coordinator, owner only | As `shared` | Unknown; qualify |
+The first delivery targets Copilot CLI. The GitHub Copilot app is deferred and will be qualified separately.
+
+| Mode | CLI, direct WSS, local | CLI, direct WSS, Azure | CLI, GitHub relay |
+| --- | --- | --- | --- |
+| `isolated` | Exists for the one configured harness; managed profile behind its [compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate) | Exists, behind the same gate | Exists for the GitHub-native profile, with [client eligibility](DEPLOYMENT.md#github-native-client-eligibility); proposed per relay-enabled harness |
+| `shared` | Implemented for the fixed coordinator; proposed per harness | Proposed, after local stages | Not in the first delivery |
+| `promotable` | Proposed; the broker reroutes after promotion | Proposed; needs Azure container reachability | Not in the first delivery |
+| `orchestrator` | Coordinator as `shared`; workers not attachable initially | As `shared` | Not in the first delivery |
 
 Proposed client flows:
 
@@ -265,12 +329,9 @@ Proposed client flows:
   `copilot --experimental --ahp <url> --resume <ahpSessionId>`, with GitHub authentication consent where the host
   requires it. This generalizes today's [`--destination`](../configurator/server/connect-host.ts) launcher.
   Tickets stay one-use and short-lived.
-- **CLI over GitHub relay.** The same launcher returns an environment ID and runs
-  `copilot --experimental --relay --environment-id <id> [--resume <ahpSessionId>]`. One environment per
-  relay-enabled harness keeps the owner's environment list readable; sessions appear in that environment's catalog.
-- **GitHub Copilot app.** The app attaches as an AHP client to the same hosts. Its supported transports and its
-  handling of key pins and one-use tickets must be verified and recorded per app version before the configurator
-  offers an app connection action. If the app supports only relay, it is owner-scoped for shared modes.
+- **CLI over GitHub relay (isolated harnesses).** The same launcher returns the harness host's environment ID and
+  runs `copilot --experimental --relay --environment-id <id> [--resume <ahpSessionId>]`. Each relay-enabled
+  harness registers one environment, and its sessions appear in that environment's catalog.
 
 Proposed API changes extend the existing [shared conversation routes](API.md#experimental-shared-conversations)
 instead of adding a parallel family:
@@ -278,36 +339,33 @@ instead of adding a parallel family:
 | Route | Proposed change |
 | --- | --- |
 | `POST /v1/sessions` | Accept `{ harness, label }`; respond with mode, placement, and current segment |
-| `POST /v1/sessions/{id}/connection` | Accept `{ transport }`; return direct material or a relay environment ID, plus the current `ahpSessionId` |
+| `POST /v1/sessions/{id}/connection` | Accept `{ transport }`; return direct material or, for isolated hosts, a relay environment ID, plus the current `ahpSessionId` |
 | `POST /v1/sessions/{id}/promote` | Caller-initiated promotion of a `promotable` session; idempotent |
 | `GET /v1/sessions/{id}/workers` | Mode-4 workers with state, size, usage, and timestamps |
 | `POST /v1/sessions/{id}/close` | Existing; additionally stops workers and retires session containers |
 
 Unsupported combinations return explicit errors, such as `hosting_mode_not_allowed`, `hosting_unavailable`
-(naming the missing host or transport), and `relay_owner_only` when a principal other than the relay owner
-requests the GitHub path.
+(naming the missing host or transport), `transport_unsupported` when a shared-family session requests the GitHub
+path, and `relay_owner_only` when a principal other than an isolated host's owner requests it.
 
 ### GitHub relay identity
 
 Relay registration uses the hosting runtime's own GitHub identity. In reviewed runtime source (revision
 `0a32c39595f`, `supervised_host.rs`), the host resolves environment credentials from its owning runtime context
 before registering, and `HostGitHubEnvironmentOptions` carries only a name, a compute ID, and a binding flag.
-One in-process runtime can therefore register environments for one account. Under the agreed owner-scoped model:
+One runtime can therefore register environments for one account, and GitHub identity, not the integrator's
+principals, decides who can attach through them. That fits a single-owner host but not a multi-tenant one:
 
-- The deployment configures a relay owner (GitHub login, verified numeric ID, and a credential stored as an
-  Aspire secret), extending the existing `demo-host-owner` settings.
-- The shared worker's runtime holds that credential for relay registration. Tenant hosts behind the broker keep
-  their own expected-owner binding and sealed authentication. Showing that the owner credential changes neither
-  tenant authentication nor managed inference is a qualification gate.
-- Relay environments enforce the owner as expected owner. A session created from a relay client is admitted as
-  the owner's mapped API principal, under the same budgets and policy as an API-created session.
-- A per-harness relay host publishes several sessions, so its workspace boundary and resource callback must route
-  each URI to the owning session's provider namespace. Today each shared session has its own host and anchor;
-  that routing is part of the stage 2 gate.
-- A session container that offers relay must hold the owner credential itself, which exposes it to that
-  container's runtime account as today's host does. Direct WSS through the broker is the default for containers.
-- Per-tenant relay needs per-host relay credentials in the runtime. That is a separate runtime workstream, not a
-  reason to run one runtime per user.
+- **Isolated harness hosts** keep relay: each relay-enabled harness host registers one environment under its owner's
+  account, extending the existing `demo-host-owner` settings and owner verification.
+- **Shared-runtime modes** (`shared`, `promotable`, `orchestrator`) use direct WSS only in the first delivery,
+  where the application's own principals and one-use tickets control access.
+- **Per-tenant relay** would need per-host relay credentials in the runtime. It is parked until there is a concrete
+  need, and it is not a reason to run one runtime per user.
+
+If relay for shared modes returns, two questions recorded in the review reopen: whether the owner credential on the
+shared runtime changes tenant authentication or managed inference, and whether one relay host can publish many
+sessions while routing each file request to the right session's storage.
 
 ## 6. Session lifecycle
 
@@ -347,11 +405,13 @@ into a session container with the target's instructions and tools.
 Keep the existing container host as the qualified starting point, then remove its deployment-wide singletons:
 
 - Key host ownership, leases, and connection tickets by harness and owner instead of the single `demo_host` row.
-  Each isolated harness a deployment exposes gets its own host resource, data root, and optional Mission Control
-  environment. Each such host is always-on compute, and the configurator must show that cost per harness.
+  Each isolated harness a deployment exposes gets its own host resource, data root, and, when relay is enabled for
+  it, one Mission Control environment. Each such host is always-on compute, and the configurator must show that
+  cost per harness.
 - Add per-session containers for multi-tenant direct use. The controller allocates a session container when a
   session connects, stops it after the idle period, and reallocates it from the retained volume on reconnect.
   This is the strongest separation between sessions and has no idle compute, at the price of cold starts.
+  Per-session containers are reachable over direct WSS through the broker only.
 - Keep the managed and GitHub-native inference routes distinct. GitHub-native mode applies neither harness
   restrictions nor Foundry budgets, so a harness's mode never selects it implicitly.
 - Existing gates still apply: the managed [compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate),
@@ -366,9 +426,12 @@ Make the existing shared worker harness-driven:
   admitted harness snapshot and effective policy. Instructions, prompt mode, model options, skills, sub-agents,
   limits, and permissions come from the harness. The existing turn scheduler, token reservations, idle eviction,
   and lease fencing remain.
-- Apply the tool rules in [section 3](#3-per-harness-configuration-proposed-contract). Shared hosting is
-  TypeScript-only because it uses the in-process Node SDK; batch runner parity is unaffected.
-- Route `ask` approvals and questions to the attached AHP client, as the managed container host does today
+- Apply the tool rules in [section 3](#3-per-harness-configuration-proposed-contract). A shared session gets basic
+  workspace tools over `sessionFs`, web access through the filtered egress path, remote MCP servers from the
+  operator's catalog, and skills from an approved skill store, loaded into the session's provider-backed storage.
+  Shared hosting is TypeScript-only because it uses the in-process Node SDK; batch runner parity is unaffected.
+- Apply the harness's [permission mode](#permission-modes). With `ask`, approvals and questions go to the attached
+  AHP client, as the managed container host does today
   ([`hostPermissionHandler`](../src/agent-host/src/policy.ts) returns no result so the participant owns the
   prompt). The application never fabricates approval. The current coordinator rejects every permission request.
 - Serve many harnesses from one worker, with per-harness resident-session and active-turn limits so one harness
@@ -423,18 +486,29 @@ It holds no database, Docker, signing, or Foundry credential. After cutover the 
 for the configured retention period, then the operator's retention process deletes it.
 
 The decisive technical gate is **history transplant**: resuming the same runtime session ID on a
-real-filesystem runtime from history written through `sessionFs`. The runtime fences resume on the workspace
-path (see the Windows path-spelling fix in the [qualification record](HYBRID-HOSTING-PLAN.md#13-qualification-record)),
-so the session container must use the shared anchor's absolute workspace path, or the runtime needs an explicit
-workspace-rebase option on resume. A Windows-hosted shared worker cannot promote into a Linux container until
-that is resolved; the Linux shared-worker image avoids the mismatch. If the transplant cannot be qualified, the
-alternative is an explicit handoff to a fresh session seeded with the transcript and files. That would be a
-recorded design change, never a silent fallback.
+real-filesystem runtime from history written through `sessionFs`. The review expects this to work; the stage-5
+spike must show it on the pinned runtime. The runtime fences resume on the workspace path (see the Windows
+path-spelling fix in the [qualification record](HYBRID-HOSTING-PLAN.md#13-qualification-record)), so the session
+container must use the shared anchor's absolute workspace path, or the runtime needs an explicit workspace-rebase
+option on resume. A Windows-hosted shared worker cannot promote into a Linux container until that is resolved; the
+Linux shared-worker image avoids the mismatch. If the transplant cannot be qualified, the alternative is an
+explicit handoff to a fresh session seeded with the transcript and files. That would be a recorded design change,
+never a silent fallback.
 
-Client continuity: over direct WSS, the broker routes the same session path to the container once the client
-presents a new ticket, and the launcher reconnects with `--resume`. Over relay, the session moves to a different
-environment, so the client reconnects to the container's environment unless the runtime gains AHP session
-forwarding.
+**Client continuity.** The review asked for promotion to be transparent to the CLI user. Today it is not: the
+reconnect qualification ([`shared-cli.test.ts`](../tests/integration/shared-cli.test.ts)) starts a new CLI process
+with a fresh ticket and the new host's server key. A seamless move needs three things:
+
+1. The CLI reconnects on its own when the broker closes the connection with a "moved" reason, instead of exiting.
+2. It gets fresh connection material without the user rerunning the launcher, through a CLI provisioning hook or
+   a session-bound reconnect credential that the broker accepts once per placement change.
+3. Its server-key pin stays valid. The promoted container's runtime has a different key, so either the application
+   issues a per-session host key that moves with the session (a runtime change to accept an application-provided
+   key), or the CLI accepts a key update delivered through trusted provisioning.
+
+Until those exist, the launcher can supervise the CLI: on a "moved" close it provisions the new placement and
+restarts the CLI with `--resume`, so the conversation replays in the same terminal. Promotable sessions are
+direct-WSS only, so relay continuity does not arise in the first delivery.
 
 ### 7.4 Mode 4: orchestrator (shared brain, container workers)
 
@@ -465,16 +539,18 @@ Rules:
   read-only, and each worker also has a private volume. The coordinator has no real filesystem and reaches the
   shared volume only through bounded application tools. Concurrent writers get no locking beyond filesystem
   semantics, so instructions should assign separate directories.
-- **Approvals.** A worker's `ask` permission requests go to a person: through the coordinator session's attached
-  client or, when nobody is attached, through a principal-scoped API request queue modeled on the job
-  [approvals and questions](API.md#approvals-and-questions) routes. Policy may let the coordinator answer a
-  worker's questions. It never lets the coordinator approve permissions.
+- **Approvals.** Each worker harness's [permission mode](#permission-modes) decides its requests. With `ask`, they
+  go to a person: through the coordinator session's attached client or, when nobody is attached, through a
+  principal-scoped API request queue modeled on the job [approvals and questions](API.md#approvals-and-questions)
+  routes. With `assisted`, the coordinator approves requests inside policy bounds and escalates the rest to a
+  person. `allow` and `custom` behave as in any other harness. Policy may also let the coordinator answer a
+  worker's questions.
 - **Backstops.** Idle timeout, maximum lifetime, per-session caps, an aggregate token budget across the
   coordinator and its workers, workers stopping when the coordinator closes, and controller orphan
   reconciliation. Container time is recorded per worker for cost attribution.
 - **Depth one.** Workers cannot create workers, delegate jobs, or hand off in the first delivery.
-- **No client attachment to workers initially.** Observing or steering a worker directly from the CLI or app
-  needs worker ingress or a tunnel and is future work.
+- **No client attachment to workers initially.** Observing or steering a worker directly from the CLI needs worker
+  ingress or a tunnel and is future work.
 
 ### 7.5 Handoffs and crafted harnesses
 
@@ -530,9 +606,10 @@ candidate is Azure Files, whose [storage gate](DEPLOYMENT.md#storage-and-revisio
 | Component | Holds | Never holds |
 | --- | --- | --- |
 | Connection broker | Ticket verification and routing state | Session content, inference grants, provider credentials |
-| Shared worker | PostgreSQL access and its dispatcher grant key; the relay owner credential if relay is enabled | Docker authority, the allocation-signing key, provider credentials |
+| Shared worker | PostgreSQL access, its dispatcher grant key, and resolved secrets for approved remote MCP servers | Docker authority, the allocation-signing key, provider or relay credentials |
+| Per-harness owner host | The owner's GitHub credential when relay is enabled, and session inference grants | Database, signing, or Foundry credentials |
 | Execution controller | Docker authority locally or Azure provisioning authority; allocation signing | Session content, inference grants |
-| Session container or worker | An allocation-scoped credential and session inference grants; the owner credential only if it offers relay | Database, Docker, signing, or Foundry credentials |
+| Session container or worker | An allocation-scoped credential, session inference grants, and remote MCP secrets its harness is approved for | Database, Docker, signing, Foundry, or relay credentials |
 | Inference gateway | Foundry identity | Client or session credentials |
 
 Every model call in modes 2 to 4, and in managed mode 1, uses a session or turn capability issued against the
@@ -549,17 +626,33 @@ controls, not exact spending caps; see [local hybrid boundaries](SECURITY.md#loc
 | `promotable` | Shared before cutover, container after | That the shared phase had container isolation |
 | `orchestrator` | Shared coordinator; workers in containers; one session's workers share its volume | Isolation between workers of one session that share a volume |
 
-Additional risks to design for: prompt injection through worker results, crafted instructions, and handoff
-summaries (treat all of them as untrusted data); promotion snapshots as integrity-sensitive transfers
-(digest-checked and allocation-bound); relay owner credentials inside containers; and cost amplification through
-worker creation (bounded by ceilings and budgets, not by an exact dollar cap). Update [Security](SECURITY.md)
-with verified controls as each slice lands. Until then its current statements apply.
+Additional risks to design for:
+
+- **Server-side request forgery from the shared worker.** Web access and remote MCP calls in shared placement leave
+  from a process that can reach PostgreSQL, internal services, and cloud metadata endpoints. Filtering loopback,
+  private, link-local, and internal addresses, rechecking redirects, and preferring an egress proxy are
+  requirements, not hardening extras.
+- **Untrusted content.** Web pages, remote MCP results, worker results, crafted instructions, and handoff summaries
+  are all model input that can carry prompt injection; treat them as data, never as policy.
+- **Model-assisted approvals.** `assisted` lets one model approve another's request. Keep it off unless policy
+  allows it, bound it to explicit rules, record every decision, and send everything outside the bounds to a person.
+- **Custom permission handlers** are integrator code with the same trust as tool implementations; review and
+  package them the same way.
+- **Remote MCP credentials** stay in the host process; the model and the harness definition see only server names.
+- **Promotion snapshots** are integrity-sensitive transfers, digest-checked and allocation-bound.
+- **Cost amplification** through worker creation is bounded by ceilings and budgets, not by an exact dollar cap.
+
+Update [Security](SECURITY.md) with verified controls as each slice lands. Until then its current statements apply.
 
 ## 11. Effective controls
 
 | Control | Modes | Enforced at |
 | --- | --- | --- |
 | Allowed modes and transports | All | Validation, admission, connection provisioning |
+| Permission modes and approved custom handlers | All | Validation, admission, and the host's permission handler |
+| Web egress filtering in shared placement | 2, 3, 4 | Shared worker request path or egress proxy |
+| Remote MCP server catalog, tool lists, and secret references | All | Validation, admission, and the host's MCP client |
+| Skill stores and digest pinning | All | Admission and session start |
 | Size catalog and per-harness subset | 1, 3, 4 | Allocation admission |
 | Shared active turns, resident sessions, and queue | 2, 3, 4 | Shared worker scheduler (existing) |
 | Session, turn, and aggregate token budgets | All managed | Turn and grant admission (existing), extended to workers |
@@ -583,14 +676,14 @@ are relied on.
 | OpenAI Agents API | This plan | Notes |
 | --- | --- | --- |
 | Agent: model, instructions, tools, MCP servers; saved agents reused across sessions | Harness: versioned, digest-identified, bounded by operator policy | Both snapshot configuration when a session starts |
-| Environment `none` | Mode 2 `shared` | OpenAI's `none` has no workspace files or built-in shell, and applications supply function tools. Shared mode keeps durable virtual files in `sessionFs` |
+| Environment `none` | Mode 2 `shared` | OpenAI's `none` has no workspace files or built-in shell, but the harness can still call remote MCP servers, and applications supply function tools. Shared mode likewise allows remote MCP and web access, and adds durable virtual files in `sessionFs` |
 | Environment `openai_hosted`, with `small` (1 vCPU, 1 GB), `medium` (2 vCPU, 4 GB), or `large` (4 vCPU, 16 GB) chosen per session | Mode 1 session containers, promoted containers, and workers, with an operator size catalog | Ours run on the customer's compute |
 | Environment `self_hosted`: customer compute runs an executor that connects outbound over WebSocket and performs commands, file operations, and local MCP calls for the hosted harness | No equivalent; the closest is remote "hands-only" execution, which this plan did not choose for mode 4 | Its outbound-only connection informs the Azure container reachability decision |
 | Session: durable, steerable during a turn, continued later; OpenAI manages context compaction | Application session with segments, attached live through AHP | |
 | `multi_agent`: harness-supplied tools to create, message, wait for, and interrupt subagents; 6 concurrent by default; subagents share the coordinator's environment and filesystem; no function tools | Mode 4 workers in separate sized containers with an optional shared volume; in-runtime sub-agents still exist within one runtime | |
 | Agents SDK handoffs: `transfer_to_<agent>` tools, input filters, structured handoff input | Predefined handoffs with per-target history policy | OpenAI documents handoffs in the SDK, not as an Agents API feature |
-| REST, server-sent events, and signed webhooks; required actions for function calls and approvals | AHP attachment from the CLI and app, plus the existing REST and SSE job APIs | We found no documented direct CLI or IDE attachment to a running OpenAI session |
-| Vaults for secrets used by MCP servers and sandbox-originated requests | No equivalent; credentials stay within gateway and host boundaries | |
+| REST, server-sent events, and signed webhooks; required actions for function calls and approvals | AHP attachment from Copilot CLI (the GitHub Copilot app later), plus the existing REST and SSE job APIs | We found no documented direct CLI or IDE attachment to a running OpenAI session |
+| Vaults for secrets used by MCP servers and sandbox-originated requests | Secret references for approved remote MCP servers, resolved by the host (proposed); no general vault | |
 
 ### Where the agent loop runs
 
@@ -607,8 +700,9 @@ inside the customer deployment, and the four modes choose between a shared proce
 | Subagent compute | Subagents share one environment and its size | Each worker gets its own sized container; sharing is an explicit volume | Better isolation and mixed sizes; higher per-worker startup time and cost |
 | Subagent tools | Subagents inherit MCP and web search settings; no function tools | Workers use their own harness's tools under policy | Workers are full agents rather than reduced subagents |
 | Handoffs | An SDK concept; the receiving agent sees full history unless an input filter changes it | Platform-level, policy-checked, with a history policy per target, across placements | A handoff across placements requires the client to reconnect |
-| Client access | Application-mediated REST, SSE, and webhooks | Direct AHP from Copilot CLI and app over relay or WSS | Live attachment is a differentiator, with more authentication surface: tickets, key pins, expected owner |
-| Network control | Hosted sandboxes allow network access to be enabled, disabled, or restricted to up to 100 exact hostnames | Egress is not enforced | A real gap for isolated and worker containers |
+| Client access | Application-mediated REST, SSE, and webhooks | Direct AHP from Copilot CLI over WSS, and over relay for isolated hosts | Live attachment is a differentiator, with more authentication surface: tickets, key pins, expected owner |
+| Approvals | Required actions (function calls, environment connections, computer-use approvals) answered by the application | Harness permission modes: `ask`, `assisted`, `allow`, or a `custom` handler in code | Similar intent; `assisted` and `custom` move routine decisions into policy-bounded automation |
+| Network control | Hosted sandboxes allow network access to be enabled, disabled, or restricted to up to 100 exact hostnames | Egress is not enforced; shared-placement web access adds address filtering (proposed) | A real gap for isolated and worker containers |
 | Warm capacity and idle | Free pre-warmed environments that expire after five minutes unattached; hosted sandboxes expire after about an hour idle, not configurable | Zero warm capacity by default; operator-configured idle time and lifetime | Our latency depends on cold container starts until warm capacity exists |
 | Data controls | US data residency only; not eligible for Zero Data Retention, even with a self-hosted environment | Deployed in the customer's Azure subscription; relay traffic and GitHub-native inference use GitHub infrastructure | Customer placement is a differentiator, with documented GitHub-path exceptions |
 | Pricing | Model usage at API rates, plus container rates for hosted sandboxes | The customer's Azure compute and Foundry usage | Compare total cost only with measured data |
@@ -643,8 +737,8 @@ Sources, reviewed 2026-10-15: Agents API [overview](https://developers.openai.co
 
 ## 13. Measurements and demonstration
 
-Reuse the metric definitions in the [hybrid plan](HYBRID-HOSTING-PLAN.md#9-measurements-and-demonstration-protocol)
-and add:
+Measurement waits until the local prototype works (review answer P1). The metrics below are candidates for later,
+reusing the definitions in the [hybrid plan](HYBRID-HOSTING-PLAN.md#9-measurements-and-demonstration-protocol):
 
 | Metric | Definition |
 | --- | --- |
@@ -654,43 +748,50 @@ and add:
 | Idle cost by mode | Container-seconds multiplied by configured size while no turn is active, per harness |
 | Coordinator overhead | Coordinator tokens per worker task |
 
-A representative demonstration:
+The functional demonstration, which doubles as the local acceptance path:
 
-1. Connect from the CLI to one harness in each mode over direct WSS, and as the relay owner over the GitHub path.
-2. Show that a `shared` conversation allocates no containers.
-3. In a `promotable` session, ask for work that needs a shell. Observe approval, cutover, reconnection, and
-   continued work, and confirm that no demotion is possible.
-4. In an `orchestrator` session, start two workers of different sizes on a shared volume. Message one, interrupt
-   one, archive both, and observe capacity return to zero.
+1. Connect from the CLI to one harness in each mode over direct WSS, and to an isolated harness over the GitHub
+   relay.
+2. Show that a `shared` conversation allocates no containers while using web access, a remote MCP tool, and a
+   store-provided skill.
+3. In a `promotable` session, ask for work that needs a shell. Observe approval, cutover, and continued work in the
+   same terminal, and confirm that no demotion is possible.
+4. In an `orchestrator` session, start two workers of different sizes on a shared volume, one of them in `assisted`
+   permission mode. Message one, interrupt one, archive both, and observe capacity return to zero.
 5. Hand off from a shared triage harness to an isolated coding harness with summary history.
-6. Repeat a subset from the GitHub Copilot app over each transport it supports, recording the app version.
 
-No performance target has been agreed. Predeclare workloads, trial counts, and pass criteria before collecting
-comparative results, and report negative results.
+When comparisons start, predeclare workloads, trial counts, and pass criteria, and report negative results.
 
 ## 14. Delivery sequence and acceptance gates
 
 | Stage | Deliverable | Exit evidence |
 | --- | --- | --- |
 | 0. Plan | This document and documentation-hub links | Modes, contract direction, connection matrix, comparison, gates, and agreed decisions recorded before code |
-| 1. Contract and policy | `hosting` harness block, policy ceilings and per-harness overrides, validation and admission errors, configurator editing, and a read-only per-harness hosting view | Existing harnesses keep their digests; invalid combinations and disallowed modes fail with field-scoped errors; unavailable modes name their prerequisite; runtime behavior is unchanged |
-| 2. Harness-driven shared mode | The shared worker hosts `shared` harnesses; `/v1/sessions` accepts a harness; the broker; launcher `--harness`; owner-scoped relay environments | Two shared harnesses serve two API principals on one worker over direct WSS from the CLI; the owner attaches over relay; a non-owner relay request is refused; no containers are allocated; the Copilot app result is recorded |
-| 3. Session containers | Resumable allocations with per-session volumes, idle stop and reallocation, broker routing to containers, per-session mode 1, per-harness owner hosts | A mode-1 session runs in its own container, stops when idle, and resumes from its volume; orphan reconciliation and capacity accounting cover the new allocation kinds |
-| 4. Orchestrator workers | Worker tools, the durable coordinator inbox, sizes, the shared volume, backstops, and listed and crafted workers | A coordinator runs two differently sized workers concurrently on a shared volume, messages and interrupts them, receives their completions without polling, and archives them; capacity returns to zero; a crafted definition cannot exceed its template |
-| 5. Promotion | A transplant spike, then `promote_session`, API promotion, cutover fencing, and client continuity | A shared conversation promotes mid-task and continues with shell and files under the same application session; failures before cutover leave it shared; no demotion route exists |
+| 1. Contract and policy | `hosting` harness block, `mcpServers`, `skillRefs`, the new permission modes, policy ceilings and per-harness overrides, validation and admission errors, configurator editing, and a read-only per-harness hosting view | Existing harnesses keep their digests; invalid combinations and disallowed modes fail with field-scoped errors; unavailable modes name their prerequisite; runtime behavior is unchanged |
+| 2. Harness-driven shared mode | The shared worker hosts `shared` harnesses with workspace tools, filtered web access, remote MCP, and store skills; `/v1/sessions` accepts a harness; a separate broker service; launcher `--harness` | Two shared harnesses serve two API principals on one worker over direct WSS from the CLI; a shared harness uses web access, a remote MCP tool, and a store skill; loopback, private, link-local, and internal addresses are refused; a GitHub relay request for a shared harness fails with `transport_unsupported`; no containers are allocated |
+| 3. Session containers | Resumable allocations with per-session volumes, idle stop and reallocation, broker routing to containers, per-session mode 1, and per-harness owner hosts with one relay environment each | A mode-1 session runs in its own container, stops when idle, and resumes from its volume; an isolated harness host registers its own environment and the CLI attaches over relay and direct WSS; orphan reconciliation and capacity accounting cover the new allocation kinds |
+| 4. Orchestrator workers | Worker tools, the durable coordinator inbox, sizes, the shared volume, backstops, worker permission modes, and listed and crafted workers | A coordinator runs two differently sized workers concurrently on a shared volume, messages and interrupts them, receives their completions without polling, and archives them; an `assisted` request inside policy bounds is approved by the coordinator and one outside them reaches a person; capacity returns to zero; a crafted definition cannot exceed its template |
+| 5. Promotion | A transplant spike, then `promote_session`, API promotion, cutover fencing, and client continuity (launcher-supervised first) | A shared conversation promotes mid-task and continues with shell and files under the same application session, in the same terminal, without the user rerunning the launcher; failures before cutover leave it shared; no demotion route exists |
 | 6. Handoffs | Predefined targets, approval, history policies, and cross-placement handoff | A shared triage harness hands off to an isolated coding harness with summary history; a disallowed or unavailable target fails without transferring control |
-| 7. Azure | Shared-worker image deployment, broker ingress, a container backend adapter with volumes, and relay from Azure | Sessions and workers scale from zero to many to zero in Azure; the CLI attaches over direct WSS and relay; app evidence and observed costs are recorded |
-| 8. Comparison | A mode comparison and an OpenAI Agents API product comparison on synthetic workloads | Predeclared workloads and thresholds, raw data, and stated caveats |
+| 7. Azure | After stages 1 to 6 work locally: a spike of both container backends, then shared-worker image deployment, broker ingress, the chosen backend adapter with volumes, and relay for isolated hosts | Sessions and workers scale from zero to many to zero in Azure; the CLI attaches over direct WSS, and over relay for isolated hosts; observed costs are recorded |
+| 8. Comparison | Deferred until the prototype works: a mode comparison and an OpenAI Agents API product comparison on synthetic workloads | Predeclared workloads and thresholds, raw data, and stated caveats |
 
 Stages 2 and 3 can proceed in parallel after stage 1. Stages 4 and 5 depend on stages 2 and 3, and stage 6 reuses
-the segment mechanism from stage 5. Every stage keeps the default `isolated` behavior, batch jobs, the existing
-host, and the local hybrid path working. Local evidence does not qualify Azure, and a source patch is not
-qualification of a runtime capability.
+the segment mechanism from stage 5. Azure work, including the backend spike, starts only after stages 1 to 6 work
+end to end locally. Every stage keeps the default `isolated` behavior, batch jobs, the existing host, and the
+local hybrid path working. Local evidence does not qualify Azure, and a source patch is not qualification of a
+runtime capability.
 
 Required failure coverage, in addition to existing suites:
 
 - A disallowed mode, an unavailable mode, and a disallowed transport, each with an explicit error.
-- A relay request by a principal other than the owner.
+- A GitHub relay request for a shared-family harness, and one for an isolated host by a principal other than its
+  owner.
+- Web access and remote MCP from the shared worker: loopback, private, link-local, metadata, and internal service
+  addresses, including through redirects; an unapproved server or tool; and credentials that must never reach the
+  model or logs.
+- Permission modes: an `assisted` request outside its bounds, a failing or slow custom handler (deny), and `allow`
+  blocked by policy.
 - Promotion: duplicate tool calls, failure at each step before cutover, a crash after cutover, stale shared
   writes after fencing, and demotion attempts.
 - Workers: limits under concurrent creation, coordinator closure with running workers, orphaned containers,
@@ -702,28 +803,45 @@ Required failure coverage, in addition to existing suites:
 ## 15. Non-goals and decision register
 
 Non-goals: transparent live migration; demotion from container to shared placement; the platform choosing or
-changing a session's placement on its own; per-tenant relay from one shared runtime; hostile multi-tenant
-isolation claims for shared placement; model-selected images, commands, mounts, or infrastructure arguments;
-workers that create workers; client attachment to workers; Python-hosted conversations; changes to batch job
-semantics; exact spending enforcement; and production-hardening claims.
+changing a session's placement on its own; GitHub relay for shared-runtime modes and the GitHub Copilot app in the
+first delivery; per-tenant relay from one shared runtime; hostile multi-tenant isolation claims for shared
+placement; model-selected images, commands, mounts, or infrastructure arguments; workers that create workers;
+client attachment to workers; Python-hosted conversations; changes to batch job semantics; exact spending
+enforcement; and production-hardening claims.
 
-| Decision | Current direction | Resolve by |
-| --- | --- | --- |
-| Mode identifiers | `isolated`, `shared`, `promotable`, `orchestrator` | Stage 1 |
-| In-process `host` tool bindings | Profile-declared allowlist; `python` and `mcp-local` unavailable in shared placement | Stage 1 |
-| `files` in shared placement | Application workspace tools first; SDK built-in file tools only after qualification over `sessionFs` | Stage 2 |
-| `web` in shared placement | Off unless policy allows it, with shared-worker egress recorded | Stage 2 |
-| Broker placement | Inside `agent-api` or a separate service; a stable `/sessions/{id}` path either way | Stage 2 |
-| Relay environment granularity | One environment per relay-enabled harness per host | Stage 2 |
-| Copilot app transports | Qualify relay and direct attachment; offer only verified actions | Stage 2 |
-| Mode 1 host shape | Per-harness owner hosts for relay; per-session containers for multi-tenant direct use | Stage 3 |
-| Worker approvals | People, through the coordinator's client or a principal-scoped API request queue; the coordinator answers questions only if policy allows | Stage 4 |
-| Coordinator access to the shared volume | Bounded application tools through a controller-side file service | Stage 4 |
-| History transplant for promotion | The same session ID at the same absolute workspace path; otherwise a recorded switch to handoff-to-self | Stage 5 spike |
-| Handoff history default | `summary` across placements; `full` within the same placement | Stage 6 |
-| Azure container backend | Container Apps jobs (per-execution CPU, memory, and image overrides) or dynamic session pools (Hyper-V isolation, per-pool size, egress disable, ready sessions) | Stage 7 spike |
-| Azure container reachability | An outbound tunnel from containers to the broker; dynamic sessions only if WebSocket attachment is qualified | Stage 7 spike |
-| Per-tenant relay | Per-host relay credentials in the runtime | Separate runtime workstream |
+The IDs match the review questionnaire answered on 2026-10-15. N-items are new questions raised by those answers.
+
+| ID | Decision | Direction | Status |
+| --- | --- | --- | --- |
+| D1 | Mode identifiers | `isolated`, `shared`, `promotable`, `orchestrator` | Agreed |
+| D2 | Shared-runtime tools | Basic workspace tools, web access, remote MCP servers, and skills from an operator-defined skill store; `host` bindings by profile allowlist; no Python or local MCP | Agreed; details in N1 and N2 |
+| D3 | Files in shared placement | Application workspace tools first; SDK built-in file tools after qualification over `sessionFs` | Agreed |
+| D4 | Web in shared placement | Allowed by the default policy, with address filtering | Agreed; filter design in N3 |
+| D5 | Broker placement | A separate broker service ([trade-offs](#4-proposed-topology)) | Recommended; awaiting confirmation |
+| D6 | Relay environment granularity | One environment per relay-enabled isolated harness | Agreed |
+| D7 | GitHub Copilot app | Deferred; Copilot CLI first | Agreed |
+| D8 | Mode 1 host shape | Both per-harness owner hosts and per-session containers | Agreed |
+| D9 | Permission modes | `ask`, `assisted`, `allow`, or a `custom` handler in code, within policy | Agreed; top-level `assisted` approver in N4 |
+| D10 | Coordinator access to the shared volume | Bounded tools through a controller-side file service | Agreed |
+| D11 | Promotion mechanism | Resume the same session in the container | Agreed; verify in the stage-5 spike (T2) |
+| D12 | Handoff history default | `summary` across placements; `full` within the same placement | Agreed |
+| D13 | Azure container backend | Spike Container Apps jobs and dynamic session pools only after the local prototype works | Sequencing agreed; choice open |
+| D14 | Azure container reachability | Outbound tunnel from containers to the broker | Agreed direction; verify in the spike |
+| D15 | Per-tenant relay | Per-host relay credentials in the runtime | Parked |
+| T1 | Copilot app transports | None until the app work starts | Deferred with D7 |
+| T2 | History transplant | Expected to work; same absolute workspace path or a rebase option | Verify in the stage-5 spike |
+| T3 | Owner credential on the shared runtime | Relay for shared modes is out of the first delivery | Moot until shared-mode relay returns |
+| T4 | One relay host, many sessions | Desired if shared-mode relay returns | Parked |
+| T5 | Promotion continuity | Transparent to the CLI user ([requirements](#73-mode-3-promotable-page-fault-to-a-container)) | Required; mechanism in N5 |
+| T6 | Configuration change on resume | Needed for `full`-history handoffs | Open; stage-6 spike |
+| T7 | Azure storage and connectivity | Session-pool WebSocket and volume support undocumented; job volume support unchecked; Azure Files storage gate open | Open; stage-7 spike |
+| T8 | Existing mode 1 gates | Managed-profile [compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate) and relay client eligibility | Open; recheck in stage 3 |
+| P1 | Performance targets | Get it working first | Deferred |
+| N1 | Skill store | What backs a store (a Git repository, a registry service, or the customer workspace) and how versions and digests are published | Open; stage 2 |
+| N2 | Remote MCP credentials | Where secret references resolve (Aspire secrets locally, Key Vault in Azure) and whether per-user OAuth is needed | Open; stage 2 |
+| N3 | Web filtering | In-process address filter or an egress proxy in front of the shared worker | Open; stage 2 |
+| N4 | `assisted` approver outside workers | Who approves when there is no coordinator: an operator-configured reviewer harness, or `assisted` for workers only | Open; stage 4 |
+| N5 | Promotion continuity mechanism | Launcher-supervised restart first; then a CLI reconnect hook with either a per-session host key or a CLI key update | Open; stage 5 |
 
 Azure evidence reviewed on 2026-10-15: `az containerapp job start` accepts per-execution `--cpu`, `--memory`,
 `--image`, and environment overrides, and Container Apps jobs are documented as finite-duration tasks
