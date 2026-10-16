@@ -1,16 +1,25 @@
-import type { SessionConfig } from "@github/copilot-sdk";
-import { SharedPrincipalBindings, SharedSessionDefinition, SharedWorkerLimits, type SharedConnection } from "@copilot-agent/contracts";
+import {
+  SharedPrincipalBindings, SharedWorkerLimits, sharedHarnessLimits,
+  type HostingTransport, type SharedConnection, type SharedSessionCreation,
+} from "@copilot-agent/contracts";
+import type { ManagedSettings } from "@github/copilot-sdk";
 import { SessionFileStore, SharedStore, StoreError, type SessionFileLease, type SharedSessionRecord, type SharedTurn } from "@copilot-agent/job-store";
 import { readServerKey } from "@copilot-agent/service-defaults";
+import type { SharedActivationPlan, SharedAdmission, SharedApprovalPlan } from "./admission.js";
+import { sharedSessionSettings } from "./harness-session.js";
+import type { CustomPermissionHandler } from "./permission-handlers.js";
+import { SharedPermissionPolicy, type ToolRule } from "./permissions.js";
 import { SharedSessionRuntime, type SharedActivationContext } from "./runtime.js";
 import { SharedTurnScheduler } from "./scheduler.js";
+import { sharedToolset, type SharedToolkitOptions } from "./toolkit.js";
 
 interface Resident {
   context: SharedActivationContext;
   record: SharedSessionRecord;
+  harness: string;
   controller: AbortController;
   lastActivity: number;
-  toolNames: ReadonlySet<string>;
+  policy?: SharedPermissionPolicy;
   connection?: Awaited<ReturnType<SharedSessionRuntime["open"]>>;
   closing?: Promise<void>;
 }
@@ -19,21 +28,40 @@ export interface SharedServiceOptions {
   store: SharedStore;
   files: SessionFileStore;
   principals: Record<string, number>;
-  definition: SharedSessionDefinition;
+  /** Admits sessions from published harnesses and re-checks them against current policy on activation. */
+  admission: SharedAdmission;
   limits: SharedWorkerLimits;
   gatewayUrl: string;
   publicUrl: () => string;
   mintToken: (lease: SessionFileLease, turn: SharedTurn) => Promise<string>;
   report: (event: string, id: string) => void;
-  tools?: (record: SharedSessionRecord, context: SharedActivationContext, currentTurn: () => SharedTurn) => NonNullable<SessionConfig["tools"]>;
+  /** Egress and delegation for the base tool set. */
+  toolkit?: SharedToolkitOptions;
+  /** Handlers for the `custom` approval mode, by name. */
+  permissionHandlers?: ReadonlyMap<string, CustomPermissionHandler>;
+  permissionHandlerTimeoutMs?: number;
 }
 
-/** One shared runtime owner; public callers receive activation-bound tickets, never native listener secrets. */
+/** Managed settings that keep the runtime from entering an approval mode the harness's policy does not allow. */
+export function approvalManagedSettings(approval: SharedApprovalPlan): ManagedSettings | undefined {
+  const permissions = {
+    ...(approval.available.includes("allow-all") ? {} : { disableBypassPermissionsMode: "disable" }),
+    ...(approval.available.includes("assisted") ? {} : { disableAssistedPermissionsMode: true }),
+  };
+  return Object.keys(permissions).length ? { permissions } : undefined;
+}
+
+/**
+ * One shared runtime owner serving many harnesses; public callers receive activation-bound tickets, never native
+ * listener secrets. Each session runs its admitted harness snapshot under the harness's current effective policy.
+ */
 export class SharedSessionService {
   readonly #runtime: SharedSessionRuntime;
   readonly #scheduler: SharedTurnScheduler;
   readonly #residents = new Map<string, Resident>();
   readonly #opening = new Map<string, Promise<void>>();
+  /** The harness of every opening or resident session: the per-harness residency reservations. */
+  readonly #harnessOf = new Map<string, string>();
   #timer?: NodeJS.Timeout;
   #maintenance?: Promise<void>;
   #stopping = false;
@@ -41,7 +69,6 @@ export class SharedSessionService {
 
   constructor(private readonly options: SharedServiceOptions) {
     options.principals = SharedPrincipalBindings.parse(options.principals);
-    options.definition = SharedSessionDefinition.parse(options.definition);
     options.limits = SharedWorkerLimits.parse(options.limits);
     this.#runtime = new SharedSessionRuntime(options.root, options.files, (event, id) => {
       options.report(event, id);
@@ -56,6 +83,12 @@ export class SharedSessionService {
 
   get healthy(): boolean { return this.#healthy && !this.#stopping; }
   get residentCount(): number { return this.#residents.size; }
+  /** Resident sessions by harness, for operators and tests. */
+  residentsByHarness(): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const resident of this.#residents.values()) counts[resident.harness] = (counts[resident.harness] ?? 0) + 1;
+    return counts;
+  }
   busy(id: string): boolean { return this.#scheduler.busy(id) || this.#opening.has(id); }
   activation(principal: string, id: string): SessionFileLease {
     const resident = this.#residents.get(id);
@@ -83,9 +116,11 @@ export class SharedSessionService {
     return identity;
   }
 
-  async create(principal: string, label: string): Promise<SharedSessionRecord["view"]> {
+  async create(principal: string, request: SharedSessionCreation): Promise<SharedSessionRecord["view"]> {
     if (this.#stopping) throw new StoreError("invalid_state", "The shared service is stopping.");
-    const row = await this.options.store.create(principal, this.identity(principal), label, this.options.definition, this.options.limits.retainedSessionsPerPrincipal);
+    const identity = this.identity(principal);
+    const definition = await this.options.admission.admit(principal, request);
+    const row = await this.options.store.create(principal, identity, request.label, definition, this.options.limits.retainedSessionsPerPrincipal);
     return row.view;
   }
 
@@ -101,7 +136,10 @@ export class SharedSessionService {
     return row;
   }
 
-  async connection(principal: string, id: string): Promise<SharedConnection> {
+  async connection(principal: string, id: string, transport: HostingTransport = "direct"): Promise<SharedConnection> {
+    const row = await this.get(principal, id);
+    if (row.view.closed) throw new StoreError("not_found", "The shared conversation is closed.");
+    await this.options.admission.connectable(row.definition, transport, principal);
     await this.ensure(principal, id);
     const ticket = await this.options.store.issueTicket(principal, id);
     const url = new URL(this.options.publicUrl());
@@ -113,7 +151,7 @@ export class SharedSessionService {
       throw new Error("Unencrypted shared CLI connections are restricted to loopback.");
     }
     url.pathname = `/sessions/${id}`;
-    return { sessionId: id, destination: "shared", url: url.href, ...ticket };
+    return { sessionId: id, destination: "shared", transport: "direct", ahpSessionId: row.view.segment.ahpSessionId, url: url.href, ...ticket };
   }
 
   async resolveConnection(path: string, ticket: string): Promise<{ token: string; targetPort: number } | undefined> {
@@ -165,33 +203,62 @@ export class SharedSessionService {
     finally { if (this.#opening.get(id) === operation) this.#opening.delete(id); }
   }
 
-  private async activate(row: SharedSessionRecord): Promise<void> {
-    if (new Set([...this.#residents.keys(), ...this.#opening.keys()]).size >= this.options.limits.residentSessions) {
-      const idle = [...this.#residents.values()].filter((entry) => !this.busy(entry.record.id) && !entry.closing)
-        .sort((a, b) => a.lastActivity - b.lastActivity)[0];
-      if (!idle) throw new StoreError("quota_exceeded", "The shared worker is at resident capacity.");
-      await this.deactivate(idle.record.id);
+  /** An idle resident to evict so `harness` fits, or undefined when it fits now; throws when nothing can be evicted. */
+  #capacityVictim(id: string, harness: string): string | undefined {
+    const evictable = (predicate: (entry: Resident) => boolean) => [...this.#residents.values()]
+      .filter((entry) => predicate(entry) && entry.record.id !== id && !this.busy(entry.record.id) && !entry.closing)
+      .sort((a, b) => a.lastActivity - b.lastActivity)[0]?.record.id;
+    const reserved = [...this.#harnessOf.entries()].filter(([entry]) => entry !== id);
+    if (reserved.filter(([, name]) => name === harness).length >= sharedHarnessLimits(this.options.limits, harness).residentSessions) {
+      const victim = evictable((entry) => entry.harness === harness);
+      if (!victim) throw new StoreError("quota_exceeded", "The shared worker is at resident capacity for this harness.");
+      return victim;
     }
+    if (reserved.length >= this.options.limits.residentSessions) {
+      const victim = evictable(() => true);
+      if (!victim) throw new StoreError("quota_exceeded", "The shared worker is at resident capacity.");
+      return victim;
+    }
+    return undefined;
+  }
+
+  private async activate(row: SharedSessionRecord): Promise<void> {
+    const plan = await this.options.admission.activation(row.definition, row.principal);
+    const harness = plan.harness.name;
+    for (;;) {
+      const victim = this.#capacityVictim(row.id, harness);
+      if (!victim) break;
+      await this.deactivate(victim);
+    }
+    this.#harnessOf.set(row.id, harness);
     let activation: Resident | undefined;
     const bind = (context: SharedActivationContext): Resident => {
       if (!activation) {
         if (this.#residents.has(row.id)) throw new Error("Another activation is already resident.");
-        activation = { context, record: row, controller: new AbortController(), lastActivity: Date.now(), toolNames: new Set() };
+        activation = { context, record: row, harness, controller: new AbortController(), lastActivity: Date.now() };
         this.#residents.set(row.id, activation);
       }
       if (this.#residents.get(row.id) !== activation || activation.context.lease.epoch !== context.lease.epoch
         || activation.controller.signal.aborted) throw new Error("The activation context is no longer active.");
       return activation;
     };
+    const settings = sharedSessionSettings(plan.definition);
     try {
       const connection = await this.#runtime.open({
-        id: row.id, principal: row.principal, githubUserId: row.githubUserId,
-        model: row.definition.model, instructions: row.definition.instructions,
-        tools: (context) => {
+        id: row.id, principal: row.principal, githubUserId: row.githubUserId, model: plan.model,
+        configuration: `${plan.harness.digest}|${plan.model}`,
+        settings: { ...settings, managedSettings: approvalManagedSettings(plan.approval) },
+        approval: { initial: plan.approval.initial, available: plan.approval.available, ...(plan.approval.judgeModel ? { judgeModel: plan.approval.judgeModel } : {}) },
+        tools: async (context) => {
           const resident = bind(context);
-          const tools = this.options.tools?.(row, context, () => this.#scheduler.current(context.lease)) ?? [];
-          resident.toolNames = new Set(tools.flatMap((tool) => [tool.name, `custom:${tool.name}`]));
-          return tools;
+          const toolset = await sharedToolset(plan, row, context, () => this.#scheduler.current(context.lease), this.options.toolkit ?? {});
+          resident.policy = this.#policy(plan, row, toolset.rules, new Set(settings.builtinTools));
+          return toolset.tools;
+        },
+        permissions: (context) => async (request, invocation) => {
+          const policy = bind(context).policy;
+          if (!policy) return { kind: "reject", feedback: "The conversation is not ready." };
+          return policy.handle(request, invocation);
         },
         provider: (context) => ({
           type: "openai", baseUrl: this.options.gatewayUrl, wireApi: "completions",
@@ -208,16 +275,19 @@ export class SharedSessionService {
         hooks: (context) => ({
           onPreToolUse: async ({ toolName }) => {
             const resident = bind(context);
-            if (!resident.toolNames.has(toolName)) return { permissionDecision: "deny", permissionDecisionReason: "Only the coordinator's registered application tools are permitted." };
             if (resident.controller.signal.aborted) return { permissionDecision: "deny", permissionDecisionReason: "The conversation is deactivating." };
+            const policy = resident.policy;
+            if (!policy) return { permissionDecision: "deny", permissionDecisionReason: "The conversation is not ready." };
+            const decision = policy.preToolUse(toolName);
+            if (decision?.permissionDecision === "deny") return decision;
             try {
               await this.options.store.grant(context.lease, this.#scheduler.current(context.lease).id);
-              return { permissionDecision: "allow" };
             } catch (error) {
               this.options.report("session.tool_grant_refused", row.id);
               if (!(error instanceof StoreError)) throw error;
               return { permissionDecision: "deny", permissionDecisionReason: "The conversation has no active execution grant." };
             }
+            return decision;
           },
         }),
         onActivity: (context) => { bind(context).lastActivity = Date.now(); },
@@ -243,21 +313,41 @@ export class SharedSessionService {
       resident.connection = connection;
     } catch (error) {
       try { await this.deactivate(row.id); }
-      finally { this.options.report("session.activation_failed", row.id); }
+      finally {
+        if (!this.#residents.has(row.id)) this.#harnessOf.delete(row.id);
+        this.options.report("session.activation_failed", row.id);
+      }
       throw error;
     }
   }
 
+  #policy(plan: SharedActivationPlan, row: SharedSessionRecord, rules: Map<string, ToolRule>, builtins: Set<string>): SharedPermissionPolicy {
+    const handler = plan.approval.handler ? this.options.permissionHandlers?.get(plan.approval.handler) : undefined;
+    return new SharedPermissionPolicy({
+      harness: plan.harness.name, sessionId: row.id, principal: row.principal, definition: plan.definition,
+      approval: plan.approval, rules, builtins,
+      ...(handler ? { handler } : {}),
+      ...(this.options.permissionHandlerTimeoutMs ? { handlerTimeoutMs: this.options.permissionHandlerTimeoutMs } : {}),
+      report: (event) => this.options.report(event, row.id),
+    });
+  }
+
   async deactivate(id: string): Promise<void> {
     const resident = this.#residents.get(id);
-    if (!resident) return;
+    if (!resident) {
+      if (!this.#opening.has(id)) this.#harnessOf.delete(id);
+      return;
+    }
     if (!resident.closing) {
       resident.controller.abort(new Error("The shared activation is closing."));
       resident.closing = (async () => {
         try { await this.#scheduler.finish(resident.context.lease, true); }
         finally {
           await this.#runtime.close(id);
-          if (this.#residents.get(id) === resident) this.#residents.delete(id);
+          if (this.#residents.get(id) === resident) {
+            this.#residents.delete(id);
+            this.#harnessOf.delete(id);
+          }
         }
       })().catch((error) => {
         resident.closing = undefined;

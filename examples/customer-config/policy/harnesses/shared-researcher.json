@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1",
+  "harness": "shared-researcher",
+  "overrides": {
+    "hosting": { "modes": ["shared"], "transports": ["direct"] },
+    "approvalModes": ["manual", "assisted"]
+  }
+}
