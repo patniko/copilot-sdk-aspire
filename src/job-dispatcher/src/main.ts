@@ -1,5 +1,5 @@
-import { policyFor } from "@copilot-agent/contracts";
-import { AllocationStore, DelegationStore, HostStore, JobStore, PlacementStore, SharedStore, migrate } from "@copilot-agent/job-store";
+import { policyFor, SessionContainerSettings } from "@copilot-agent/contracts";
+import { AllocationStore, DelegationStore, HostStore, JobStore, PlacementStore, SessionContainerStore, SharedStore, migrate } from "@copilot-agent/job-store";
 import {
   createPostgresPool,
   listen,
@@ -25,6 +25,9 @@ const hostExecution = optionalEnv("DEMO_HOST_TRANSPORT", "direct") === "github" 
 const hostRegistry = hostOwner && hostExecution === "managed" ? await loadHarnesses() : undefined;
 const hostHarness = hostRegistry?.get(optionalEnv("DEMO_HOST_HARNESS", "interactive-demo"))?.[0];
 if (hostOwner && hostExecution === "managed" && !hostHarness) throw new Error("The configured demo host harness is not published.");
+const allocations = new AllocationStore(pool, sharedStore);
+const sessionSettings = optionalEnv("SESSION_CONTAINER_SETTINGS", "");
+const sessionContainers = sessionSettings ? SessionContainerSettings.parse(JSON.parse(sessionSettings)) : undefined;
 
 const app = buildDispatcher({
   store,
@@ -35,8 +38,13 @@ const app = buildDispatcher({
   hostStore,
   ...(process.env.SHARED_WORKER_KEY ? {
     shared: { store: sharedStore, key: requireEnv("SHARED_WORKER_KEY") },
-    allocations: new AllocationStore(pool, sharedStore),
+    allocations,
     delegations: new DelegationStore(pool, sharedStore, store),
+  } : {}),
+  ...(process.env.SHARED_WORKER_KEY && sessionContainers ? {
+    sessionContainers: {
+      allocations, store: new SessionContainerStore(pool, sharedStore), policies, heartbeatSeconds: sessionContainers.heartbeatSeconds,
+    },
   } : {}),
   ...(process.env.CONNECTION_BROKER_KEY ? {
     broker: { store: new PlacementStore(pool), key: requireEnv("CONNECTION_BROKER_KEY") },

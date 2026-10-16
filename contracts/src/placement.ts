@@ -5,11 +5,11 @@ import { z } from "zod";
  * every placement change increments its generation. Connection tickets bind to a generation, and the connection
  * broker closes routes to an older generation with {@link BROKER_MOVED_CLOSE}.
  *
- * `shared` is the in-process shared worker. To add a kind, extend this enum, the ledger's
- * `shared_sessions_placement_kind` constraint, {@link PlacementRoute}, ticket consumption in the job store's
- * `PlacementStore`, and the broker's upstream table.
+ * `shared` is the in-process shared worker; `container` is a session's dedicated session container. To add a kind,
+ * extend this enum, the ledger's `shared_sessions_placement_kind` constraint, {@link PlacementRoute}, ticket
+ * consumption in the job store's `PlacementStore`, and the broker's upstream table.
  */
-export const PlacementKind = z.enum(["shared"]);
+export const PlacementKind = z.enum(["shared", "container"]);
 export type PlacementKind = z.infer<typeof PlacementKind>;
 
 export const PlacementGeneration = z.number().int().positive().safe();
@@ -25,7 +25,9 @@ export type SessionPlacement = z.infer<typeof SessionPlacement>;
 /**
  * Where to route one consumed connection ticket: the session's placement plus what the broker needs to reach it.
  * `shared` carries the activation epoch the ticket was issued for; the shared worker accepts the forwarded
- * connection only while that activation is resident.
+ * connection only while that activation is resident. `container` carries the ready allocation's internal ingress
+ * origin and its per-allocation ingress credential, which the broker presents as `x-internal-key` on its upstream
+ * WebSocket request. The credential is a secret and is valid only while that allocation runs.
  */
 export const PlacementRoute = z.discriminatedUnion("kind", [
   z.object({
@@ -33,6 +35,17 @@ export const PlacementRoute = z.discriminatedUnion("kind", [
     sessionId: z.string().uuid(),
     generation: PlacementGeneration,
     epoch: z.string().uuid(),
+  }).strict(),
+  z.object({
+    kind: z.literal("container"),
+    sessionId: z.string().uuid(),
+    generation: PlacementGeneration,
+    allocationId: z.string().uuid(),
+    endpoint: z.url().refine((value) => {
+      const url = new URL(value);
+      return url.protocol === "http:" && !url.username && !url.password && url.pathname === "/" && !url.search && !url.hash;
+    }, "Use an internal HTTP origin."),
+    credential: z.string().min(32).max(200),
   }).strict(),
 ]);
 export type PlacementRoute = z.infer<typeof PlacementRoute>;

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { APPROVAL_MODES, HarnessDefinition, HOSTING_MODES, SEMVER, SLUG } from "./harness.js";
 import type { HostingFeature } from "./hosting.js";
 import { PlacementGeneration, PlacementKind } from "./placement.js";
-import { HOSTING_TRANSPORTS } from "./profile.js";
+import { ContainerSize, HOSTING_TRANSPORTS } from "./profile.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 
@@ -137,6 +137,24 @@ export const SharedSessionSegment = z.object({
 }).strict();
 export type SharedSessionSegment = z.infer<typeof SharedSessionSegment>;
 
+/**
+ * A container-placed session's container. `dormant`: no container, volume retained. `starting`: allocated, listener
+ * not yet ready. `running`: attachable. `stopping`: the container is being retired. `closed`: no further allocations.
+ */
+export const SessionContainerState = z.enum(["dormant", "starting", "running", "stopping", "closed"]);
+export type SessionContainerState = z.infer<typeof SessionContainerState>;
+
+/** The size and lifecycle of a container-placed session's container; sizes come from the operator's catalog. */
+export const SessionContainerStatus = z.object({
+  state: SessionContainerState,
+  size: z.string().regex(SLUG),
+  cpus: ContainerSize.shape.cpus,
+  memoryMiB: ContainerSize.shape.memoryMiB,
+  idleSeconds: z.number().int().positive(),
+  activations: z.number().int().nonnegative(),
+}).strict();
+export type SessionContainerStatus = z.infer<typeof SessionContainerStatus>;
+
 export const SharedSessionView = z.object({
   id: z.string().uuid(), label: z.string(), model: z.string(),
   closed: z.boolean(), online: z.boolean(), createdAt: z.iso.datetime(), lastActivityAt: z.iso.datetime(),
@@ -150,11 +168,14 @@ export const SharedSessionView = z.object({
     usedTokens: z.number().int().nonnegative(), reservedTokens: z.number().int().nonnegative(), remainingTokens: z.number().int().nonnegative(),
   }).strict(),
   jobs: z.number().int().nonnegative(), continuations: z.number().int().nonnegative(),
+  /** Present for `container` placement. */
+  container: SessionContainerStatus.optional(),
 }).strict();
 export type SharedSessionView = z.infer<typeof SharedSessionView>;
 
 export const SharedConnection = z.object({
-  sessionId: z.string().uuid(), destination: z.literal("shared"), transport: z.literal("direct"),
+  /** `destination` is where the client attaches: the shared worker, or the session's own container. */
+  sessionId: z.string().uuid(), destination: z.enum(["shared", "container"]), transport: z.literal("direct"),
   /** The runtime session to resume after attaching; changes when a new segment starts. */
   ahpSessionId: z.string().min(1).max(128),
   /** The connection broker's stable `/sessions/{sessionId}` URL. */

@@ -143,14 +143,69 @@ restart; retained sessions keep their admitted definition rather than silently r
 | `hybrid-executor-image` | Prebuilt operator-selected image, resolved to an immutable local image ID before allocation |
 | `hybrid-harnesses` | Approved published child harnesses; version/digest snapshot retained on session creation |
 | `hybrid-principals` | API-principal to numeric GitHub account map; retained principals cannot be rebound |
+| `session-containers` | `true` adds per-session containers for `isolated` conversation harnesses ([below](#session-containers)); requires `hybrid-hosting` |
+| `session-container-image` | Prebuilt session-container image, resolved to an immutable local image ID; default `copilot-session-container:local` |
+| `session-container-settings` | JSON matching `SessionContainerSettings`: idle seconds, allocation lifetime, startup and shutdown limits, heartbeat interval |
 
 For example, `{"executionContainers":1,"activeTurns":2,"residentSessions":16}` limits child execution to
 one physical allocation while permitting two model turns. Starting and retiring allocations count too;
 failed deletion does not free capacity. Zero containers disables new allocation without discarding queued
 jobs. Warm pooling is deliberately not offered: the implemented mode retires one-shot containers.
-The exact defaults and ranges live in [`shared.ts`](../contracts/src/shared.ts).
+Session containers count against the same `executionContainers` and `containersPerPrincipal` limits as jobs.
+The exact defaults and ranges live in [`shared.ts`](../contracts/src/shared.ts) and
+[`session-container.ts`](../contracts/src/session-container.ts).
 Controller CPU/memory/startup settings live in [`artifacts.ts`](../contracts/src/artifacts.ts) and can be
 supplied through `EXECUTION_CONTAINER_SETTINGS` when hosting that service directly.
+
+### Session containers
+
+A session created with an `isolated` conversation harness runs in its own resumable container
+([architecture](ARCHITECTURE.md#session-containers)). Build the image from the same verified native Linux
+bundle as the shared worker; it needs no customer configuration because each container receives its session's
+admitted harness snapshot:
+
+```powershell
+docker build -f deploy\SessionContainer.Dockerfile `
+  --build-context runtime=.runtime-artifacts\hybrid-linux-arm64-verified `
+  -t copilot-session-container:local .
+
+aspire secret set "Parameters:session-containers" "true"
+aspire secret set "Parameters:session-container-settings" '{"idleSeconds":900}'
+```
+
+Add `--build-arg NPM_REGISTRY=<approved proxy>` if required. The AppHost passes the settings to the API,
+dispatcher and controller, and the principal binding, container limits and `hybrid-session-limits` to the API,
+which applies that parameter's token-budget and turn-deadline ceilings to container sessions as the shared worker
+does; the container's idle stop comes from `session-container-settings`. The container size
+comes from the effective policy's hosting size catalog (`hosting.sizes`, `hosting.defaultSize`, default the
+smallest size) and maps to Docker `--cpus` and `--memory`. Allow the harness's built-in tools and permission
+modes in policy as usual.
+
+Connect with the launcher. When the harness's hosting mode is `isolated` and session containers offer the
+transport, it creates the session through `/v1/sessions` and attaches to its container; otherwise it keeps using
+the demo host. Resume with the application session UUID it prints:
+
+```powershell
+pnpm host:connect --harness <isolated-conversation-harness> --target local --transport direct --cli C:\path\to\matching\dist-cli\index.js
+pnpm host:connect --harness <isolated-conversation-harness> --target local --transport direct --resume <session-uuid> --cli C:\path\to\matching\dist-cli\index.js
+```
+
+The first connection waits for the container to report its listener ready. A container stops after the idle
+period or its maximum lifetime and the next connection resumes the session from its volume. Closing the
+session retires the container and releases its volume, but nothing deletes volume data. List and remove
+retained volumes explicitly once their retention period ends:
+
+```powershell
+docker volume ls --filter label=copilot.hybrid.managed=volume
+docker volume rm <volume-name>
+```
+
+The container's ingress is published on host loopback for the connection broker, which consumes each client's
+one-use ticket and forwards with the allocation's ingress credential; clients never connect to the container
+directly. It holds only its allocation and ingress credentials: no database, Docker, signing, provider, broker, or
+relay credential. A local gate has exercised a real CLI attaching through the broker over direct WSS, synthetic
+inference, idle stop, resume with history and files intact, and capacity returning to zero. This is not Azure or
+paid-model evidence.
 
 ### Shared worker container
 
