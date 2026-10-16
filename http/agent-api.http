@@ -19,6 +19,18 @@ GET {{baseUrl}}/health
 GET {{baseUrl}}/v1/harnesses
 Authorization: Bearer {{apiKey}}
 
+### Hosting views: the deployment's hosts and each harness's mode, status, transports, and ceilings (read-only)
+GET {{baseUrl}}/v1/hosting
+Authorization: Bearer {{apiKey}}
+
+### One harness's hosting view (add ?version=1.0.0 to pin a version)
+GET {{baseUrl}}/v1/hosting/interactive-demo
+Authorization: Bearer {{apiKey}}
+
+### Negative check: unknown harness (expect 404 harness_not_found)
+GET {{baseUrl}}/v1/hosting/no-such-harness
+Authorization: Bearer {{apiKey}}
+
 ### Submit a job with the TypeScript agent (change "profile" to "python-agent" for the Python agent)
 # @name submit
 POST {{baseUrl}}/v1/jobs

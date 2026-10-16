@@ -92,7 +92,7 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
   update: Update;
   issues: Issue[];
   effective?: HarnessDetail["effective"];
-  detail?: Pick<HarnessDetail, "decisions" | "requiredCapabilities"> & Partial<Pick<HarnessDetail, "policy" | "hosting">>;
+  detail?: Pick<HarnessDetail, "decisions" | "requiredCapabilities"> & Partial<Pick<HarnessDetail, "policy" | "hosting" | "digest">>;
 }) {
   const { workspace } = useApp();
   const m = draft.manifest;
@@ -257,7 +257,7 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
     case "permissions":
       return <PermissionsTab draft={draft} update={update} issues={issues} effective={effective} />;
     case "hosting":
-      return <HostingTab draft={draft} update={update} issues={issues} hosting={detail?.hosting} />;
+      return <HostingTab draft={draft} update={update} issues={issues} hosting={detail?.hosting} digest={detail?.digest} />;
     case "agents":
       return <AgentsTab draft={draft} update={update} issues={issues} />;
     case "skills":

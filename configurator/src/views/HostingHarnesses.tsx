@@ -1,58 +1,74 @@
 import { useEffect, useState } from "react";
 import type { HostingPageInfo, TryTarget } from "../../server/types";
 import { api, errorMessage } from "../api";
-import { Badge, CopyButton, Flash, Spinner } from "../components/ui";
+import { Badge, CopyButton, Spinner } from "../components/ui";
 import { harnessHostRow } from "../hosting";
 import { describeProblem, MODE_INFO, STATUS_BADGES, TRANSPORT_INFO } from "../hostingText";
 import { useApp } from "../state";
 
 /**
- * Per-harness hosting for one configuration target: the running agent-api's view when it reports one, otherwise the
- * saved workspace evaluated against the target's settings with the same contract functions.
+ * Per-harness hosting for one configuration target, as that target's running agent-api reports it in its read-only
+ * `GET /v1/hosting` view: effective mode, status with prerequisites, host, transports and connection actions.
  */
 export function HarnessHostingRows({ target }: { target: TryTarget }) {
   const { settings, local, workspace, setView } = useApp();
-  const [state, setState] = useState<{ info?: HostingPageInfo; loading: boolean; error?: string }>({ loading: true });
-  const service = target === "local" && !!local?.running;
+  const [state, setState] = useState<{ info?: HostingPageInfo; loading: boolean; error?: string }>({ loading: false });
+  const [refresh, setRefresh] = useState(0);
+  // Reading the local view needs the stack; the Azure view reads the selected target's deployed agent-api.
+  const enabled = target === "azure" || !!local?.running;
+  const workspaceKey = target === "local" ? workspace : undefined;
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
-    setState((current) => ({ ...current, loading: true }));
-    api<HostingPageInfo>(`/api/hosting?target=${target}${service ? "&service=1" : ""}`)
+    setState({ loading: true });
+    api<HostingPageInfo>(`/api/hosting?target=${target}`)
       .then((info) => !cancelled && setState({ info, loading: false }))
       .catch((error) => !cancelled && setState({ loading: false, error: errorMessage(error) }));
     return () => {
       cancelled = true;
     };
-  }, [target, service, workspace]);
+  }, [target, enabled, workspaceKey, refresh]);
   const deployment = settings?.targets.find((entry) => entry.name === settings.selectedTarget);
   const demoHost = target === "local" ? settings?.local.demoHost : deployment?.demoHost;
-  const info = state.info?.target === target ? state.info : undefined;
+  const info = enabled && state.info?.target === target ? state.info : undefined;
+  const overview = info?.overview;
   return (
     <section className="card" aria-label="Harness hosting">
       <div className="box-header">
         <div>
           <h2 className="text-sm font-semibold leading-6">Harness hosting</h2>
-          <p className="text-xs fg-muted">Each harness's mode, host, client transports and connection, for the selected configuration target.</p>
+          <p className="text-xs fg-muted">
+            Each harness's mode, host, client transports and connection, as the {target === "local" ? "local" : "selected Azure"} agent-api reports
+            them. Read-only: nothing here starts hosts or grants connections.
+          </p>
         </div>
-        {info && (
-          <Badge tone={info.source === "service" ? "green" : "neutral"}>
-            {info.source === "service" ? "Reported by the running agent-api" : "Evaluated from your configuration"}
-          </Badge>
+        {enabled && (
+          <button type="button" className="btn-secondary btn-sm" disabled={state.loading} onClick={() => setRefresh((value) => value + 1)}>
+            Refresh
+          </button>
         )}
       </div>
       <div className="card-pad space-y-3">
-        {state.loading && !info && <Spinner />}
-        {state.error && <p className="text-sm fg-danger" role="alert">{state.error}</p>}
-        {info?.note && <Flash>{info.note}</Flash>}
-        {info?.source === "configuration" && (
-          <p className="hint">
-            Saved harnesses and policy, evaluated against the hosts this target's settings describe: the batch executor and the demo agent host. The
-            running service decides at connection time.
+        {!enabled && (
+          <p className="text-sm fg-muted">
+            Start the local stack to see how the service hosts each harness.{" "}
+            <button type="button" className="font-semibold text-[var(--fgColor-accent)] underline" onClick={() => setView("local")}>
+              Open Local run
+            </button>
           </p>
         )}
-        {info && info.overview.harnesses.length === 0 && info.invalid.length === 0 && <p className="text-sm fg-muted">No harnesses yet.</p>}
-        {info?.overview.harnesses.map((view) => {
-          const row = harnessHostRow(view, info.overview.hosts, target, demoHost);
+        {enabled && state.loading && !info && <Spinner />}
+        {enabled && state.error && <p className="text-sm fg-danger" role="alert">{state.error}</p>}
+        {info?.problem && <p className="text-sm fg-muted">{info.problem}</p>}
+        {info && info.stale.length > 0 && (
+          <p className="text-sm fg-attention">
+            Not yet loaded by this service: {info.stale.map((entry) => `${entry.harness} ${entry.version}${entry.reason === "changed" ? " (changed)" : ""}`).join(", ")}.
+            {target === "local" ? " Reload harnesses from Local run to apply saved changes." : " Deploy to apply saved changes."}
+          </p>
+        )}
+        {overview && overview.harnesses.length === 0 && <p className="text-sm fg-muted">The service has no published harnesses.</p>}
+        {overview?.harnesses.map((view) => {
+          const row = harnessHostRow(view, overview.hosts, target, demoHost);
           const status = STATUS_BADGES[view.status];
           return (
             <div key={view.harness} className="space-y-2 border-b border-muted pb-3 last:border-b-0 last:pb-0">
@@ -99,14 +115,6 @@ export function HarnessHostingRows({ target }: { target: TryTarget }) {
             </div>
           );
         })}
-        {info && info.invalid.length > 0 && (
-          <p className="text-sm fg-muted">
-            Not evaluated until they validate: {info.invalid.map((entry) => `${entry.harness} ${entry.version}`).join(", ")}.{" "}
-            <button type="button" className="font-semibold text-[var(--fgColor-accent)] underline" onClick={() => setView("harnesses")}>
-              Open Harnesses
-            </button>
-          </p>
-        )}
       </div>
     </section>
   );

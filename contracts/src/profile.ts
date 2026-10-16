@@ -475,6 +475,7 @@ export function toolPolicyViolations(
   }
   const catalog = policy.mcpServers ?? {};
   (Array.isArray(definition.mcpServers) ? definition.mcpServers : []).forEach((entry, index) => {
+    if (!entry || typeof entry !== "object") return;
     const server = Object.hasOwn(catalog, entry.server) ? catalog[entry.server] : undefined;
     if (!server) {
       problems.push({ path: `mcpServers.${index}.server`, message: `The operator's MCP catalog has no server '${entry.server}'.` });

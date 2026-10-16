@@ -4,9 +4,9 @@ import { useEffect, useState, type ReactNode } from "react";
 import type {
   HarnessDetail,
   HarnessDocument,
+  HarnessHostingInfo,
+  HarnessHostingView,
   HarnessManifest,
-  HostingAvailability,
-  HostingAvailabilityInfo,
   HostingMode,
   Issue,
 } from "../../../server/types";
@@ -16,15 +16,15 @@ import { Badge, Empty, Field, Flash, HelpButton, NumberInput, RadioCards, Segmen
 import {
   APPROVAL_INFO,
   APPROVAL_ORDER,
+  describeProblem,
   HOSTING_MODE_ORDER,
   MODE_INFO,
   PLACEMENT_LABELS,
-  prerequisiteLabel,
   STATUS_BADGES,
   TRANSPORT_INFO,
   type ApprovalMode,
 } from "../../hostingText";
-import { useApp, useDebounced } from "../../state";
+import { useApp } from "../../state";
 
 type Update = (mutate: (d: HarnessDocument) => void, key?: string) => void;
 type Hosting = NonNullable<HarnessManifest["hosting"]>;
@@ -34,20 +34,58 @@ type Permissions = NonNullable<HarnessManifest["permissions"]>;
 type McpRequest = NonNullable<HarnessManifest["mcpServers"]>[number];
 type HostingDetail = NonNullable<HarnessDetail["hosting"]>;
 
-/** Where the draft can run, re-evaluated shortly after it stops changing. */
-function useAvailability(draft: HarnessDocument): { info?: HostingAvailabilityInfo; loading: boolean; error?: string } {
-  const debounced = useDebounced(draft, 600);
-  const [state, setState] = useState<{ info?: HostingAvailabilityInfo; loading: boolean; error?: string }>({ loading: true });
+/**
+ * Sets whether the harness runs batch jobs or conversations. Batch harnesses cannot use hosting, remote MCP servers,
+ * or approval modes other than manual, so switching to batch removes them.
+ */
+export function withInteraction(manifest: HarnessManifest, value: "batch" | "conversation"): void {
+  if (value === "conversation") {
+    manifest.interaction = "conversation";
+    return;
+  }
+  delete manifest.interaction;
+  delete manifest.hosting;
+  delete manifest.mcpServers;
+  if (manifest.permissions) {
+    delete manifest.permissions.approvalMode;
+    delete manifest.permissions.judgeModel;
+    delete manifest.permissions.handler;
+  }
+}
+
+/**
+ * Selects a hosting mode, keeping only the settings that mode accepts. Isolated without handoffs removes the block,
+ * so a harness that never needed hosting keeps the digest it had before hosting existed.
+ */
+export function withHostingMode(manifest: HarnessManifest, next: HostingMode): void {
+  const current = manifest.hosting;
+  const handoffs = current?.handoffs;
+  if (next === "isolated" && !handoffs?.length) {
+    delete manifest.hosting;
+    return;
+  }
+  manifest.hosting = {
+    mode: next,
+    ...(next === "promotable" && current?.promotion ? { promotion: current.promotion } : {}),
+    ...(next === "orchestrator" ? { workers: current?.workers ?? { harnesses: [] } } : {}),
+    ...(handoffs?.length ? { handoffs } : {}),
+  };
+}
+
+/** The running local service's hosting view of one saved harness version, while the local stack runs. */
+function useServiceView(harness: string, version: string, enabled: boolean): { info?: HarnessHostingInfo; loading: boolean; error?: string } {
+  const [state, setState] = useState<{ info?: HarnessHostingInfo; loading: boolean; error?: string }>({ loading: false });
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
-    setState((current) => ({ ...current, loading: true }));
-    api<HostingAvailabilityInfo>("/api/harnesses/availability", { method: "POST", body: { document: debounced } })
+    setState({ loading: true });
+    api<HarnessHostingInfo>(`/api/hosting/${encodeURIComponent(harness)}?target=local&version=${encodeURIComponent(version)}`)
       .then((info) => !cancelled && setState({ info, loading: false }))
       .catch((error) => !cancelled && setState({ loading: false, error: errorMessage(error) }));
     return () => {
       cancelled = true;
     };
-  }, [debounced]);
+  }, [harness, version, enabled]);
   return state;
 }
 
@@ -83,65 +121,32 @@ function unique<T>(values: T[]): T[] {
   return [...new Set(values)];
 }
 
-function needs(problems: HostingAvailability["problems"]): string | undefined {
-  const labels = unique(problems.map(prerequisiteLabel).filter((label): label is string => !!label));
-  return labels.length ? `Needs ${labels.join(", ")}.` : undefined;
-}
-
-export function HostingTab({ draft, update, issues, hosting }: {
+export function HostingTab({ draft, update, issues, hosting, digest }: {
   draft: HarnessDocument;
   update: Update;
   issues: Issue[];
   hosting?: HostingDetail;
+  /** The draft's content digest when it validates, to tell whether the running service loaded this exact definition. */
+  digest?: string;
 }) {
-  const { setView } = useApp();
-  const availability = useAvailability(draft);
+  const { setView, local } = useApp();
   const m = draft.manifest;
+  const service = useServiceView(m.name, m.version, !!local?.running);
+  const view = service.info?.view;
+  const current = !!view && !!digest && view.digest === digest;
   const conversation = m.interaction === "conversation";
   const mode: HostingMode = m.hosting?.mode ?? "isolated";
   const errorAt = (prefix: string) => issues.find((i) => i.level === "error" && (i.path === prefix || i.path.startsWith(`${prefix}.`)))?.message;
 
-  const setInteraction = (value: "batch" | "conversation") =>
-    update((d) => {
-      if (value === "conversation") {
-        d.manifest.interaction = "conversation";
-        return;
-      }
-      delete d.manifest.interaction;
-      delete d.manifest.hosting;
-      delete d.manifest.mcpServers;
-      if (d.manifest.permissions) {
-        delete d.manifest.permissions.approvalMode;
-        delete d.manifest.permissions.judgeModel;
-        delete d.manifest.permissions.handler;
-      }
-    });
-
-  const setMode = (next: HostingMode) =>
-    update((d) => {
-      const current = d.manifest.hosting;
-      const handoffs = current?.handoffs;
-      if (next === "isolated" && !handoffs?.length) {
-        delete d.manifest.hosting;
-        return;
-      }
-      d.manifest.hosting = {
-        mode: next,
-        ...(next === "promotable" && current?.promotion ? { promotion: current.promotion } : {}),
-        ...(next === "orchestrator" ? { workers: current?.workers ?? { harnesses: [] } } : {}),
-        ...(handoffs?.length ? { handoffs } : {}),
-      };
-    });
-
-  const local = availability.info?.availability.find((entry) => entry.target === "local");
   const modes = HOSTING_MODE_ORDER.map((value) => {
     const allowed = !hosting || hosting.ceilings.modes.includes(value);
-    const missing = local?.modes.find((entry) => entry.mode === value)?.missing ?? [];
     const blocked = !conversation && value !== "isolated"
       ? "Needs a conversation harness: set Interaction to Conversations."
       : !allowed
         ? "The operator policy does not allow this mode for this harness. Allow it on the Policy page."
         : undefined;
+    // What the running service reports applies only to the definition it loaded.
+    const reported = current && view.interaction === "conversation" && view.mode === value ? view : undefined;
     const info = MODE_INFO[value];
     return {
       value,
@@ -151,11 +156,9 @@ export function HostingTab({ draft, update, issues, hosting }: {
         ? <Badge tone={allowed ? "neutral" : "red"}>{allowed ? "needs conversation" : "not allowed by policy"}</Badge>
         : !conversation
           ? <Badge tone="green">batch jobs</Badge>
-          : missing.length
-            ? <Badge tone="amber">unavailable locally</Badge>
-            : local
-              ? <Badge tone="green">available locally</Badge>
-              : value === "isolated" ? <Badge>default</Badge> : undefined,
+          : reported
+            ? <Badge tone={STATUS_BADGES[reported.status].tone}>running service: {STATUS_BADGES[reported.status].label.toLowerCase()}</Badge>
+            : value === "isolated" ? <Badge>default</Badge> : undefined,
       description: (
         <>
           {info.summary}
@@ -165,10 +168,9 @@ export function HostingTab({ draft, update, issues, hosting }: {
           <span className="block">
             <strong className="font-semibold">Costs:</strong> {info.costs}
           </span>
-          {(blocked ?? (conversation && missing.length ? needs(missing) : undefined)) && (
-            <span className={blocked && !allowed ? "mt-1 block fg-danger" : "mt-1 block fg-attention"}>
-              {blocked ?? needs(missing)}
-            </span>
+          {blocked && <span className={allowed ? "mt-1 block fg-attention" : "mt-1 block fg-danger"}>{blocked}</span>}
+          {!blocked && reported?.status === "unavailable" && reported.problems[0] && (
+            <span className="mt-1 block fg-attention">{describeProblem(reported.problems[0])}</span>
           )}
         </>
       ),
@@ -185,7 +187,7 @@ export function HostingTab({ draft, update, issues, hosting }: {
         <SegmentedControl
           label="Interaction"
           value={conversation ? "conversation" : "batch"}
-          onChange={setInteraction}
+          onChange={(value) => update((d) => withInteraction(d.manifest, value))}
           options={[
             { value: "batch", label: "Batch jobs" },
             { value: "conversation", label: "Conversations" },
@@ -204,7 +206,7 @@ export function HostingTab({ draft, update, issues, hosting }: {
         help="hosting.mode"
         description="Where the agent loop runs: a deliberate cost, latency and isolation choice. Policy decides which modes are allowed; the deployment must also provide the hosts for it. There is no fallback to another mode."
       >
-        <RadioCards label="Hosting mode" value={mode} onChange={setMode} options={modes} />
+        <RadioCards label="Hosting mode" value={mode} onChange={(next) => update((d) => withHostingMode(d.manifest, next))} options={modes} />
         {errorAt("hosting.mode") && <p className="text-xs fg-danger">{errorAt("hosting.mode")}</p>}
         {errorAt("hosting") && !errorAt("hosting.mode") && issues.some((i) => i.path === "hosting") && <p className="text-xs fg-danger">{errorAt("hosting")}</p>}
         {conversation && mode !== "isolated" && (
@@ -222,47 +224,56 @@ export function HostingTab({ draft, update, issues, hosting }: {
       <McpSection draft={draft} update={update} hosting={hosting} errorAt={errorAt} conversation={conversation} onOpenPolicy={() => setView("policy")} />
 
       <Section
-        title="Where it can run"
-        description="Evaluated from this workspace's settings for Local run and the selected Azure target, not from a running service."
+        title="In the running service"
+        description="How the local agent-api hosts this version, from its read-only hosting view. Saved edits apply after you reload harnesses from Local run."
         badge={
           <button type="button" className="btn-secondary btn-sm" onClick={() => setView("hosting")}>
             Open Hosting page
           </button>
         }
       >
-        {availability.loading && !availability.info && <Spinner />}
-        {availability.error && <p className="text-sm fg-danger">{availability.error}</p>}
-        {availability.info?.note && <Flash tone="warn">{availability.info.note}</Flash>}
-        {availability.info && availability.info.availability.length === 0 && (
-          <p className="text-sm fg-muted">Fix the validation errors to see where this harness can run.</p>
-        )}
-        {availability.info?.availability.map((entry) => (
-          <AvailabilityRow key={entry.target} entry={entry} />
-        ))}
+        {!local?.running ? (
+          <p className="text-sm fg-muted">Start the local stack from Local run to see whether the service can host this harness and how to connect.</p>
+        ) : service.loading && !service.info ? (
+          <Spinner />
+        ) : service.error ? (
+          <p className="text-sm fg-danger">{service.error}</p>
+        ) : service.info?.problem ? (
+          <p className="text-sm fg-muted">{service.info.problem}</p>
+        ) : view ? (
+          <>
+            {!current && (
+              <Flash tone="warn">
+                The service loaded a different definition of {view.harness} {view.version}. Save your changes and reload harnesses to see them here.
+              </Flash>
+            )}
+            <ServiceViewRow view={view} />
+          </>
+        ) : null}
       </Section>
     </div>
   );
 }
 
-export function AvailabilityRow({ entry }: { entry: HostingAvailability }) {
-  const status = STATUS_BADGES[entry.status];
-  const first = entry.problems[0];
+/** One harness version's status, placement, first blocking problem with its prerequisite, and transports. */
+export function ServiceViewRow({ view }: { view: Pick<HarnessHostingView, "status" | "placement" | "problems" | "transports"> }) {
+  const status = STATUS_BADGES[view.status];
+  const first = view.problems[0];
   return (
-    <div className="space-y-1.5 border-b border-muted pb-3 last:border-b-0 last:pb-0">
+    <div className="space-y-1.5">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="font-semibold">{entry.label}</span>
         <Badge tone={status.tone}>{status.label}</Badge>
-        <span className="text-xs fg-muted">{PLACEMENT_LABELS[entry.placement]}</span>
+        <span className="text-xs fg-muted">{PLACEMENT_LABELS[view.placement]}</span>
       </div>
       {first && (
         <p className="text-sm">
-          {first.message} {prerequisiteLabel(first) && <span className="fg-muted">Needs {prerequisiteLabel(first)}.</span>}
-          {entry.problems.length > 1 && <span className="fg-muted"> ({entry.problems.length - 1} more)</span>}
+          {describeProblem(first)}
+          {view.problems.length > 1 && <span className="fg-muted"> ({view.problems.length - 1} more)</span>}
         </p>
       )}
-      {entry.transports.length > 0 && (
+      {view.transports.length > 0 && (
         <div className="flex flex-wrap gap-2">
-          {entry.transports.map((transport) => (
+          {view.transports.map((transport) => (
             <Badge key={transport.transport} tone={transport.available ? "green" : "neutral"} title={transport.problem?.message}>
               {TRANSPORT_INFO[transport.transport].label}: {transport.available ? "available" : transport.allowed ? "unavailable" : "not allowed"}
             </Badge>

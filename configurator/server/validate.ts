@@ -40,12 +40,12 @@ export interface ValidationContext {
   /** Fields replaced by an operator override for this harness, if one exists. */
   policyOverride?: string[];
   profiles: ProfileSummary[];
-  /** All harness documents in the repository, for duplicate detection. */
+  /** All harness documents in the repository, for duplicate detection and worker or handoff targets. */
   all: HarnessDocument[];
+  /** The effective policy of another harness, for worker and handoff targets. Defaults to `policy`. */
+  policyFor?: (harness: string) => ExecutionPolicy;
   /** Committed harness.json + instructions for this folder, if any. */
   committed?: { manifest: string; instructions?: string; skills?: Record<string, string> };
-  /** Resolves worker and handoff targets to their latest version and effective policy. Omitted skips those checks. */
-  lookup?: (harness: string) => HostingTarget | undefined;
 }
 
 const RESERVED_TOOLS = new Set(["submit_result"]);
@@ -92,6 +92,26 @@ function partialHostingProblems(hosting: unknown, policy: ExecutionPolicy): Poli
   if (hosting === undefined) return hostingPolicyViolations({ interaction: "conversation" }, policy);
   const parsed = HostingConfig.safeParse(hosting);
   return parsed.success ? hostingPolicyViolations({ interaction: "conversation", hosting: parsed.data }, policy) : [];
+}
+
+function versionParts(version: unknown): number[] {
+  return String(version ?? "").split(/[.-]/).slice(0, 3).map((part) => Number.parseInt(part, 10) || 0);
+}
+
+/** The latest document for a harness name, with its effective policy, as a worker or handoff target. */
+function hostingTarget(name: string, context: ValidationContext): HostingTarget | undefined {
+  const latest = context.all
+    .filter((document) => document.manifest.name === name)
+    .sort((a, b) => {
+      const [left, right] = [versionParts(a.manifest.version), versionParts(b.manifest.version)];
+      return (right[0]! - left[0]!) || (right[1]! - left[1]!) || (right[2]! - left[2]!);
+    })[0];
+  if (!latest) return undefined;
+  const hosting = HostingConfig.safeParse(latest.manifest.hosting);
+  return {
+    definition: { interaction: latest.manifest.interaction, ...(hosting.success ? { hosting: hosting.data } : {}) },
+    policy: context.policyFor?.(name) ?? context.policy,
+  };
 }
 
 /** The exact API definition candidate: manifest fields plus inline instructions and skills. */
@@ -297,7 +317,7 @@ export function validateHarness(document: HarnessDocument, context: ValidationCo
   // the conversation profile, and worker and handoff targets. Problems already reported above are not repeated.
   if (modelShape.interaction === "conversation") {
     const problems = parsed.success
-      ? conversationPolicyProblems(parsed.data, context.policy, executionProfiles(context.profiles), context.lookup)
+      ? conversationPolicyProblems(parsed.data, context.policy, executionProfiles(context.profiles), (name) => hostingTarget(name, context))
       : partialHostingProblems(modelShape.hosting, context.policy);
     for (const problem of problems) {
       const path = problem.path ?? "hosting";
@@ -748,19 +768,19 @@ export function validatePolicy(raw: unknown, profiles: ProfileSummary[]): { poli
   return { policy, issues };
 }
 
-/** Policy combinations that validate but cannot work as intended with the shipped profiles. */
+/** Hosting and approval settings that parse but cannot take effect as written. */
 function hostingPolicyWarnings(policy: ExecutionPolicy, profiles: ProfileSummary[]): Issue[] {
   const issues: Issue[] = [];
   const approvalModes = effectiveApprovalModes(policy);
-  const handlers = new Set(profiles.flatMap((profile) => profile.permissionHandlers ?? []));
-  (policy.permissionHandlers ?? []).forEach((handler, index) => {
-    if (!handlers.has(handler)) {
-      issues.push(issue("warning", `permissionHandlers.${index}`, `No execution profile provides the '${handler}' permission handler; harnesses that select it are rejected.`));
+  const handlers = policy.permissionHandlers ?? [];
+  if (approvalModes.includes("custom") && handlers.length === 0) {
+    issues.push(issue("warning", "approvalModes", "The custom approval mode is allowed, but no permission handler is."));
+  }
+  handlers.forEach((handler, index) => {
+    if (!profiles.some((profile) => profile.permissionHandlers?.includes(handler))) {
+      issues.push(issue("warning", `permissionHandlers.${index}`, `No execution profile provides the '${handler}' permission handler.`));
     }
   });
-  if (approvalModes.includes("custom") && !policy.permissionHandlers?.length) {
-    issues.push(issue("warning", "approvalModes", "The custom approval mode needs at least one permission handler."));
-  }
   for (const [name, server] of Object.entries(policy.mcpServers ?? {})) {
     if (server.allowPrivateNetwork) {
       issues.push(
@@ -783,20 +803,27 @@ function hostingPolicyWarnings(policy: ExecutionPolicy, profiles: ProfileSummary
     );
   }
   const bindings = new Set(profiles.flatMap((profile) => profile.toolBindings));
-  const groups = new Set(policy.builtinTools ?? []);
-  for (const [name, template] of Object.entries(hosting.crafting.templates)) {
-    const at = `hosting.crafting.templates.${name}`;
+  for (const [name, template] of Object.entries(policy.hosting?.crafting?.templates ?? {})) {
+    const path = `hosting.crafting.templates.${name}`;
     template.models.forEach((model, index) => {
-      if (!policy.allowedModels.includes(model)) issues.push(issue("warning", `${at}.models.${index}`, `Model '${model}' is not approved, so crafted workers cannot use it.`));
+      if (!policy.allowedModels.includes(model)) {
+        issues.push(issue("warning", `${path}.models.${index}`, `Model '${model}' is not an allowed model, so crafted workers cannot use it.`));
+      }
     });
     template.approvalModes.forEach((mode, index) => {
-      if (!approvalModes.includes(mode)) issues.push(issue("warning", `${at}.approvalModes.${index}`, `The policy does not allow the '${mode}' approval mode.`));
+      if (!approvalModes.includes(mode)) {
+        issues.push(issue("warning", `${path}.approvalModes.${index}`, `The '${mode}' approval mode is not allowed, so crafted workers cannot use it.`));
+      }
     });
     template.builtinTools.forEach((group, index) => {
-      if (!groups.has(group)) issues.push(issue("warning", `${at}.builtinTools.${index}`, `The policy does not allow the '${group}' built-in tools.`));
+      if (!(policy.builtinTools ?? []).includes(group)) {
+        issues.push(issue("warning", `${path}.builtinTools.${index}`, `The '${group}' built-in tools are not allowed, so crafted workers cannot use them.`));
+      }
     });
     template.toolBindings.forEach((binding, index) => {
-      if (!bindings.has(binding)) issues.push(issue("warning", `${at}.toolBindings.${index}`, `No execution profile provides binding '${binding}'.`));
+      if (!bindings.has(binding)) {
+        issues.push(issue("warning", `${path}.toolBindings.${index}`, `No execution profile provides binding '${binding}', so crafted workers cannot use it.`));
+      }
     });
   }
   return issues;

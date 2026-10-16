@@ -104,9 +104,9 @@ export interface ProfileSummary {
   firstParty: boolean;
   toolBindings: string[];
   capabilities: string[];
-  /** Host bindings this profile marks safe to run inside a shared worker's process. */
+  /** Host bindings the profile marks safe to run inside a shared worker's process. */
   inProcessBindings?: string[];
-  /** Custom permission handlers (reviewed integrator code) this profile provides. */
+  /** Custom permission handlers the profile provides. */
   permissionHandlers?: string[];
 }
 
@@ -192,20 +192,6 @@ export interface HostingTargetSummary {
   isolatedAllowed: boolean;
 }
 
-/** How a harness evaluates against one configured deployment: Local run or the selected Azure target. */
-export interface HostingAvailability {
-  target: TryTarget;
-  /** "Local workstation" or "Azure · <target name>". */
-  label: string;
-  status: HostingStatus;
-  placement: HostingPlacement;
-  /** In admission order: the first problem blocks hosting. */
-  problems: HostingProblem[];
-  transports: HostingTransportView[];
-  /** Deployment prerequisites each mode would lack here, given the harness's other settings. */
-  modes: Array<{ mode: HostingMode; missing: HostingProblem[] }>;
-}
-
 export interface HarnessHostingDetail {
   /** Effective operator ceilings for this harness (base policy plus its override). */
   ceilings: HostingCeilings;
@@ -219,24 +205,23 @@ export interface HarnessHostingDetail {
   targets: HostingTargetSummary[];
 }
 
-/** Where a harness draft can run in the configured deployments (`POST /api/harnesses/availability`). */
-export interface HostingAvailabilityInfo {
-  /** Empty while the definition does not validate against the contract. */
-  availability: HostingAvailability[];
-  /** Set when deployment settings could not be read and the evaluation assumes no demo agent host. */
-  note?: string;
-}
-
-/** The Hosting page's per-harness view for one deployment target. */
+/** The Hosting page's per-harness view for one deployment target, read from that target's agent-api. */
 export interface HostingPageInfo {
   target: TryTarget;
-  /** "service": reported by the running agent-api; "configuration": evaluated from workspace files and target settings. */
-  source: "service" | "configuration";
-  /** Why the running service's view is not shown, when it was requested. */
-  note?: string;
-  overview: HostingOverview;
-  /** Latest harness versions that do not validate and therefore cannot be evaluated. */
-  invalid: Array<{ harness: string; version: string; folder: string }>;
+  /** The running agent-api's `GET /v1/hosting` view, when it could be read. */
+  overview?: HostingOverview;
+  /** Why the view could not be read. */
+  problem?: string;
+  /** Latest workspace versions the service has not loaded as saved: absent from its view, or loaded with another digest. */
+  stale: Array<{ harness: string; version: string; reason: "missing" | "changed" }>;
+}
+
+/** One harness version as a target's agent-api hosts it (`GET /v1/hosting/{harness}`). */
+export interface HarnessHostingInfo {
+  target: TryTarget;
+  view?: HarnessHostingView;
+  /** Why the view could not be read, for example because the service has not loaded this version. */
+  problem?: string;
 }
 
 export interface Decision {
