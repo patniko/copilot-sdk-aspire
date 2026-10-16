@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -37,7 +37,7 @@ const brokerKey = "synthetic-connection-broker-key-".repeat(2);
 /** The HTTP status a WebSocket upgrade receives, without completing it. */
 const upgradeStatus = (url: string, headers: Record<string, string> = {}) => new Promise<number>((resolve, reject) => {
   const outgoing = httpRequest(url, { headers: { ...headers, connection: "Upgrade", upgrade: "websocket",
-    "sec-websocket-key": "c2Vzc2lvbi1jb250YWluZXI=", "sec-websocket-version": "13" }, timeout: 10_000 });
+    "sec-websocket-key": randomBytes(16).toString("base64"), "sec-websocket-version": "13" }, timeout: 10_000 });
   outgoing.on("upgrade", (response, socket) => { socket.destroy(); resolve(response.statusCode ?? 101); });
   outgoing.on("response", (response) => { response.resume(); resolve(response.statusCode ?? 0); });
   outgoing.on("timeout", () => outgoing.destroy(new Error("The upgrade timed out.")));
