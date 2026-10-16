@@ -81,7 +81,7 @@ repository if it must be shared or audited.
 ![Hosting section of the harness editor with synthetic harnesses](images/configurator-hosting.png)
 
 The harness editor's **Hosting** tab and three Policy cards edit the `hosting`, `mcpServers`, and approval-mode
-fields that the [hosting modes plan](HOSTING-MODES-PLAN.md#3-per-harness-configuration-proposed-contract) introduced.
+fields that the [hosting modes plan](HOSTING-MODES-PLAN.md#3-per-harness-configuration) introduced.
 They are validated as you type with the same contracts as hosted admission, and problems appear at their field
 paths: for example `hosting.mode` when the effective policy does not allow the mode, or `mcpServers.0.server` for a
 server outside the catalog. Choosing a mode records a request; whether a deployment can host it is reported by the
@@ -154,15 +154,23 @@ listed above the rows: **Reload harnesses** from Local run, or deploy, to apply 
 no connections.
 
 Connection actions copy a `pnpm host:connect --harness <name> --target <local|azure> --transport <direct|github>`
-launcher command for a ready harness whose transport is available, following the launcher's routing: shared and
-promotable harnesses use the local shared worker, and isolated harnesses use [session containers](DEPLOYMENT.md#session-containers)
-over the transports they offer (direct WSS), otherwise the harness's owner host. For the shared worker and session
-containers, the launcher creates a conversation and prints the `--resume` command for returning to it, and it stays
-attached: when a promotable conversation [moves into its container](ARCHITECTURE.md#promotion), it restarts the CLI
-there in the same terminal. Add
-`--cli <path>` to run a Copilot CLI that matches the hosting runtime. Otherwise the action is disabled and says why:
-the row's problem and prerequisite, an unavailable transport (session containers do not offer the GitHub relay), or a
-shared-worker or session-container connection on Azure, which is not qualified. Batch rows link to **Try it** instead.
+launcher command where the launcher would connect for a new conversation. The configurator server decides each
+harness and transport with the launcher's own refusal check, routing order, and target rule (`connectProblem`,
+`routeFor`, and `routeTargetProblem` in [`connect-route.ts`](../configurator/server/connect-route.ts)). It applies them
+to the target's hosting view and to the owner hosts that `GET /v1/hosts` reports for the configurator's API principal,
+the principal the launcher connects as, and `/api/hosting` returns the decisions with the rows. The routing is the
+[launcher's](USER-GUIDE.md#per-harness-owner-hosts): shared, promotable, and orchestrator harnesses use the local
+shared worker over direct WSS, and isolated harnesses use your own managed owner host over the transports it offers,
+otherwise [session containers](DEPLOYMENT.md#session-containers) over direct WSS. When you own the harness's host,
+its row says "Your owner host" (with session containers, when they also serve the harness), and every transport that
+host offers connects to it. For the shared worker and session containers, the launcher creates a conversation and
+prints the `--resume` command for returning to it, and it stays attached: when the conversation
+[moves into a container](ARCHITECTURE.md#promotion), by promotion or a [handoff](API.md#handoffs), it restarts the CLI
+there in the same terminal. Add `--cli <path>` to run a Copilot CLI that matches the hosting runtime. Otherwise the
+action is disabled with the launcher's reason, in its order: the transport's problem (such as the GitHub relay for a
+shared harness, or another owner's relay), then the row's first problem, then the launcher's own refusal. Every
+`--harness` connection is local-only for now, so Azure rows disable all of them, owner hosts included; a failed
+owner-host lookup also disables the isolated-harness actions that depend on it. Batch rows link to **Try it** instead.
 
 Choose local or the selected Azure target, select a node to inspect its responsibility and limitations, or
 expand the text connection map. The canvas groups components into color-coded responsibility zones, highlights
@@ -176,7 +184,7 @@ Native container-host inference is shown separately from the managed Foundry rou
 
 The connection card preserves existing container CLI launchers and shows the shared launcher when the
 local `session-host` resource is observed. That launcher opens the `hybrid-coordinator` harness
-(`--destination shared`); run `pnpm host:connect --harness <name> --target local --transport direct` for another
+(`--harness hybrid-coordinator`); run `pnpm host:connect --harness <name> --target local --transport direct` for another
 shared harness. Use the matching qualified CLI; service observation alone is not account/client readiness. The backend enforces local scheduling, budgets and one-shot container
 limits configured through [Aspire hybrid parameters](DEPLOYMENT.md#hybrid-controls).
 This page does not edit those settings or display live allocations yet. First-token measurements and

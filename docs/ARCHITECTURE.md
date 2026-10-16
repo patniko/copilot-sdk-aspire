@@ -184,7 +184,12 @@ flowchart TD
 A judge approval runs without a prompt: the AHP host participant acts on it while a client has the session open, and
 the worker's handler follows it through the SDK's `followAssistedApproval` while none does. Both need runtime
 `d89cfe45b29` (host `006b030`) or later; see the
-[qualification record](HOSTING-MODES-PLAN.md#stage-2-harness-driven-shared-mode).
+[qualification record](HOSTING-MODES-PLAN.md#stage-2-harness-driven-shared-mode). The runtime offers assisted
+approval only behind its experimental `AUTO_APPROVAL` flag, which the worker sets in its own process. Each activation
+applies the session's mode before the AHP host publishes it (for a resumed session, the mode its history last
+recorded) and confirms it. If the runtime will not hold the mode, activation fails with `409 hosting_unavailable` and
+the lifecycle event `session.approval_mode_refused` instead of running in another mode
+([follow-up record](HOSTING-MODES-PLAN.md#follow-up-assisted-approvals-without-host-injected-flags)).
 
 Each session records a placement in the ledger: its kind (`shared`, or `container` for
 [session containers](#session-containers)) and a generation that increases on every change

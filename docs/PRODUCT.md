@@ -67,7 +67,7 @@ table below describes the established batch product.
 | --- | --- | --- |
 | Separate customer workspace | Harnesses and policy live in a gitignored customer workspace; profiles, examples, and implementation remain platform source | [Configurator](CONFIGURATOR.md) |
 | Per-harness policy | Operator overrides replace selected policy ceilings and required controls for one harness; jobs record the effective policy and are matched to executors per job | [Configurator](CONFIGURATOR.md), [Security](SECURITY.md) |
-| Hosting contract and view | Conversation harnesses can declare a hosting mode, remote MCP tools, and an approval mode within policy ceilings; validation, admission, and a read-only [hosting view](API.md#hosting-views) report disallowed or unavailable combinations with field paths and prerequisites. Harness-driven conversations run in isolated mode on agent hosts (the demo host or local per-harness owner hosts) and in session containers, and in shared mode on the local hybrid worker, which serves remote MCP tools and the approval modes its policy allows ([current limits](SECURITY.md#shared-conversation-approvals)). Promotable conversations start there and promote one way into session containers locally ([limits](SECURITY.md#promotion-boundaries)). Locally, orchestrator coordinators on that worker start sized workers in session containers, listed or crafted from an operator template, with a shared volume, person-only approvals, and optional inherited human authority ([worker boundaries](SECURITY.md#orchestrator-worker-boundaries)) | [Hosting modes plan](HOSTING-MODES-PLAN.md#17-qualification-record), [developer checklist](DEVELOPER-GUIDE.md#hosting-approval-mode-and-remote-mcp-fields) |
+| Hosting contract and view | Conversation harnesses can declare a hosting mode, remote MCP tools, and an approval mode within policy ceilings; validation, admission, and a read-only [hosting view](API.md#hosting-views) report disallowed or unavailable combinations with field paths and prerequisites. Harness-driven conversations run in isolated mode on agent hosts (the demo host or local per-harness owner hosts) and in session containers, and in shared mode on the local hybrid worker, which serves remote MCP tools and the approval modes its policy allows ([current limits](SECURITY.md#shared-conversation-approvals)). Promotable conversations start there and promote one way into session containers locally ([limits](SECURITY.md#promotion-boundaries)). Locally, orchestrator coordinators on that worker start sized workers in session containers, listed or crafted from an operator template, with a shared volume, person-only approvals, and optional inherited human authority ([worker boundaries](SECURITY.md#orchestrator-worker-boundaries)). Conversations on that worker can hand off to predefined target harnesses, on the worker or into a target's own session container, with person approval by default and history policies ([handoff boundaries](SECURITY.md#shared-conversation-handoffs)) | [Hosting modes plan](HOSTING-MODES-PLAN.md#17-qualification-record), [developer checklist](DEVELOPER-GUIDE.md#hosting-approval-mode-and-remote-mcp-fields) |
 | Structured agent jobs | Input validation, durable state, schema-validated results, JSON result artifact | [API](API.md) |
 | Two runner implementations | TypeScript SDK reference runner and Python SDK sample on one protocol | [Runner protocol](RUNNER-PROTOCOL.md) |
 | Rich harnesses | Prompt sections, reasoning/context options, sub-agents, delegated tools, packaged skills | [Harness contract](../contracts/src/harness.ts) |
@@ -105,7 +105,7 @@ isolation or compliance claims. Historical live-run evidence is recorded in
 | --- | --- |
 | Enforced gateway-only network egress or per-job outer sandbox | This is not safe cross-customer execution isolation; approved shell/web actions can reach the network |
 | Entra ID caller auth and a separate approver role | API-key principals govern caller access and approvals |
-| MCP integrations | Only shared harnesses on the local hybrid worker use remote MCP tools, from the operator's catalog over Streamable HTTP; batch jobs and isolated hosts do not, and there is no local (stdio) MCP connector |
+| MCP integrations | Only conversations on the local hybrid shared worker (`shared` harnesses and `orchestrator` coordinators) use remote MCP tools, from the operator's catalog over Streamable HTTP; batch jobs, agent hosts, session containers (including promoted sessions), and workers do not, and there is no local (stdio) MCP connector |
 | Copilot-authenticated inference route | The implemented production route is Foundry with gateway-owned Entra identity |
 | General artifact/file persistence or repository automation | Local on-demand jobs retain bounded `outputs/` files; other attempt files remain temporary. No automatic checkout, commit, push, or general blob store |
 | Resuming batch jobs as chat | Retrying a job starts a fresh attempt; the separate experimental demo host has its own retained-session lifecycle and qualification gates |
@@ -133,16 +133,15 @@ an agreed schedule or a description of shipped functionality; the
 [recommended sequence](PRODUCT-OVERVIEW.md#recommended-product-decomposition-and-delivery-sequence) owns the
 detailed acceptance outcomes.
 
-A separate [hosting modes proposal](HOSTING-MODES-PLAN.md) would let each conversation harness choose an isolated
-container, a shared multi-tenant runtime, a shared runtime with one-way promotion into a container, or a shared
-coordinator that manages container workers. Its first delivery targets Copilot CLI over direct WSS, plus GitHub relay
-for isolated harness hosts; the GitHub Copilot app comes later. It also proposes handoffs and compares the design
-with OpenAI's Agents API. None of these modes is supported until its stage lands with evidence; the first stage adds
-only the harness and policy contract, its validation and admission errors, and the read-only hosting view. Handoffs
-work locally from conversations on the shared worker, to another harness there or into a target's own session
-container, with person approval, history policies and a handoff ledger
-([stage 6 record](HOSTING-MODES-PLAN.md#stage-6-handoffs)); handoffs from conversations that run in a container are
-follow-up work.
+The [hosting modes plan](HOSTING-MODES-PLAN.md) lets each conversation harness choose an isolated container, a
+shared multi-tenant runtime, a shared runtime with one-way promotion into a container, or a shared coordinator that
+manages container workers. Its first delivery targets Copilot CLI over direct WSS, plus GitHub relay for isolated
+harness hosts; the GitHub Copilot app comes later. Stages 1 to 6 are implemented locally, as the hosting contract row
+under [supported today](#supported-today) describes. Handoffs work locally from conversations on the shared worker,
+to another harness there or into a target's own session container, with person approval, history policies and a
+handoff ledger ([stage 6 record](HOSTING-MODES-PLAN.md#stage-6-handoffs)); handoffs from conversations that run in a
+container are follow-up work. Azure delivery (stage 7) and the mode and OpenAI Agents API comparisons (stage 8)
+remain proposals ([stage status](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates)).
 
 ## Acceptance criteria for changes
 

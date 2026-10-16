@@ -205,6 +205,26 @@ export interface HarnessHostingDetail {
   targets: HostingTargetSummary[];
 }
 
+/** Where `pnpm host:connect --harness` connects: a conversation through `/v1/sessions`, or the harness's owner host. */
+export type HarnessConnectRoute = { kind: "sessions"; placement: "shared" | "container" } | { kind: "owner-host" };
+
+/** The launcher's decision for one harness and transport: where it connects, or why it refuses. */
+export interface HarnessConnectDecision {
+  /** Where the launcher connects, decided with its own routing. */
+  route?: HarnessConnectRoute;
+  /** The service's hosting problem that refuses the transport, in the launcher's order. */
+  problem?: HostingProblem;
+  /** The launcher's own reason for refusing, such as a target it does not support yet or a failed lookup. */
+  refusal?: string;
+}
+
+/** How `pnpm host:connect --harness` would connect the configurator's API principal to one conversation harness. */
+export interface HarnessConnectInfo {
+  /** Whether that principal owns a managed owner host for the harness (`GET /v1/hosts`). */
+  ownsHost: boolean;
+  transports: Partial<Record<HostingTransportView["transport"], HarnessConnectDecision>>;
+}
+
 /** The Hosting page's per-harness view for one deployment target, read from that target's agent-api. */
 export interface HostingPageInfo {
   target: TryTarget;
@@ -214,6 +234,8 @@ export interface HostingPageInfo {
   problem?: string;
   /** Latest workspace versions the service has not loaded as saved: absent from its view, or loaded with another digest. */
   stale: Array<{ harness: string; version: string; reason: "missing" | "changed" }>;
+  /** Per conversation harness, the launcher's decisions for a new conversation on this target. */
+  connections?: Record<string, HarnessConnectInfo>;
 }
 
 /** One harness version as a target's agent-api hosts it (`GET /v1/hosting/{harness}`). */

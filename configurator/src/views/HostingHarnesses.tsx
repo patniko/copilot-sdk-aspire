@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { HarnessHostingView, HostingHostsView, HostingPageInfo, TryTarget } from "../../server/types";
+import type { HarnessConnectInfo, HarnessHostingView, HostingHostsView, HostingPageInfo, TryTarget } from "../../server/types";
 import { api, errorMessage } from "../api";
 import { Badge, CopyButton, Spinner } from "../components/ui";
 import { harnessHostRow } from "../hosting";
@@ -65,16 +65,24 @@ export function HarnessHostingRows({ target }: { target: TryTarget }) {
           </p>
         )}
         {overview && overview.harnesses.length === 0 && <p className="text-sm fg-muted">The service has no published harnesses.</p>}
-        {overview?.harnesses.map((view) => <HarnessHostingRow key={view.harness} view={view} hosts={overview.hosts} target={target} />)}
+        {overview?.harnesses.map((view) => (
+          <HarnessHostingRow key={view.harness} view={view} hosts={overview.hosts} target={target} connect={info?.connections?.[view.harness]} />
+        ))}
       </div>
     </section>
   );
 }
 
 /** One harness's row: mode, status, host and cost, transports, and the launcher actions `harnessHostRow` derives. */
-export function HarnessHostingRow({ view, hosts, target }: { view: HarnessHostingView; hosts: HostingHostsView; target: TryTarget }) {
+export function HarnessHostingRow({ view, hosts, target, connect }: {
+  view: HarnessHostingView;
+  hosts: HostingHostsView;
+  target: TryTarget;
+  /** The launcher's decisions for this harness, from the configurator server. */
+  connect?: HarnessConnectInfo;
+}) {
   const { setView } = useApp();
-  const row = harnessHostRow(view, hosts, target);
+  const row = harnessHostRow(view, hosts, target, connect);
   const status = STATUS_BADGES[view.status];
   const rowProblem = view.problems[0] ? describeProblem(view.problems[0]) : undefined;
   const sessionLaunchers = row.connections.filter((connection) => connection.command && connection.createsSession).map((connection) => connection.label);

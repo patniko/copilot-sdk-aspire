@@ -10,11 +10,13 @@ For the current checkout, start at the [documentation hub](README.md), [product 
 [current architecture](ARCHITECTURE.md), and [security gap register](SECURITY.md#known-gaps).
 This plan preserves rationale and historical verification; the current guides own setup and runtime behavior.
 
-The follow-on [CLI-first hybrid hosting demonstrator plan](HYBRID-HOSTING-PLAN.md) proposes a shared
+The follow-on [CLI-first hybrid hosting demonstrator plan](HYBRID-HOSTING-PLAN.md) proposed a shared
 in-process main loop, on-demand container delegation, both CLI connection destinations, and a visual
-topology page. It is a separate, not-yet-implemented expansion of the original scope below.
-The later [per-harness hosting modes plan](HOSTING-MODES-PLAN.md) proposes making that placement selectable
-per harness; it is likewise a proposal, not a current feature.
+topology page, as a separate expansion of the original scope below; its local path has since been implemented
+([qualification record](HYBRID-HOSTING-PLAN.md#13-qualification-record)), and Azure remains open.
+The later [per-harness hosting modes plan](HOSTING-MODES-PLAN.md) makes that placement selectable per harness;
+its stages 1 to 6 are implemented locally ([stage status](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates)).
+The current guides, not these plans, describe that behavior.
 
 ## 1. Product goal
 
