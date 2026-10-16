@@ -154,18 +154,23 @@ listed above the rows: **Reload harnesses** from Local run, or deploy, to apply 
 no connections.
 
 Connection actions copy a `pnpm host:connect --harness <name> --target <local|azure> --transport <direct|github>`
-launcher command for a ready harness whose transport is available. The launcher routes it
-([user guide](USER-GUIDE.md#per-harness-owner-hosts)): shared, promotable, and orchestrator harnesses use the local
-shared worker, and isolated harnesses use your own owner host when it offers the transport, otherwise
-[session containers](DEPLOYMENT.md#session-containers) over the transports they offer (direct WSS). The row's host
-summary lists session containers first, so when your own owner host and session containers both serve a harness
-over direct WSS, the copied command connects to the owner host rather than creating a session-container
-conversation. For the shared worker and session containers, the launcher creates a conversation and prints the
-`--resume` command for returning to it, and it stays attached: when a promotable conversation
-[moves into its container](ARCHITECTURE.md#promotion), it restarts the CLI there in the same terminal. Add
-`--cli <path>` to run a Copilot CLI that matches the hosting runtime. Otherwise the action is disabled and says why:
-the row's problem and prerequisite, an unavailable transport (session containers do not offer the GitHub relay), or a
-shared-worker or session-container connection on Azure, which is not qualified. Batch rows link to **Try it** instead.
+launcher command where the launcher would connect for a new conversation. The configurator server decides each
+harness and transport with the launcher's own refusal check, routing order, and target rule (`connectProblem`,
+`routeFor`, and `routeTargetProblem` in [`connect-route.ts`](../configurator/server/connect-route.ts)). It applies them
+to the target's hosting view and to the owner hosts that `GET /v1/hosts` reports for the configurator's API principal,
+the principal the launcher connects as, and `/api/hosting` returns the decisions with the rows. The routing is the
+[launcher's](USER-GUIDE.md#per-harness-owner-hosts): shared, promotable, and orchestrator harnesses use the local
+shared worker over direct WSS, and isolated harnesses use your own managed owner host over the transports it offers,
+otherwise [session containers](DEPLOYMENT.md#session-containers) over direct WSS. When you own the harness's host,
+its row says "Your owner host" (with session containers, when they also serve the harness), and every transport that
+host offers connects to it. For the shared worker and session containers, the launcher creates a conversation and
+prints the `--resume` command for returning to it, and it stays attached: when the conversation
+[moves into a container](ARCHITECTURE.md#promotion), by promotion or a [handoff](API.md#handoffs), it restarts the CLI
+there in the same terminal. Add `--cli <path>` to run a Copilot CLI that matches the hosting runtime. Otherwise the
+action is disabled with the launcher's reason, in its order: the transport's problem (such as the GitHub relay for a
+shared harness, or another owner's relay), then the row's first problem, then the launcher's own refusal. Every
+`--harness` connection is local-only for now, so Azure rows disable all of them, owner hosts included; a failed
+owner-host lookup also disables the isolated-harness actions that depend on it. Batch rows link to **Try it** instead.
 
 Choose local or the selected Azure target, select a node to inspect its responsibility and limitations, or
 expand the text connection map. The canvas groups components into color-coded responsibility zones, highlights
