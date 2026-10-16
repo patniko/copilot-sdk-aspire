@@ -83,7 +83,8 @@ Treat the output as a secret. Do not put it in documentation, screenshots, or co
 For the experimental shared coordinator instead, follow
 [local hybrid deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment). Use
 `pnpm host:connect --destination shared` to create a conversation, or add `--resume <session-uuid>`
-after disconnect/idle eviction. Lightweight chat needs no job container; the coordinator can delegate
+after disconnect/idle eviction. The CLI attaches through the local connection broker, so reloading harnesses
+(which restarts the API) does not disconnect it. Lightweight chat needs no job container; the coordinator can delegate
 approved work and receive completion and retained artifacts. This is distinct from `--destination container`
 (the default existing host route) and from retrying a batch job.
 

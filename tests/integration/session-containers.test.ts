@@ -27,6 +27,8 @@ const allocationKey = "synthetic-allocation-key-".repeat(3);
 const gatewayKey = "synthetic-gateway-key-".repeat(3);
 const executorKey = "synthetic-executor-key-".repeat(3);
 const serverKey = { keyId: "synthetic", algorithm: "x25519-sealedbox" as const, publicKey: "synthetic-public-key" };
+const brokerUrl = "http://127.0.0.1:47000";
+const ingressCredential = (allocationId: string) => createHmac("sha256", allocationKey).update(`ingress:${allocationId}`).digest("base64url");
 const images = { "executor:test": `sha256:${"a".repeat(64)}`, "session:test": `sha256:${"b".repeat(64)}` };
 
 function snapshot(definition: Record<string, unknown>): HarnessSnapshot {
@@ -92,13 +94,13 @@ async function environment(options: { limits?: Partial<SharedWorkerLimits>; cont
   const containers = options.containers !== false;
   const catalog = { harnesses, profiles, policies, deployment: hostingDeployment({ executor: "on-demand", sharedWorker: !containers, sessionContainers: containers }) };
   const service = containers ? new ContainerSessionService({
-    store, allocations, directory: new SessionDirectory(pool), catalog, principals: bindings, settings, limits, connectWaitSeconds: 20,
+    store, allocations, directory: new SessionDirectory(pool), catalog, principals: bindings, settings, limits, brokerUrl, connectWaitSeconds: 20,
   }) : undefined;
   const api = buildApi({
     store: jobs, listener: new JobEventListener(pool), admission: new Admission({ harnesses, profiles, policies }), harnesses,
     authenticator: new ApiKeyAuthenticator(`${principals.a}:${keys.a};${principals.b}:${keys.b};${principals.unbound}:${keys.unbound}`),
     maxOpenJobsPerPrincipal: 10, console: false, delegations, execution: "dedicated", hosting: catalog,
-    ...(service ? { containers: service } : { shared: { url: "http://127.0.0.1:9", key: "unused-worker-key-".repeat(3) } }),
+    ...(service ? { containers: service } : { shared: { url: "http://127.0.0.1:9", key: "unused-worker-key-".repeat(3), brokerUrl } }),
   });
   apps.push(api);
   const controllers: ExecutionController[] = [];
@@ -172,15 +174,18 @@ describe("resumable session containers", () => {
     const first = await env.connect("a", session.id);
     expect(first.cache).toBe("no-store");
     expect(first.connection).toMatchObject({ sessionId: session.id, destination: "container", transport: "direct", ahpSessionId: session.id, serverKey });
-    expect(first.connection.url).toBe(`ws://127.0.0.1:${first.container.ingress!.port}/sessions/${session.id}`);
+    expect(first.connection.url).toBe(`ws://127.0.0.1:47000/sessions/${session.id}`);
     expect(first.spec).toMatchObject({ sessionId: session.id, githubUserId: 1001, model: "grok-4.6", harness: { digest: coder.digest }, heartbeatSeconds: 2 });
     expect(await env.view("a", session.id)).toMatchObject({ online: true, container: { state: "running", activations: 1 } });
     const firstAllocation = first.spec.allocationId;
     const volume = (await pool.query<{ name: string; released_at: Date | null }>("SELECT name,released_at FROM execution_volumes WHERE session_id=$1", [session.id])).rows;
     expect(volume).toEqual([{ name: `hybrid-${env.namespace}-session-${session.id}`, released_at: null }]);
 
-    expect((await env.asContainer(first.container.token, "connection", { ticket: first.connection.token })).json()).toEqual({ authorized: true });
-    expect((await env.asContainer(first.container.token, "connection", { ticket: first.connection.token })).json()).toEqual({ authorized: false });
+    const placements = new PlacementStore(pool);
+    expect(await placements.consumeTicket(session.id, first.connection.token)).toEqual({ kind: "container", sessionId: session.id, generation: 1,
+      allocationId: firstAllocation, endpoint: `http://127.0.0.1:${first.container.ingress!.port}/`, credential: ingressCredential(firstAllocation) });
+    expect(await placements.consumeTicket(session.id, first.connection.token)).toBeUndefined();
+    expect((await env.asContainer(first.container.token, "connection", { ticket: first.connection.token })).statusCode).toBe(404);
 
     await pool.query("UPDATE execution_allocations SET activity_at=clock_timestamp()-interval '1 hour' WHERE id=$1", [firstAllocation]);
     await wait(async () => (await env.view("a", session.id)).container?.state === "dormant", "idle stop");
@@ -275,8 +280,10 @@ describe("resumable session containers", () => {
     const other = await env.connect("b", theirs.id);
     expect(other.spec.githubUserId).toBe(1002);
 
-    expect((await env.asContainer(own.container.token, "connection", { ticket: other.connection.token })).json()).toEqual({ authorized: false });
-    expect((await env.asContainer(other.container.token, "connection", { ticket: other.connection.token })).json()).toEqual({ authorized: true });
+    const placements = new PlacementStore(pool);
+    expect(await placements.consumeTicket(mine.id, other.connection.token)).toBeUndefined();
+    expect(await placements.consumeTicket(theirs.id, other.connection.token)).toMatchObject({ kind: "container", sessionId: theirs.id,
+      allocationId: other.spec.allocationId, credential: ingressCredential(other.spec.allocationId) });
     expect((await env.dispatcher.inject({ method: "POST", url: "/internal/executor/claim", headers: { "x-internal-key": own.container.token },
       payload: { executorId: own.spec.allocationId, profiles: ["node-ts-agent"], processIsolation: "uid", egress: "none", platform: "linux" } })).statusCode).toBe(401);
     expect((await env.asContainer("not-an-allocation-credential-at-all-000", "spec")).statusCode).toBe(401);
@@ -308,10 +315,9 @@ describe("resumable session containers", () => {
     expect((await env.view("a", mine.id)).budget).toEqual({ usedTokens: 120, reservedTokens: 0, remainingTokens: 49_880 });
     expect(await introspect()).toEqual({ active: true, remainingTokens: 49_880 });
 
-    const route = await new PlacementStore(pool).consumeTicket(mine.id, (await env.api.inject({ method: "POST", url: `/v1/sessions/${mine.id}/connection`, headers: env.headers("a") })).json().token);
+    const route = await placements.consumeTicket(mine.id, (await env.api.inject({ method: "POST", url: `/v1/sessions/${mine.id}/connection`, headers: env.headers("a") })).json().token);
     expect(route).toEqual({ kind: "container", sessionId: mine.id, generation: 1, allocationId: own.spec.allocationId,
-      endpoint: `ws://127.0.0.1:${own.container.ingress!.port}/`,
-      credential: createHmac("sha256", allocationKey).update(`ingress:${own.spec.allocationId}`).digest("base64url") });
+      endpoint: `http://127.0.0.1:${own.container.ingress!.port}/`, credential: ingressCredential(own.spec.allocationId) });
 
     const files = new SessionFileStore(pool);
     const lease = await files.acquire(mine.id, env.principals.a, "shared-worker");

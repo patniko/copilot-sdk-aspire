@@ -7,6 +7,7 @@ import {
 } from "@copilot-agent/contracts";
 import { StoreError, type AllocationStore, type SessionContainerStore, type SessionDirectory } from "@copilot-agent/job-store";
 import { hostingError, HttpError, policyDigest, type HostingCatalog } from "@copilot-agent/service-defaults";
+import { brokerOrigin } from "./shared-routes.js";
 
 export interface ContainerSessionDependencies {
   store: SessionContainerStore;
@@ -20,8 +21,8 @@ export interface ContainerSessionDependencies {
   limits: SharedWorkerLimits;
   /** Operator ceilings for one session (Aspire `hybrid-session-limits`), as the shared worker applies them. */
   sessionLimits?: SharedSessionLimits;
-  /** Public broker origin. Omitted: clients connect directly to the container's published loopback ingress. */
-  brokerUrl?: string;
+  /** The connection broker's public origin; clients attach to `/sessions/{id}` there, never to a container directly. */
+  brokerUrl: string;
   /** Longest a connection request waits for a container to become ready. */
   connectWaitSeconds?: number;
 }
@@ -35,6 +36,7 @@ export class ContainerSessionService {
   readonly #settings: SessionContainerSettings;
   readonly #limits: SharedWorkerLimits;
   readonly #ceilings: SharedSessionLimits;
+  readonly #broker: URL;
 
   constructor(private readonly deps: ContainerSessionDependencies) {
     this.#principals = SharedPrincipalBindings.parse(deps.principals);
@@ -42,7 +44,7 @@ export class ContainerSessionService {
     this.#limits = SharedWorkerLimits.parse(deps.limits);
     this.#ceilings = SharedSessionLimits.parse(deps.sessionLimits ?? {});
     if (!deps.catalog.deployment.sessionContainers) throw new Error("The deployment description must include session containers.");
-    if (deps.brokerUrl) publicEndpoint(deps.brokerUrl, "");
+    this.#broker = brokerOrigin(deps.brokerUrl);
   }
 
   get catalog(): HostingCatalog { return this.deps.catalog; }
@@ -142,10 +144,9 @@ export class ContainerSessionService {
       const active = allocation && allocation.state !== "retired" ? allocation : undefined;
       if (active?.ready) {
         const ticket = await store(() => this.deps.store.issueTicket(principal, id, active.id));
-        const host = ticket.ingress.host.includes(":") ? `[${ticket.ingress.host}]` : ticket.ingress.host;
         return {
           sessionId: id, destination: "container", transport: "direct", ahpSessionId: id,
-          url: publicEndpoint(this.deps.brokerUrl ?? `ws://${host}:${ticket.ingress.port}`, id),
+          url: new URL(`/sessions/${id}`, this.#broker).href,
           token: ticket.token, expiresAt: ticket.expiresAt, serverKey: ticket.serverKey,
         };
       }
@@ -167,18 +168,6 @@ export class ContainerSessionService {
   }
 }
 
-function publicEndpoint(origin: string, id: string): string {
-  const url = new URL(origin);
-  if (url.username || url.password || url.search || url.hash || !["ws:", "wss:", "http:", "https:"].includes(url.protocol)) {
-    throw new Error("Invalid session connection endpoint.");
-  }
-  url.protocol = url.protocol === "https:" || url.protocol === "wss:" ? "wss:" : "ws:";
-  if (url.protocol === "ws:" && !["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
-    throw new Error("Unencrypted session connections are restricted to loopback.");
-  }
-  url.pathname = id ? `/sessions/${id}` : "/";
-  return url.href;
-}
 
 async function store<T>(action: () => Promise<T>): Promise<T> {
   try { return await action(); }

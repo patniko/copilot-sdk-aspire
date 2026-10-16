@@ -103,14 +103,14 @@ export class SessionContainerStore {
   }
 
   /**
-   * Issues a 60-second, one-use ticket bound to the session's ready allocation and current placement generation.
-   * Returns the ingress endpoint and the server key the container published through its allocation credential.
+   * Issues a 60-second, one-use ticket bound to the session's ready allocation and current placement generation, with
+   * the server key the container published through its allocation credential. The connection broker consumes it.
    */
-  async issueTicket(principal: string, id: string, allocationId: string): Promise<{ token: string; expiresAt: string; serverKey: SharedServerKey; ingress: { host: string; port: number } }> {
+  async issueTicket(principal: string, id: string, allocationId: string): Promise<{ token: string; expiresAt: string; serverKey: SharedServerKey }> {
     return this.shared.transaction(async (db) => {
       await db.query("DELETE FROM shared_connection_tickets WHERE expires_at<clock_timestamp()");
-      const row = (await db.query<{ generation: number; server_key: SharedServerKey; ingress: { host: string; port: number } }>(
-        `SELECT s.placement_generation AS generation,e.server_key,e.ingress FROM shared_sessions s
+      const row = (await db.query<{ generation: number; server_key: SharedServerKey }>(
+        `SELECT s.placement_generation AS generation,e.server_key FROM shared_sessions s
          JOIN execution_allocations e ON e.session_id=s.id
          WHERE s.id=$1 AND s.principal=$2 AND NOT s.closed AND s.placement='container' AND e.id=$3 AND e.kind='session'
            AND e.state='running' AND e.ready_at IS NOT NULL AND e.ingress IS NOT NULL AND e.expires_at>clock_timestamp()`,
@@ -123,23 +123,10 @@ export class SessionContainerStore {
         `INSERT INTO shared_connection_tickets(digest,session_id,principal,epoch,placement_generation,expires_at)
          VALUES($1,$2,$3,$4,$5,clock_timestamp()+interval '60 seconds') RETURNING expires_at`,
         [digest(token), id, principal, allocationId, row.generation]);
-      return { token, expiresAt: inserted.rows[0]!.expires_at.toISOString(), serverKey: SharedServerKey.parse(row.server_key), ingress: row.ingress };
+      return { token, expiresAt: inserted.rows[0]!.expires_at.toISOString(), serverKey: SharedServerKey.parse(row.server_key) };
     });
   }
 
-  /** Consumes a ticket presented directly at the container's ingress; fenced by allocation, generation and session state. */
-  async consumeTicket(allocationId: string, ticket: string): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE shared_connection_tickets t SET used_at=clock_timestamp()
-       FROM shared_sessions s,execution_allocations e
-       WHERE t.digest=$1 AND t.epoch=$2 AND t.used_at IS NULL AND t.expires_at>clock_timestamp()
-         AND s.id=t.session_id AND s.principal=t.principal AND NOT s.closed AND s.placement='container'
-         AND s.placement_generation=t.placement_generation
-         AND e.id=t.epoch AND e.session_id=s.id AND e.kind='session' AND e.state='running' AND e.ready_at IS NOT NULL
-         AND e.expires_at>clock_timestamp()
-       RETURNING t.digest`, [digest(ticket), allocationId]);
-    return result.rowCount === 1;
-  }
 
   async spec(allocationId: string, heartbeatSeconds: number): Promise<SessionContainerSpec> {
     const row = (await this.pool.query<RecordRow & { allocation_id: string }>(

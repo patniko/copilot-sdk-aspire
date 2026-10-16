@@ -25,8 +25,8 @@ export type SessionPlacement = z.infer<typeof SessionPlacement>;
 /**
  * Where to route one consumed connection ticket: the session's placement plus what the broker needs to reach it.
  * `shared` carries the activation epoch the ticket was issued for; the shared worker accepts the forwarded
- * connection only while that activation is resident. `container` carries the ready allocation's ingress endpoint
- * and its per-allocation ingress credential, which the broker presents as the `tkn` query parameter on its upstream
+ * connection only while that activation is resident. `container` carries the ready allocation's internal ingress
+ * origin and its per-allocation ingress credential, which the broker presents as `x-internal-key` on its upstream
  * WebSocket request. The credential is a secret and is valid only while that allocation runs.
  */
 export const PlacementRoute = z.discriminatedUnion("kind", [
@@ -41,7 +41,10 @@ export const PlacementRoute = z.discriminatedUnion("kind", [
     sessionId: z.string().uuid(),
     generation: PlacementGeneration,
     allocationId: z.string().uuid(),
-    endpoint: z.url().refine((value) => ["ws:", "wss:"].includes(new URL(value).protocol), "Use a WebSocket endpoint."),
+    endpoint: z.url().refine((value) => {
+      const url = new URL(value);
+      return url.protocol === "http:" && !url.username && !url.password && url.pathname === "/" && !url.search && !url.hash;
+    }, "Use an internal HTTP origin."),
     credential: z.string().min(32).max(200),
   }).strict(),
 ]);

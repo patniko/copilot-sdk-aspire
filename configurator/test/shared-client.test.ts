@@ -80,5 +80,9 @@ describe("shared CLI provisioning client", () => {
     await expect(sharedConnection(api, { resume: id })).rejects.toThrow(/invalid or expired/);
     request.mockResolvedValueOnce(Response.json({ ...connection, sessionId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }));
     await expect(sharedConnection(api, { resume: id })).rejects.toThrow(/invalid or expired/);
+    for (const url of ["ws://127.0.0.1:3001/", "ws://127.0.0.1:3001/sessions/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]) {
+      request.mockResolvedValueOnce(Response.json({ ...connection, url }));
+      await expect(sharedConnection(api, { resume: id }), url).rejects.toThrow(/invalid or expired/);
+    }
   });
 });

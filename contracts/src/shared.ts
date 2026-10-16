@@ -178,10 +178,18 @@ export const SharedConnection = z.object({
   sessionId: z.string().uuid(), destination: z.enum(["shared", "container"]), transport: z.literal("direct"),
   /** The runtime session to resume after attaching; changes when a new segment starts. */
   ahpSessionId: z.string().min(1).max(128),
+  /** The connection broker's stable `/sessions/{sessionId}` URL. */
   url: z.url().refine((value) => ["ws:", "wss:"].includes(new URL(value).protocol)),
   token: z.string().min(32).max(200), expiresAt: z.iso.datetime(), serverKey: SharedServerKey,
 }).strict();
 export type SharedConnection = z.infer<typeof SharedConnection>;
+
+/**
+ * Internal: connection material a placement issues for the API, which returns it with the broker's session URL.
+ * The one-use ticket expires after 60 seconds and binds to the session's current placement generation.
+ */
+export const ConnectionTicket = SharedConnection.pick({ sessionId: true, ahpSessionId: true, token: true, expiresAt: true, serverKey: true }).strict();
+export type ConnectionTicket = z.infer<typeof ConnectionTicket>;
 
 /**
  * Harness features the shared worker implements (docs/HOSTING-MODES-PLAN.md, section 3). The deployment's hosting

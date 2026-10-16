@@ -39,7 +39,7 @@ export class PlacementStore {
          (SELECT e.ingress_credential FROM execution_allocations e WHERE e.id=t.epoch AND s.placement='container') AS credential`,
       [digest(ticket), sessionId])).rows[0];
     if (row?.placement === "container") {
-      const endpoint = new URL("ws://127.0.0.1/");
+      const endpoint = new URL("http://127.0.0.1/");
       endpoint.hostname = row.ingress!.host.includes(":") ? `[${row.ingress!.host}]` : row.ingress!.host;
       endpoint.port = String(row.ingress!.port);
       return PlacementRoute.parse({ kind: "container", sessionId, generation: row.generation, allocationId: row.epoch, endpoint: endpoint.href, credential: row.credential });

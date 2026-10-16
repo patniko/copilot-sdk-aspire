@@ -7,6 +7,7 @@ import {
 import type { SessionAllocation } from "@copilot-agent/job-store";
 import { sessionContainerArguments, volumeLabels } from "../../src/execution-controller/src/docker.js";
 import { hostingDeployment } from "../../src/agent-api/src/hosting-deployment.js";
+import { containerUpstream } from "../../src/connection-broker/src/sessions.js";
 import { OwnerConfiguration, OwnerMessage, SupervisorMessage } from "../../src/session-container/src/protocol.js";
 
 const sessionId = randomUUID();
@@ -99,6 +100,18 @@ describe("session container contracts", () => {
   });
 });
 
+describe("brokered session container ingress", () => {
+  it("forwards to the allocation's internal ingress origin with its credential and never a client ticket", () => {
+    const route = { kind: "container" as const, sessionId, generation: 1, allocationId: randomUUID(), endpoint: "http://127.0.0.1:49152/", credential: "c".repeat(43) };
+    const upstream = containerUpstream()(route);
+    expect(upstream.origin.href).toBe("http://127.0.0.1:49152/");
+    expect(upstream).toMatchObject({ path: `/sessions/${sessionId}`, headers: { "x-internal-key": "c".repeat(43) } });
+    expect(Object.keys(upstream.headers ?? {})).toEqual(["x-internal-key"]);
+    for (const endpoint of ["https://127.0.0.1:49152/", "http://user:pass@127.0.0.1:49152/", "http://127.0.0.1:49152/sessions"]) {
+      expect(() => containerUpstream()({ ...route, endpoint }), endpoint).toThrow(/internal HTTP origin/);
+    }
+  });
+});
 describe("session container process protocol", () => {
   const spec = SessionContainerSpec.parse({
     sessionId, allocationId: randomUUID(), githubUserId: 1, model: "m", maxTurnSeconds: 60, heartbeatSeconds: 5,

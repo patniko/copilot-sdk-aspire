@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { createServer, type Server } from "node:http";
+import { createServer, request as httpRequest, type Server } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -13,7 +13,7 @@ import {
   ExecutionContainerSettings, HarnessDefinition, SessionContainerSettings, SharedConnection, SharedSessionView, SharedWorkerLimits,
 } from "@copilot-agent/contracts";
 import {
-  AllocationStore, DelegationStore, JobEventListener, JobStore, SessionContainerStore, SessionDirectory, SharedStore, migrate,
+  AllocationStore, DelegationStore, JobEventListener, JobStore, PlacementStore, SessionContainerStore, SessionDirectory, SharedStore, migrate,
 } from "@copilot-agent/job-store";
 import { Admission, ApiKeyAuthenticator, canonicalJson, createLogger, loadPolicySet, loadProfiles, sha256Hex } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../src/agent-api/src/server.js";
@@ -24,6 +24,8 @@ import { DispatcherClient as GatewayClient } from "../../src/inference-gateway/s
 import { buildGateway } from "../../src/inference-gateway/src/server.js";
 import { parseRoutes } from "../../src/inference-gateway/src/routes.js";
 import { ExecutionController } from "../../src/execution-controller/src/controller.js";
+import { buildBroker } from "../../src/connection-broker/src/broker.js";
+import { containerUpstream, DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/connection-broker/src/sessions.js";
 import { testGitHubAccount } from "../runtime/account.js";
 import { QualificationCli } from "../runtime/cli.js";
 
@@ -31,6 +33,17 @@ const enabled = process.env.HYBRID_SESSION_CONTAINER_TESTS === "1";
 const image = process.env.HYBRID_SESSION_CONTAINER_IMAGE ?? "copilot-session-container:local";
 const address = (server: Server) => `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 const docker = (...args: string[]) => execFileSync("docker", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+const brokerKey = "synthetic-connection-broker-key-".repeat(2);
+/** The HTTP status a WebSocket upgrade receives, without completing it. */
+const upgradeStatus = (url: string, headers: Record<string, string> = {}) => new Promise<number>((resolve, reject) => {
+  const outgoing = httpRequest(url, { headers: { ...headers, connection: "Upgrade", upgrade: "websocket",
+    "sec-websocket-key": "c2Vzc2lvbi1jb250YWluZXI=", "sec-websocket-version": "13" }, timeout: 10_000 });
+  outgoing.on("upgrade", (response, socket) => { socket.destroy(); resolve(response.statusCode ?? 101); });
+  outgoing.on("response", (response) => { response.resume(); resolve(response.statusCode ?? 0); });
+  outgoing.on("timeout", () => outgoing.destroy(new Error("The upgrade timed out.")));
+  outgoing.on("error", reject);
+  outgoing.end();
+});
 const Message = z.object({ role: z.string(), content: z.unknown().optional(), tool_calls: z.array(z.object({ id: z.string(), function: z.object({ name: z.string(), arguments: z.string() }) })).optional() }).passthrough();
 const Wire = z.object({
   stream: z.boolean().optional(), messages: z.array(Message),
@@ -168,9 +181,17 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
     const limits = SharedWorkerLimits.parse({ executionContainers: 2, containersPerPrincipal: 1 });
     const settings = SessionContainerSettings.parse({ image, idleSeconds: 20, heartbeatSeconds: 2, startupSeconds: 180, shutdownSeconds: 20 });
     const dispatcher = buildDispatcher({ store: jobs, policies, executorKey: keys.executor, gatewayKey: keys.gateway, signingKey: keys.signing,
-      allocations, delegations, sessionContainers: { allocations, store, policies, heartbeatSeconds: settings.heartbeatSeconds } });
+      allocations, delegations, sessionContainers: { allocations, store, policies, heartbeatSeconds: settings.heartbeatSeconds },
+      broker: { store: new PlacementStore(pool), key: brokerKey } });
     apps.push(dispatcher);
     await dispatcher.listen({ port: 0, host: "0.0.0.0" });
+    // No shared worker runs here; its upstream is never selected because every session is container-placed.
+    const { app: broker } = buildBroker({
+      families: [sessionRoutes(new DispatcherDirectory(address(dispatcher.server), brokerKey))],
+      upstreams: { shared: sharedUpstream(new URL("http://127.0.0.1:9"), brokerKey), container: containerUpstream() },
+    });
+    apps.push(broker);
+    await broker.listen({ port: 0, host: "127.0.0.1" });
     const gatewayClient = new GatewayClient(address(dispatcher.server), keys.gateway, 0);
     const gateway = buildGateway({
       signingKey: keys.signing, routes: parseRoutes(JSON.stringify([{ model: "grok-4.6", deployment: "grok-4.6", baseUrl: address(upstream), auth: "none" }]), true),
@@ -186,7 +207,7 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
       authenticator: new ApiKeyAuthenticator(`${principal}:${apiKey}`), maxOpenJobsPerPrincipal: 10, console: false, delegations, hosting: catalog,
       containers: new ContainerSessionService({
         store, allocations, directory: new SessionDirectory(pool), catalog, principals: { [principal]: githubUserId },
-        settings, limits, connectWaitSeconds: 180,
+        settings, limits, brokerUrl: address(broker.server), connectWaitSeconds: 180,
       }),
     });
     apps.push(api);
@@ -210,8 +231,13 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
 
     const first = await connect();
     expect(first).toMatchObject({ sessionId: session.id, destination: "container", transport: "direct", ahpSessionId: session.id });
+    expect(first.url).toBe(`ws://127.0.0.1:${(broker.server.address() as AddressInfo).port}/sessions/${session.id}`);
     const [containerId] = containers();
     expect(containers()).toHaveLength(1);
+    // The container accepts only connections the broker forwards with its allocation's ingress credential.
+    const ingress = `http://${docker("port", containerId!, "8080/tcp").split("\n")[0]!.replace("0.0.0.0", "127.0.0.1")}`;
+    expect(await upgradeStatus(`${ingress}/sessions/${session.id}?tkn=${encodeURIComponent(first.token)}`)).toBe(401);
+    expect(await upgradeStatus(`${ingress}/sessions/${session.id}`, { "x-internal-key": "not-the-ingress-credential-".repeat(2) })).toBe(401);
     const inspected = z.array(z.object({
       Config: z.object({ Env: z.array(z.string()), Labels: z.record(z.string(), z.string()) }).passthrough(),
       HostConfig: z.object({ Privileged: z.boolean(), CapDrop: z.array(z.string()).nullable(), CapAdd: z.array(z.string()).nullable(),

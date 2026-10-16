@@ -46,6 +46,3 @@ export const SessionContainerHeartbeat = z.object({ activeTurn: z.boolean(), act
 export type SessionContainerHeartbeat = z.infer<typeof SessionContainerHeartbeat>;
 export const SessionContainerHeartbeatResult = z.object({ stop: z.boolean() }).strict();
 export type SessionContainerHeartbeatResult = z.infer<typeof SessionContainerHeartbeatResult>;
-
-export const SessionContainerTicket = z.object({ ticket: z.string().min(32).max(200) }).strict();
-export type SessionContainerTicket = z.infer<typeof SessionContainerTicket>;

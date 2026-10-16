@@ -59,7 +59,9 @@ const app = buildApi({
   execution: execution === "on-demand" ? "dedicated" : "pool",
   delegations: new DelegationStore(pool, sharedStore, store),
   hosting,
-  ...(process.env.SHARED_WORKER_KEY ? { shared: { url: serviceUrl("session-host"), key: requireEnv("SHARED_WORKER_KEY") } } : {}),
+  ...(process.env.SHARED_WORKER_KEY ? { shared: {
+    url: serviceUrl("session-host"), key: requireEnv("SHARED_WORKER_KEY"), brokerUrl: requireEnv("CONNECTION_BROKER_URL"),
+  } } : {}),
   ...(sessionContainers ? {
     containers: new ContainerSessionService({
       store: new SessionContainerStore(pool, sharedStore), allocations: new AllocationStore(pool, sharedStore), directory: new SessionDirectory(pool),
@@ -67,7 +69,7 @@ const app = buildApi({
       principals: SharedPrincipalBindings.parse(JSON.parse(requireEnv("SHARED_PRINCIPALS"))),
       limits: SharedWorkerLimits.parse(JSON.parse(optionalEnv("SHARED_WORKER_LIMITS", "{}"))),
       sessionLimits: SharedSessionLimits.parse(JSON.parse(optionalEnv("SHARED_SESSION_LIMITS", "{}"))),
-      ...(process.env.CONNECTION_BROKER_URL ? { brokerUrl: requireEnv("CONNECTION_BROKER_URL") } : {}),
+      brokerUrl: requireEnv("CONNECTION_BROKER_URL"),
     }),
   } : {}),
   ...(hostOwner ? {

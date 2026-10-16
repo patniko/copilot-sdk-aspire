@@ -5,13 +5,14 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { SessionContainerHeartbeatResult, SessionContainerSpec } from "@copilot-agent/contracts";
-import { createLogger, createService, optionalEnv, readServerKey, registerAhpProxy, requireEnv, secretsEqual, serviceUrl } from "@copilot-agent/service-defaults";
+import { createLogger, createService, optionalEnv, readServerKey, registerAhpProxy, requireEnv, serviceUrl } from "@copilot-agent/service-defaults";
 import { EXECUTION_UID, INGRESS_PORT, OWNER_PORT, OwnerMessage, type OwnerConfiguration } from "./protocol.js";
 
 /**
  * Session container supervisor. It holds the allocation-scoped credential, publishes readiness and liveness to the
- * dispatcher, brokers inference grants for the owner, and authenticates every ingress connection with a one-use
- * ticket or the broker's per-allocation credential. The agent loop runs in a separate process as the execution user.
+ * dispatcher, brokers inference grants for the owner, and accepts only ingress connections the connection broker
+ * forwards with the per-allocation ingress credential after consuming the client's one-use ticket. The agent loop
+ * runs in a separate process as the execution user.
  */
 if (process.platform !== "linux" || process.getuid?.() !== 0) {
   throw new Error("The session container supervisor must run as root in its Linux container to start the unprivileged owner.");
@@ -66,11 +67,9 @@ const app = createService({ name: "session-container", ready: async () => {
 } });
 registerAhpProxy(app, {
   ready: () => ready && !stopping,
-  resolve: async (path, ticket) => {
-    if (path !== "/" && path !== `/sessions/${sessionId}`) return undefined;
-    const authorized = secretsEqual(ticket, ingressCredential)
-      || (await post("connection", { ticket }, z.object({ authorized: z.boolean() }).strict())).authorized;
-    if (!authorized) return undefined;
+  forwardedBy: ingressCredential,
+  resolve: async (path) => {
+    if (path !== `/sessions/${sessionId}`) return undefined;
     activity = true;
     return { token: listenerToken, targetPort: OWNER_PORT };
   },

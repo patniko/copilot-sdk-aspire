@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
-  policyFor, SessionContainerHeartbeat, SessionContainerReady, SessionContainerTicket,
+  policyFor, SessionContainerHeartbeat, SessionContainerReady,
   type PolicySet, type SessionContainerHeartbeatResult, type SessionContainerSpec,
 } from "@copilot-agent/contracts";
 import { StoreError, type AllocationStore, type SessionContainerStore } from "@copilot-agent/job-store";
@@ -16,8 +16,8 @@ export interface SessionContainerDispatcherDependencies {
 
 /**
  * Routes for session containers. Each authenticates the container's allocation credential, which is bound to one
- * session: the container can read only its own session's spec, publish its own readiness, consume tickets issued for
- * its allocation, and obtain inference grants for its own session budget.
+ * session: the container can read only its own session's spec, publish its own readiness and liveness, and obtain
+ * inference grants for its own session budget. Client tickets are consumed by the connection broker, not here.
  */
 export function registerSessionContainerRoutes(app: FastifyInstance, deps: SessionContainerDispatcherDependencies, signingKey: string): void {
   const container = async (request: FastifyRequest) => {
@@ -56,11 +56,6 @@ export function registerSessionContainerRoutes(app: FastifyInstance, deps: Sessi
   app.post("/internal/session-containers/heartbeat", async (request): Promise<SessionContainerHeartbeatResult> => {
     const allocation = await container(request);
     return deps.allocations.containerHeartbeat(allocation.id, parse(SessionContainerHeartbeat, request.body));
-  });
-  app.post("/internal/session-containers/connection", async (request, reply) => {
-    const allocation = await container(request);
-    reply.header("cache-control", "no-store");
-    return { authorized: await deps.store.consumeTicket(allocation.id, parse(SessionContainerTicket, request.body).ticket) };
   });
   app.post("/internal/session-containers/token", async (request, reply) => {
     const allocation = await container(request);

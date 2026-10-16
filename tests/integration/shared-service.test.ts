@@ -7,12 +7,16 @@ import type { AddressInfo } from "node:net";
 import pg from "pg";
 import type { FastifyInstance } from "fastify";
 import { expect, inject, it } from "vitest";
+import WebSocket from "ws";
 import { SHARED_WORKER_FEATURES, SharedConnection, SharedSessionView, SharedWorkerLimits } from "@copilot-agent/contracts";
-import { JobEventListener, JobStore, migrate, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
+import { JobEventListener, JobStore, migrate, PlacementStore, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
 import { Admission, ApiKeyAuthenticator, signSessionCapability } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../src/agent-api/src/server.js";
+import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
 import { SharedSessionService } from "../../src/session-host/src/service.js";
 import { buildSharedHost } from "../../src/session-host/src/server.js";
+import { buildBroker } from "../../src/connection-broker/src/broker.js";
+import { containerUpstream, DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/connection-broker/src/sessions.js";
 import { buildGateway } from "../../src/inference-gateway/src/server.js";
 import { parseRoutes } from "../../src/inference-gateway/src/routes.js";
 import { localRuntimeArtifacts } from "../runtime/artifacts.js";
@@ -20,6 +24,37 @@ import { sharedAdmission, sharedHarness, sharedRegistry } from "./fixtures/share
 
 const enabled = process.env.HYBRID_SESSION_RUNTIME_TESTS === "1";
 const address = (server: FastifyInstance["server"]) => `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+/** Opens a brokered AHP connection and reads the authentication key the runtime advertises through it. */
+async function brokeredServerKey(connection: SharedConnection): Promise<{ keyId: string; publicKey: string } | number> {
+  const socket = new WebSocket(`${connection.url}?tkn=${encodeURIComponent(connection.token)}`);
+  try {
+    const opened = await new Promise<number | undefined>((resolve, reject) => {
+      socket.once("open", () => resolve(undefined));
+      socket.once("unexpected-response", (_request, response) => { response.resume(); resolve(response.statusCode ?? 0); });
+      socket.once("error", reject);
+    });
+    if (opened !== undefined) return opened;
+    const call = (id: number, method: string, params: object) => new Promise<unknown>((resolve, reject) => {
+      const listener = (data: Buffer) => {
+        const message = JSON.parse(data.toString()) as { id?: number; result?: unknown; error?: unknown };
+        if (message.id !== id) return;
+        socket.off("message", listener);
+        if (message.error) reject(new Error("The brokered runtime rejected the request."));
+        else resolve(message.result);
+      };
+      socket.on("message", listener);
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+    });
+    await call(1, "initialize", { channel: "ahp-root://", clientId: `broker-probe-${randomUUID()}`, protocolVersions: ["0.9.0"] });
+    const root = await call(2, "subscribe", { channel: "ahp-root://" }) as {
+      snapshot: { state: { _meta: { "copilot.encryptionKeys": Array<{ keyId: string; publicKey: string; use: string }> } } };
+    };
+    return root.snapshot.state._meta["copilot.encryptionKeys"].find((key) => key.use === "auth-token")!;
+  } finally {
+    socket.terminate();
+  }
+}
 
 it.skipIf(!enabled)("provisions protected shared sessions, accounts usage, deduplicates continuations, and evicts idle residents", async () => {
   await localRuntimeArtifacts();
@@ -31,6 +66,7 @@ it.skipIf(!enabled)("provisions protected shared sessions, accounts usage, dedup
   const apiKey = "synthetic-shared-api-key-".repeat(2);
   const otherKey = "synthetic-other-api-key-".repeat(2);
   const controlKey = "synthetic-control-key-".repeat(2);
+  const brokerKey = "synthetic-connection-broker-key-".repeat(2);
   const signingKey = "synthetic-signing-key-".repeat(3);
   const grants: string[] = [];
   let calls = 0;
@@ -38,6 +74,8 @@ it.skipIf(!enabled)("provisions protected shared sessions, accounts usage, dedup
   let api: FastifyInstance | undefined;
   let host: FastifyInstance | undefined;
   let gateway: FastifyInstance | undefined;
+  let dispatcher: FastifyInstance | undefined;
+  let broker: FastifyInstance | undefined;
   const upstream = createServer((request, response) => {
     if (request.method !== "POST" || request.url !== "/chat/completions") return response.writeHead(404).end();
     request.resume();
@@ -84,7 +122,6 @@ it.skipIf(!enabled)("provisions protected shared sessions, accounts usage, dedup
       admission: sharedAdmission(registry, { sessionLimits: { idleSeconds: 2, tokenBudget: 1000, turnTokenBudget: 400, maxContinuations: 2 } }),
       limits: SharedWorkerLimits.parse({ residentSessions: 1, activeTurns: 1 }),
       gatewayUrl: `${address(gateway.server)}/openai/v1`,
-      publicUrl: () => address(host!.server),
       mintToken: async (lease, turn) => {
         const grant = await store.grant(lease, turn.id);
         const token = await signSessionCapability(signingKey, {
@@ -97,15 +134,25 @@ it.skipIf(!enabled)("provisions protected shared sessions, accounts usage, dedup
       report: () => {},
     });
     await service.start();
-    host = buildSharedHost(service, controlKey);
+    host = buildSharedHost(service, controlKey, brokerKey);
     await host.listen({ port: 0, host: "127.0.0.1" });
     const harnesses = new Map(registry.harnesses);
     const profiles = new Map(registry.profiles);
+    dispatcher = buildDispatcher({
+      store: new JobStore(pool), policies: registry.policies, executorKey: "unused-executor-key-".repeat(3),
+      gatewayKey: "unused-gateway-key-".repeat(3), signingKey, broker: { store: new PlacementStore(pool), key: brokerKey },
+    });
+    await dispatcher.listen({ port: 0, host: "127.0.0.1" });
+    ({ app: broker } = buildBroker({
+      families: [sessionRoutes(new DispatcherDirectory(address(dispatcher.server), brokerKey))],
+      upstreams: { shared: sharedUpstream(new URL(address(host.server)), brokerKey), container: containerUpstream() },
+    }));
+    await broker.listen({ port: 0, host: "127.0.0.1" });
     api = buildApi({
       store: new JobStore(pool), listener: new JobEventListener(pool), harnesses,
       admission: new Admission({ harnesses, profiles, policies: registry.policies }), maxOpenJobsPerPrincipal: 10, console: false,
       authenticator: new ApiKeyAuthenticator(`${principal}:${apiKey};${other}:${otherKey}`),
-      shared: { url: address(host.server), key: controlKey },
+      shared: { url: address(host.server), key: controlKey, brokerUrl: address(broker.server) },
       hosting: { harnesses, profiles, policies: registry.policies, deployment: { isolatedHosts: [], sharedWorker: { transports: ["direct"], features: [...SHARED_WORKER_FEATURES] } } },
     });
     const headers = { authorization: `Bearer ${apiKey}` };
@@ -131,13 +178,11 @@ it.skipIf(!enabled)("provisions protected shared sessions, accounts usage, dedup
     expect(connected.statusCode).toBe(200);
     expect(connected.headers["cache-control"]).toBe("no-store");
     const connection = SharedConnection.parse(connected.json());
-    expect(connection.url).toBe(`${address(host.server).replace("http:", "ws:")}/sessions/${session.id}`);
+    expect(connection.url).toBe(`${address(broker.server).replace("http:", "ws:")}/sessions/${session.id}`);
     expect(connection).toMatchObject({ transport: "direct", ahpSessionId: session.id });
-    const path = new URL(connection.url).pathname;
-    const target = await service.resolveConnection(path, connection.token);
-    expect(target).toBeDefined();
-    expect(target!.token).not.toBe(connection.token);
-    expect(await service.resolveConnection(path, connection.token)).toBeUndefined();
+    expect(await brokeredServerKey({ ...connection, url: `${address(host.server).replace("http:", "ws:")}/sessions/${session.id}` })).toBe(401);
+    expect(await brokeredServerKey(connection)).toMatchObject({ keyId: connection.serverKey.keyId, publicKey: connection.serverKey.publicKey });
+    expect(await brokeredServerKey(connection)).toBe(401);
     const notification = randomUUID();
     expect(await service.continueConversation(principal, session.id, notification, "Synthetic completion; summarize briefly.")).toBe("delivered");
     await wait(async () => (await store.get(principal, session.id))?.view.budget.usedTokens === 13 && !service!.busy(session.id), "waiting for durable inference settlement");
@@ -154,7 +199,7 @@ it.skipIf(!enabled)("provisions protected shared sessions, accounts usage, dedup
     expect((await api.inject({ method: "POST", url: `/v1/sessions/${session.id}/connection`, headers })).statusCode).toBe(404);
     expect(service.residentCount).toBe(0);
   } finally {
-    try { await api?.close(); await host?.close(); if (!host) await service?.stop(); await gateway?.close(); }
+    try { await api?.close(); await broker?.close(); await host?.close(); if (!host) await service?.stop(); await dispatcher?.close(); await gateway?.close(); }
     finally {
       try {
         if (upstream.listening) await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));

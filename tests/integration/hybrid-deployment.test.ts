@@ -13,11 +13,13 @@ import {
   HarnessDefinition, ExecutionContainerSettings, SHARED_WORKER_FEATURES, SharedWorkerLimits, SharedConnection, SharedSessionView,
 } from "@copilot-agent/contracts";
 import {
-  AllocationStore, DelegationStore, JobEventListener, JobStore, SharedStore, SessionFileStore, migrate,
+  AllocationStore, DelegationStore, JobEventListener, JobStore, PlacementStore, SharedStore, SessionFileStore, migrate,
 } from "@copilot-agent/job-store";
 import { Admission, ApiKeyAuthenticator, createLogger, loadPolicySet, loadProfiles, sha256Hex, canonicalJson } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../src/agent-api/src/server.js";
 import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
+import { buildBroker } from "../../src/connection-broker/src/broker.js";
+import { containerUpstream, DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/connection-broker/src/sessions.js";
 import { DispatcherClient as GatewayClient } from "../../src/inference-gateway/src/dispatcher-client.js";
 import { buildGateway } from "../../src/inference-gateway/src/server.js";
 import { parseRoutes } from "../../src/inference-gateway/src/routes.js";
@@ -51,6 +53,7 @@ it.skipIf(!enabled)("drives CLI delegation through actual Linux containers and d
   const namespace = `hybrid-test-${randomUUID().slice(0, 12)}`;
   const key = "synthetic-api-key-".repeat(3);
   const workerKey = "synthetic-worker-key-".repeat(3);
+  const brokerKey = "synthetic-connection-broker-key-".repeat(2);
   const gatewayKey = "synthetic-gateway-key-".repeat(3);
   const executorKey = "synthetic-pool-key-".repeat(3);
   const signingKey = "synthetic-inference-key-".repeat(3);
@@ -170,7 +173,7 @@ it.skipIf(!enabled)("drives CLI delegation through actual Linux containers and d
     const admission = new Admission({ harnesses, profiles, policies });
     await new Promise<void>((resolve, reject) => { upstream.once("error", reject); upstream.listen(0, "127.0.0.1", resolve); });
     const dispatcher = buildDispatcher({ store: jobs, policies, executorKey, gatewayKey, signingKey,
-      shared: { store: shared, key: workerKey }, allocations, delegations });
+      shared: { store: shared, key: workerKey }, broker: { store: new PlacementStore(pool), key: brokerKey }, allocations, delegations });
     apps.push(dispatcher);
     await dispatcher.listen({ port: 0, host: "0.0.0.0" });
     const gatewayClient = new GatewayClient(address(dispatcher.server), gatewayKey, 0);
@@ -187,7 +190,7 @@ it.skipIf(!enabled)("drives CLI delegation through actual Linux containers and d
     service = new SharedSessionService({
       root, store: shared, files: new SessionFileStore(pool), principals: { [principal]: githubUserId }, limits: workerLimits,
       admission: sharedAdmission({ harnesses, profiles, policies }, { sessionLimits: { idleSeconds: 300, maxTurnSeconds: 90 }, delegation: [definition.name] }),
-      gatewayUrl: `${address(gateway.server)}/openai/v1`, publicUrl: () => address(host.server),
+      gatewayUrl: `${address(gateway.server)}/openai/v1`,
       mintToken: async (lease, turn) => {
         const response = await dispatcher.inject({ method: "POST", url: "/internal/shared/grant",
           headers: { "x-internal-key": workerKey }, payload: { lease, turnId: turn.id } });
@@ -198,15 +201,22 @@ it.skipIf(!enabled)("drives CLI delegation through actual Linux containers and d
       report: (event) => { if (event.endsWith("_failed")) errors.push(event); },
     });
     await service.start();
-    host = buildSharedHost(service, workerKey);
+    host = buildSharedHost(service, workerKey, brokerKey);
     apps.push(host);
     await host.listen({ port: 0, host: "127.0.0.1" });
+    const { app: broker } = buildBroker({
+      families: [sessionRoutes(new DispatcherDirectory(address(dispatcher.server), brokerKey))],
+      upstreams: { shared: sharedUpstream(new URL(address(host.server)), brokerKey), container: containerUpstream() },
+    });
+    apps.push(broker);
+    await broker.listen({ port: 0, host: "127.0.0.1" });
     pump = new CompletionPump(service, delegations, jobs, createLogger("hybrid-test-completions"));
     pump.start();
-    const api = buildApi({ store: jobs, listener: new JobEventListener(pool), admission, harnesses,
+    const callerApi = () => buildApi({ store: jobs, listener: new JobEventListener(pool), admission, harnesses,
       authenticator: new ApiKeyAuthenticator(`${principal}:${key}`), maxOpenJobsPerPrincipal: 10, console: false,
-      shared: { url: address(host.server), key: workerKey }, delegations, execution: "dedicated",
+      shared: { url: address(host.server), key: workerKey, brokerUrl: address(broker.server) }, delegations, execution: "dedicated",
       hosting: { harnesses, profiles, policies, deployment: { executor: "dedicated", isolatedHosts: [], sharedWorker: { transports: ["direct"], features: [...SHARED_WORKER_FEATURES] } } } });
+    let api = callerApi();
     apps.push(api);
     controller = new ExecutionController({
       allocations, jobs, delegations, settings: ExecutionContainerSettings.parse({
@@ -222,10 +232,17 @@ it.skipIf(!enabled)("drives CLI delegation through actual Linux containers and d
     sessionIds.push(session.id);
     const response = await api.inject({ method: "POST", url: `/v1/sessions/${session.id}/connection`, headers });
     expect(response.statusCode).toBe(200);
+    const connection = SharedConnection.parse(response.json());
+    expect(connection.url).toBe(`${address(broker.server).replace("http:", "ws:")}/sessions/${session.id}`);
     cli = new QualificationCli(root, credential);
-    await cli.connect(SharedConnection.parse(response.json()));
+    await cli.connect(connection);
     await cli.send("Answer a lightweight question without delegating.");
     await cli.waitFor("HYBRID_LIGHTWEIGHT_REPLY");
+    // A configurator harness reload restarts the API; the brokered CLI connection does not pass through it.
+    await api.close();
+    apps.splice(apps.indexOf(api), 1);
+    api = callerApi();
+    apps.push(api);
     expect((await pool.query<{ count: number }>("SELECT count(*)::int AS count FROM execution_allocations WHERE namespace=$1", [namespace])).rows[0]!.count).toBe(0);
     await wait(async () => !service!.busy(session.id), "waiting for the lightweight turn to finish");
     for (const [index, profile] of ["node-ts-agent", "python-agent"].entries()) {

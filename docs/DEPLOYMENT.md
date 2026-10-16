@@ -101,8 +101,10 @@ and available through the configured gateway. Existing Foundry configuration is 
 The runtime launcher must match the **host** OS/architecture and have its matching library beside it;
 do not point a Windows Node worker at the Linux container bundle.
 
-The AppHost adds `session-host` and `execution-controller` Node services, a private worker key and
-allocation-signing key, and removes the always-on `agent-executor` resource. The controller starts
+The AppHost adds `connection-broker`, `session-host`, and `execution-controller` Node services, private
+worker, broker, and allocation-signing keys, and removes the always-on `agent-executor` resource. The CLI
+attaches only to the broker, whose URL the API returns; the broker consumes tickets through the dispatcher
+and holds no database, caller, or provider credential. The controller starts
 one-shot instances of the prebuilt executor image, including for ordinary `/v1/jobs` submissions.
 They have no database, Docker socket, or provider credential. API/dispatcher/gateway and PostgreSQL
 remain shared; optional `agent-host` compute is additional and is not counted as idle execution capacity.
@@ -117,9 +119,12 @@ pnpm host:connect --destination shared --target local --transport direct --resum
 ```
 
 The shared launcher explicitly consents to GitHub identity authentication to the provisioned host.
-It does not expose the private listener token or request paid inference itself. Ordinary conversation
+It connects through the broker URL that the API returns and does not expose the private listener token
+or request paid inference itself. Ordinary conversation
 and delegated work use your configured model and incur its normal cost.
-After idle eviction, obtain a new ticket with the resume command. Stop the AppHost to stop the shared
+After idle eviction, obtain a new ticket with the resume command. Restarting `agent-api`, for example with
+the configurator's **Reload harnesses**, leaves an attached CLI connected; restarting `connection-broker` or
+`session-host` disconnects it. Stop the AppHost to stop the shared
 service and retire its managed execution containers; closing only the CLI preserves the conversation.
 Set `hybrid-hosting=false` and restart to return to the existing executor-pool topology.
 For a parallel worktree, use `--isolated` with explicit environment inputs. The AppHost profile no
@@ -195,11 +200,12 @@ docker volume ls --filter label=copilot.hybrid.managed=volume
 docker volume rm <volume-name>
 ```
 
-The container listens on a host-loopback published port, and the API returns that port's URL until the
-connection broker routes container placements. It holds only its allocation and ingress credentials: no
-database, Docker, signing, provider, or relay credential. A local gate has exercised a real CLI attaching over
-direct WSS, synthetic inference, idle stop, resume with history and files intact, and capacity returning to zero.
-This is not Azure, paid-model, or broker evidence.
+The container's ingress is published on host loopback for the connection broker, which consumes each client's
+one-use ticket and forwards with the allocation's ingress credential; clients never connect to the container
+directly. It holds only its allocation and ingress credentials: no database, Docker, signing, provider, broker, or
+relay credential. A local gate has exercised a real CLI attaching through the broker over direct WSS, synthetic
+inference, idle stop, resume with history and files intact, and capacity returning to zero. This is not Azure or
+paid-model evidence.
 
 ### Shared worker container
 
@@ -217,13 +223,18 @@ The separate `customer-config` context supplies reviewed harnesses/policy withou
 examples. Use `--build-context customer-config=examples/customer-config` only for a synthetic sample
 image. Do not put credentials in that context. Alternatively mount an operator-managed `/config`
 read-only and set `CONFIG_ROOT` at runtime. `PLATFORM_ROOT` remains `/platform`.
-Configure the same database, dispatcher/gateway URLs, worker key, principal/model/harness settings and
-`SHARED_PUBLIC_URL` as the Node service, and retain `/data`. The image runs unprivileged and contains
+Configure the same database, dispatcher/gateway URLs, worker key, broker key (`CONNECTION_BROKER_KEY`),
+and principal/model/harness settings as the Node service, and retain `/data`. Set `SHARED_WORKER_URL` to the
+container's own URL and `CONNECTION_BROKER_URL` to the broker's, as the AppHost does, so shared web and MCP egress
+refuses both listeners. Clients reach the container
+only through a connection broker configured with the same broker key and the container's URL as its
+`session-host` endpoint; the worker refuses public tickets. The image runs unprivileged and contains
 the matching SDK plus native launcher/library and source provenance. It does not include the controller
 or receive Docker authority. Shared runtime catalog/anchors still need the retained `/data` root even
 though session content is PostgreSQL-backed.
 
-The local gate has exercised a real CLI, synthetic inference, TypeScript and Python jobs in real Linux
+The local gate has exercised a real CLI through the connection broker, an API restart during an attached
+conversation, synthetic inference, TypeScript and Python jobs in real Linux
 containers, retained file outputs, completion return, and zero remaining containers. This is not a
 paid-model performance comparison, two-real-account qualification, or Azure rollout evidence.
 

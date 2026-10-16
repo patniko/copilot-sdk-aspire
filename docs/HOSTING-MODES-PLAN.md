@@ -1022,11 +1022,159 @@ Pending.
 
 ### Stage 2: connection broker
 
-Pending.
+Recorded 2026-10-15 on branch `patniko-connection-broker` (commits `b0cc328`, `4c9cad5`, `6bdc70c`, `af03bae`), then
+merged with the integration branch at `9c6b918` (harness-driven shared mode) in `f18c658` and re-verified there. A
+second merge at `4272621` (egress review fixes) was re-verified with the baseline, unit, integration, and
+native-runtime suites; the real-CLI, container, and AppHost gates below ran on `f18c658`.
+
+Delivered, all local and opt-in through `Parameters:hybrid-hosting`:
+
+- A separate `connection-broker` service ([source](../src/connection-broker/src/broker.ts)) gives each session one
+  stable WebSocket path, `/sessions/{id}`. It consumes one-use tickets through the internal dispatcher route
+  `POST /internal/broker/connection`, then forwards bytes unchanged to the session's placement. Its only credential
+  is `CONNECTION_BROKER_KEY`; it holds no caller API key, database credential, inference grant, or provider
+  credential. `POST /v1/sessions/{id}/connection` returns the broker URL with the harness-driven `transport` and
+  `ahpSessionId` fields.
+- The shared worker accepts only connections forwarded with the broker key, for the activation epoch the consumed
+  ticket was issued for, and refuses public tickets. Tickets keep their 60-second, one-use semantics and the CLI's
+  server-key pin flow. The singleton demo `agent-host` direct path is unchanged.
+- Placement abstraction ([contract](../contracts/src/placement.ts)): `PlacementKind` (`shared` only),
+  `SessionPlacement`, and `PlacementRoute`; ledger columns `shared_sessions.placement` and `placement_generation`
+  (migration `009`); tickets bound to the generation; `PlacementStore`; and `POST /internal/broker/placements` for
+  live-route checks.
+- A distinguishable close: WebSocket code `4301`, reason `moved`, injected at a frame boundary when a live route's
+  placement kind or generation changes. The broker checks live routes every second and re-checks when an upstream
+  closes, replacing that close with `moved` if the placement changed.
+- Local AppHost wiring: a `connection-broker` Node resource and a generated `connection-broker-key` in the hybrid
+  branch. `pnpm host:connect --destination shared` works unchanged through the returned URL and now also verifies
+  the URL's session path.
+
+| Gate | Command | Result |
+| --- | --- | --- |
+| Baseline | `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`, `pnpm typecheck`, `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint` | All exit 0 |
+| Unit | `pnpm test:unit` | 511 passed, 1 skipped after the second merge (508 after the first). Before merging: 299 passed, 1 skipped (baseline 286; 14 new broker, frame, proxy, and placement cases) |
+| Integration | `pnpm test:integration` | 64 passed, 10 opt-in skipped (62 and 8 before the merge). New: ticket consumption and placement lookup, live connections across an `agent-api` restart, forwarded-only worker ingress, and `moved` after a test-only generation change |
+| Native runtime | `HYBRID_SESSION_RUNTIME_TESTS=1 COPILOT_AHP_FACTORY_PROFILE=managed`, `shared-service.test.ts`, `shared-session-runtime.test.ts`, and `shared-egress-runtime.test.ts` | 4 passed; an AHP handshake through the broker reached the runtime and returned its pinned key |
+| Real CLI | `HYBRID_CLI_TESTS=1 HYBRID_USE_GH_ACCOUNT=1`, `shared-cli.test.ts` | Passed with a harness-driven session: API, broker, dispatcher ticket consumption, shared worker; the CLI kept answering while `agent-api` was stopped and restarted; a replacement worker behind the same broker resumed the conversation for a fresh CLI |
+| Real containers | `HYBRID_DEPLOYMENT_TESTS=1 HYBRID_EXECUTOR_IMAGE=copilot-hybrid-executor:connection-broker`, `hybrid-deployment.test.ts` | Passed (57.9 s; 59.5 s before the merge), with `agent-api` replaced while the CLI stayed attached |
+| Packaged images | `HYBRID_CONTAINER_TESTS=1 HYBRID_SESSION_IMAGE=copilot-hybrid-session-host:connection-broker`, `shared-image.test.ts` and `artifact-safety.test.ts` | 2 passed |
+| Local AppHost | `aspire start --isolated` with hybrid parameters and a non-routable Foundry endpoint | All seven services healthy; a `hybrid-coordinator` session's connection returned the broker URL, `transport: "direct"`, and `ahpSessionId`; a brokered AHP session stayed open and answered across `aspire resource agent-api restart` (the configurator's **Reload harnesses**); the used ticket was refused; `pnpm host:connect --destination shared --resume <id>` attached the CLI through the broker |
+
+Runtime and artifacts: the Windows in-process pair `.runtime-artifacts/cli-workspace-fix` (`copilot-runtime.exe`
+`d843b17a242886e4504bebdd39c1563cece0eec248fc3dcbfe921d209cf88c4d`, `runtime.node`
+`ed6e2dda07580c86845b9edc30c59a03f584a4ef6651de6712cc34fedb3f357b`) and the CLI `dist-cli/index.js`
+(`e520ae56fc901a56dc821bcf9795255a489bff05e9a606b5d4fa526c586ccdf9`) from the runtime checkout at `0a32c39595f`.
+The `dist-cli/prebuilds/win32-arm64` launcher (`20791e27…`) predates that revision's Windows workspace
+path-spelling fix and refuses every CLI attachment with `application session resume failed`. The unmodified base
+gate reproduces this. The Linux bundle `hybrid-linux-arm64-verified` (runtime `0a32c39595f`, hosting `b20e188`)
+built `copilot-hybrid-session-host:connection-broker` (merged tree `sha256:910603c3…`; earlier `sha256:5278e5b9…`). The
+executor image `copilot-hybrid-executor:connection-broker` (merged tree `sha256:85b2f5a3…`; earlier `sha256:e677df02…`)
+was built from `deploy/Dockerfile`, which now installs the broker package. Inference was synthetic throughout.
+
+The merge kept harness-driven sessions on the broker path: the shared worker returns ticket material with
+`ahpSessionId`, the API adds the broker URL and `transport`, and `ConnectionTicket` lives in `shared.ts` to avoid a
+contracts import cycle. The worker's egress filter previously took its own address from `SHARED_PUBLIC_URL`, which
+no longer exists; it now refuses its own listener and the broker's through `SHARED_WORKER_URL` and
+`CONNECTION_BROKER_URL`.
+
+Extension points for later stages: add a placement kind to `PlacementKind`, the `shared_sessions_placement_kind`
+constraint, `PlacementRoute`, a `CASE` branch in `PlacementStore.consumeTicket`, and the broker's per-kind upstream
+table. Add another path family, such as `/hosts/{harness}`, as a `RouteFamily` with its own dispatcher route and an
+optional route check. A placement change updates `placement` and increments `placement_generation` in one transaction.
+
+Limitations: no production operation changes a placement yet, so `moved` has been exercised only by test-only
+generation changes, and clients do not reconnect on their own (stage 5). A move is noticed within about a second,
+or at once when the old placement closes. The broker is one local process with plain loopback WebSocket ingress; TLS,
+Azure resources, multi-replica routing, and container tunnels are not implemented, and restarting the broker or the
+shared worker disconnects clients. The broker can read the AHP traffic it forwards, except the sealed GitHub
+authentication. The configurator's hosting view does not show the broker yet. The demo host image gates were not
+rerun; its ticket-mode proxy path is covered by a unit test. This is not paid-model, two-account, or Azure evidence.
 
 ### Stage 2: shared-placement egress and remote MCP
 
-Pending.
+2026-10-15, branch `patniko-shared-egress-and-remote-mcp`: commits `8a8647d` (filter, `web_fetch`, MCP client,
+tests), `0358927` (shared-worker adapter, tool names), `041f9ad` (fixes from an independent review), merge `3d2f85d`
+of the integration branch at `9c6b918`, `cb6650f` (reconciles the shared toolkit with the fixes), and the
+documentation commits that add this entry. The harness-driven shared mode slice wires this code into the shared
+worker ([`toolkit.ts`](../src/session-host/src/toolkit.ts)); evidence for served shared harnesses belongs to that
+slice's record. Current behavior and limits are described in
+[security](SECURITY.md#shared-placement-egress-and-remote-mcp).
+
+| Piece | Source | Behavior |
+| --- | --- | --- |
+| Egress filter | [`egress.ts`](../src/service-defaults/src/egress.ts) | Refuses everything except global unicast (IANA special-purpose registries, IPv4-mapped/compatible/NAT64/6to4/Teredo forms, cloud metadata and platform addresses), special-use and single-label names, and the deployment's own endpoints; resolves DNS once per hop and pins the connection; vets every redirect; one deadline; decompressed size bound; credentials on the first hop only |
+| Remote MCP client | [`remote-mcp.ts`](../src/service-defaults/src/remote-mcp.ts) | Streamable HTTP with JSON and SSE responses, sessions and re-initialization after 404, `Last-Event-ID` resumption, ping replies, and cancellation notices; no redirects; catalog ∩ harness tools; host-resolved credential with redaction; accepts the contracts' `McpServerPolicy` and `HarnessMcpServer` shapes |
+| Filtered `web_fetch` | [`web-fetch.ts`](../src/session-host/src/web-fetch.ts) | Overrides the runtime built-in with its input schema; keeps the runtime permission request; applies the harness `url` rule; bounded, paginated text; linear-time HTML simplification |
+| Shared-worker adapter | [`shared-egress.ts`](../src/session-host/src/shared-egress.ts) | `createSharedEgress()`: `webFetch` and `connectMcp` per activation, closed with it; `webFetchPermissionRequest` and `remoteMcpToolFor` map runtime permission requests to the harness `url` rule and MCP prompts |
+
+Decisions taken in this slice:
+
+- **Development exception.** `allowPrivateNetwork` on one catalog server (operator-only; approved for the policy
+  contract, which must also allow `http:` with a credential for such a server) admits loopback, private, shared,
+  and unique-local addresses for that exact origin only. Link-local and metadata addresses, internal endpoints,
+  and redirects stay refused.
+- **Strict resolution.** A DNS answer that mixes public and refused addresses refuses the request. NAT64, 6to4,
+  and Teredo forms are refused, so IPv6-only NAT64 networks are unsupported.
+- **Approvals stay in the runtime.** The runtime raises a `custom-tool` permission request with the arguments
+  before an overriding or plain custom tool runs, so neither tool skips it; the shared worker's permission handler
+  applies the harness rule and approval mode. Tools report refusals as `denied` or `failure`, never `rejected`,
+  which the runtime treats as a person halting the turn (`turn_engine/interaction/tool_phase.rs`).
+- **Replacement over the built-in.** The runtime's built-in `web_fetch` blocks some addresses but not multicast,
+  reserved, the IPv6 unspecified address, or transition forms, and it cannot refuse this deployment's own public
+  endpoints. The managed `limitTo` host allowlist (N3) was not evaluated in this slice.
+- **Names.** Remote tools are `mcp_<server>_<tool>` in `[a-z0-9_]`; a name that is ambiguous within the harness or
+  longer than 64 characters becomes a stable hashed form, so names stay fixed for a harness and effective policy.
+- **Review fixes.** An independent review of the first two commits found, and `041f9ad` fixed: URL port `0`, which
+  Node replaces with the default port after a port-scoped internal check; internal host names that had never
+  resolved left their addresses unprotected, so egress now pauses until each has resolved once; credential-like
+  generic headers could follow a redirect, so they are refused and only `accept`, `accept-encoding`,
+  `accept-language`, and `user-agent` follow; a server's `readOnlyHint` could relax approval under `ask`, so it is
+  now informational only (`cb6650f` removes the toolkit's quiet path for remote tools); and redaction missed
+  lowercase percent-encoded, unpadded, URL-safe, and embedded base64 forms.
+
+Recorded commands on the merged tree (`cb6650f`; Windows ARM64, Node 24.19, Docker 29.8.2 linux/arm64; synthetic
+loopback inference; no paid model or GitHub account):
+
+| Command | Result |
+| --- | --- |
+| `pnpm install`; `pnpm build`; `pnpm --filter @copilot-agent/configurator build` | Passed |
+| `aspire restore --apphost apphost.mts` with `ASPIRE_CLI_NUGET_SERVICE_INDEX` set to the package proxy | Passed; generates the AppHost modules a fresh worktree needs for type-checking |
+| `pnpm typecheck`; `pnpm typecheck:tests`; `pnpm --filter @copilot-agent/configurator typecheck`; `pnpm lint` | Passed |
+| `pnpm test:unit` | Passed: 500, 1 skipped (142 from this slice) |
+| `pnpm test:integration` | Passed: 61, 10 skipped (2 opt-in cases from this slice) |
+| `pnpm exec vitest run --project unit tests\unit\egress-filter.test.ts tests\unit\remote-mcp.test.ts tests\unit\web-fetch-tool.test.ts tests\unit\shared-egress.test.ts` | Passed: 142 |
+| `pnpm test:integration` with `HYBRID_SESSION_RUNTIME_TESTS=1`, `COPILOT_AHP_FACTORY_PROFILE=managed`, and `COPILOT_CLI_PATH` set to the candidate below | Passed: 65, 6 skipped (other opt-in gates), including `shared-session-runtime`, `shared-service`, and both `shared-egress-runtime` cases |
+| Manual `EgressFilter.request` without test seams | `https://example.com/` 200; `http://github.com/` redirected to HTTPS, 200, truncated at 512 KiB; `https://localhost/`, `http://169.254.169.254/latest/meta-data/`, and `https://example.com:0/` refused |
+
+The real-CLI, deployment, and container gates were not rerun: they build the shared service without the egress
+toolkit, so this slice does not change what they exercise.
+
+The opt-in runtime cases used the Windows ARM64 candidate `cli-workspace-fix` from the hybrid plan's
+[actual CLI record](HYBRID-HOSTING-PLAN.md#actual-cli-conversation): `copilot-runtime.exe` SHA-256
+`d843b17a242886e4504bebdd39c1563cece0eec248fc3dcbfe921d209cf88c4d`, `runtime.node` SHA-256
+`ed6e2dda07580c86845b9edc30c59a03f584a4ef6651de6712cc34fedb3f357b`, with the Node SDK linked from runtime revision
+`0a32c39595f`. In the first case, a `SharedSessionRuntime` conversation fetched a page, had a metadata URL refused
+without ending the turn, and called two tools on a fake SSE MCP server that echoes its credential. The credential was
+absent from every model request, session event, report, and PostgreSQL session file. The second case showed the
+runtime's `custom-tool` requests mapped to a `url` prompt and an MCP prompt, and a refused fetch never reached the
+site.
+
+Limitations:
+
+- The stage-2 exit evidence for served shared harnesses (two principals, CLI over direct WSS, approval modes) belongs
+  to the harness-driven shared mode slice.
+- Only requests made through the filter are covered; the runtime's own networking, other code in the process, and
+  containers remain unenforced, and the Azure egress proxy does not exist yet.
+- Automated tests reach public-looking host names through test seams that dial loopback after vetting; the live
+  check above is a manual run, not a gate.
+- Redaction covers raw, `Bearer`, URL-encoded (either hex case), form-encoded, JSON-escaped, and base64 forms
+  (padded or not, URL-safe, at any byte alignment) against accidental echo; a server can disclose its own
+  credential deliberately. Server-authored tool descriptions and schemas reach the model as untrusted input.
+- Not supported: per-user OAuth, the deprecated HTTP+SSE transport, server-initiated sampling, elicitation, and roots
+  (answered as unsupported), and binary tool content (replaced by a marker). Tool lists are cached for five minutes
+  per effective catalog; an unreachable server keeps stable names with permissive schemas and fails when called.
+- `web_fetch` returns text only (simplified HTML, plain text, JSON, XML), by default up to 2 MiB, 20 seconds, and
+  5 redirects.
 
 ### Stage 2: harness-driven shared mode
 
