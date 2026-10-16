@@ -1725,6 +1725,13 @@ Exit evidence; each command passed:
   `shared-approvals` (4), `shared-cli`, `shared-gate`, `shared-approval-cli`, `promotion-transplant` (2),
   `promotion-cli`, `session-container-runtime`, `shared-image`, `artifact-safety`, and `hybrid-deployment`. This run was
   on `011e59d`; the later commit changed only the supervisor and tests, and its gates were rerun as above.
+- **Without the app's environment.** The same 13 files were rerun on `166eaa3` with every `COPILOT_*` variable removed
+  except `COPILOT_CLI_PATH` and `COPILOT_AHP_FACTORY_PROFILE`, and with `AUTO_APPROVAL` removed (`GH_TOKEN` and
+  `GH_HOST` kept). 15 tests passed, including `promotion-cli` with the crash step (41 s), `promotion-transplant` (2),
+  `session-container-runtime`, and the shared, image, and deployment suites. The three `assisted`-mode approval tests
+  (`shared-approvals` 2, `shared-approval-cli` 1) failed with "The runtime refused the session's approval mode" when
+  opening an `assisted` session. That is a stage-2 runtime dependency on the injected feature flags, which this slice
+  does not touch; they pass with the flags present.
 
 Failure coverage (section 14):
 
