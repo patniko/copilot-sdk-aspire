@@ -46,7 +46,7 @@ Store no credentials there, protect its delivery like application configuration,
 | PostgreSQL network exposure | Public endpoint with the "allow Azure services" firewall rule; password authentication disabled (Entra only). The API and dispatcher identities are Entra administrators. | Private networking and least-privilege database roles. |
 | Service keys are Container Apps secrets | Dispatcher, executor, and gateway keys plus the capability signing key are generated parameters stored as Container Apps secrets. | Key Vault references and a rotation procedure. |
 | API keys for callers | Suitable for development and service-to-service use. | Microsoft Entra ID authentication with application authorization. |
-| MCP not implemented | Local and remote MCP placements from the plan are not yet available to harnesses. A [remote MCP client](#shared-placement-egress-and-remote-mcp) for shared placement exists as library code, but no served harness uses it yet; per-user sign-in (OAuth) is not implemented. | Implement with the same capability and gateway model; wire the remote client into shared hosting, then container placements. |
+| MCP partially implemented | Local (stdio) MCP is not available, and remote MCP is available only in shared placement, through the [remote MCP client](#shared-placement-egress-and-remote-mcp) with one service credential per server. Per-user sign-in (OAuth) is not implemented. | Implement local MCP with the same capability and gateway model; extend remote MCP to container placements; add per-user OAuth. |
 | Single trust boundary per deployment | Principals are isolated in the API and ledger, but share execution infrastructure. | Do not market as cross-customer isolation. |
 
 ## Local authoring boundaries
@@ -165,9 +165,10 @@ qualification remain outside the proven local scope.
 
 ### Shared-placement egress and remote MCP
 
-Status: library code for harness-driven shared hosting, verified locally by unit tests and an opt-in
-in-process runtime test; no served harness uses it yet. Evidence is in the
-[qualification record](HOSTING-MODES-PLAN.md#stage-2-shared-placement-egress-and-remote-mcp).
+Status: the harness-driven shared worker uses this code for `web` and remote MCP; served-harness evidence is in
+the [shared mode record](HOSTING-MODES-PLAN.md#stage-2-harness-driven-shared-mode). The filter, client, and tools
+were verified locally by unit tests and an opt-in in-process runtime test, recorded in the
+[egress qualification record](HOSTING-MODES-PLAN.md#stage-2-shared-placement-egress-and-remote-mcp).
 
 A shared worker can reach PostgreSQL, internal services, and cloud metadata endpoints, so web and remote
 MCP requests it makes for an agent must not. [`EgressFilter`](../src/service-defaults/src/egress.ts) is an
@@ -181,7 +182,8 @@ and the [remote MCP client](../src/service-defaults/src/remote-mcp.ts).
   (`localhost`, `.local`, `.internal`, `.arpa`, and others) and single-label names are refused before DNS.
 - It refuses the deployment's own endpoints, by name and by resolved address and port, even when public.
   The shared worker's adapter (`createSharedEgress`) configures them from Aspire service discovery and
-  connection strings, plus any operator-supplied hosts and networks.
+  connection strings, plus any operator-supplied hosts and networks. Until each configured host name has
+  resolved once, outbound requests are paused rather than allowed.
 - It resolves DNS once per hop, refuses the request if any answer is disallowed, and pins the connection to
   the vetted addresses, so a second lookup cannot rebind it. Every redirect hop is vetted again, and
   HTTPS-to-HTTP redirects are refused.
@@ -196,7 +198,7 @@ another host. The remote MCP client refuses all redirects, exposes only tools in
 and the harness request, resolves each server's single credential inside the host from a secret reference
 (`MCP_SECRET_<NAME>` environment variables locally), and redacts the credential and common encodings of it
 from tool descriptions, schemas, results, and errors. Redaction guards against accidental echo; a server
-can always disclose its own credential deliberately.
+can always disclose its own credential deliberately. A server's read-only hint never relaxes approval.
 
 An operator can set `allowPrivateNetwork` on one catalog server for development. Only that exact origin may
 then use a local or single-label host name, resolve to loopback, private, shared, or unique-local
@@ -206,4 +208,4 @@ redirects stay refused.
 Not covered: traffic that does not use the filter, including the runtime's own networking, other code in
 the process, and every container, so egress remains unenforced there. The filter is not a network sandbox
 and does not contain a compromised worker; the Azure design adds an egress proxy in front of the shared
-worker. Fetched pages and MCP results remain untrusted model input.
+worker. Fetched pages and remote MCP tool descriptions, schemas, and results remain untrusted model input.
