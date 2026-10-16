@@ -18,11 +18,25 @@ async function main(): Promise<void> {
   const harness = required("SUPERVISED_HARNESS");
   const cli = required("SUPERVISED_CLI");
   const connection = SharedConnection.parse(JSON.parse(required("SUPERVISED_CONNECTION")));
+  const debug = process.env.SUPERVISED_DEBUG === "1";
   const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("SUPERVISED_")));
+  // Numbered so a terminal that repaints earlier output (Windows ConPTY does) cannot make one event look like two.
+  let sequence = 0;
+  const note = (message: string) => process.stderr.write(`[launcher] #${++sequence} ${message}\r\n`);
   process.exitCode = await superviseSessionCli({
     command: process.execPath, args: [cli, "--experimental"], env, connection,
-    provision: () => reprovisionSession(api, harness, connection.transport, connection.sessionId),
-    notify: (message) => process.stderr.write(`[launcher] ${message}\r\n`),
+    provision: async () => {
+      const started = Date.now();
+      try {
+        const next = await reprovisionSession(api, harness, connection.transport, connection.sessionId);
+        if (debug) note(`debug: provisioned ${next.destination} key ${next.serverKey.keyId.slice(0, 12)} in ${Date.now() - started} ms`);
+        return next;
+      } catch (error) {
+        if (debug) note(`debug: provisioning failed in ${Date.now() - started} ms: ${error instanceof Error ? error.message.slice(0, 120) : "error"}`);
+        throw error;
+      }
+    },
+    notify: note,
   });
 }
 

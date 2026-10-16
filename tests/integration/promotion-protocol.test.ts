@@ -39,6 +39,8 @@ const keys = { executor: "synthetic-executor-key-".repeat(3), gateway: "syntheti
 const brokerKey = "synthetic-connection-broker-key-".repeat(2);
 const workerKey = "synthetic-shared-worker-key-".repeat(2);
 const apiKey = "synthetic-promotion-api-key-".repeat(2);
+const intruder = `promotion-intruder-${randomUUID()}`;
+const intruderKey = "synthetic-intruder-api-key-".repeat(2);
 const serverKey = { keyId: "promoted-container", algorithm: "x25519-sealedbox" as const, publicKey: "promoted-container-public-key" };
 const namespace = `promotion-${randomUUID().slice(0, 12)}`;
 const principal = `promotion-${randomUUID()}`;
@@ -378,7 +380,7 @@ describe("promotion protocol", () => {
     const profile = process.env.COPILOT_AHP_FACTORY_PROFILE;
     process.env.COPILOT_AHP_FACTORY_PROFILE = "managed";
     const service = new SharedSessionService({
-      root, store: shared, files, principals: { [principal]: 1 },
+      root, store: shared, files, principals: { [principal]: 1, [intruder]: 2 },
       admission: sharedAdmission(registry, { deployment: sharedWorkerDeployment({ promotion: true }) }),
       limits: capacity, gatewayUrl: "http://127.0.0.1:9", mintToken: async () => "unused", report: () => {},
       promotion: { store: promotions, settings, pollMs: 50 },
@@ -395,12 +397,12 @@ describe("promotion protocol", () => {
     const api = buildApi({
       store: jobs, listener: new JobEventListener(pool), harnesses,
       admission: new Admission({ harnesses, profiles, policies: registry.policies }),
-      maxOpenJobsPerPrincipal: 10, console: false, authenticator: new ApiKeyAuthenticator(`${principal}:${apiKey}`), hosting: catalog,
+      maxOpenJobsPerPrincipal: 10, console: false, authenticator: new ApiKeyAuthenticator(`${principal}:${apiKey};${intruder}:${intruderKey}`), hosting: catalog,
       delegations: new DelegationStore(pool, shared, jobs),
       shared: { url: `http://127.0.0.1:${(host.server.address() as AddressInfo).port}`, key: workerKey, brokerUrl: "http://127.0.0.1:47001" },
       containers: new ContainerSessionService({
         store: new SessionContainerStore(pool, shared), allocations, directory: new SessionDirectory(pool), catalog,
-        principals: { [principal]: 1 }, settings, limits: capacity, brokerUrl: "http://127.0.0.1:47001", connectWaitSeconds: 1,
+        principals: { [principal]: 1, [intruder]: 2 }, settings, limits: capacity, brokerUrl: "http://127.0.0.1:47001", connectWaitSeconds: 1,
       }),
     });
     try {
@@ -409,6 +411,10 @@ describe("promotion protocol", () => {
       expect(created.statusCode, created.body).toBe(201);
       const session = SharedSessionView.parse(created.json());
       expect(session).toMatchObject({ mode: "promotable", placement: "shared", segment: { generation: 1 } });
+      // Another configured principal can neither promote nor see the session.
+      const foreign = await api.inject({ method: "POST", url: `/v1/sessions/${session.id}/promote`, headers: { authorization: `Bearer ${intruderKey}` }, payload: {} });
+      expect(foreign.statusCode).toBe(404);
+      expect(await promotions.latest(principal, session.id)).toBeUndefined();
       const plain = await api.inject({ method: "POST", url: "/v1/sessions", headers, payload: { harness: "plain-shared" } });
       expect(plain.statusCode, plain.body).toBe(201);
       const refused = await api.inject({ method: "POST", url: `/v1/sessions/${SharedSessionView.parse(plain.json()).id}/promote`, headers, payload: {} });

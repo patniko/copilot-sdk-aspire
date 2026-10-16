@@ -55,6 +55,8 @@ class CliSupervisor {
   #token = randomBytes(32).toString("base64url");
   #connection: SessionConnection;
   #ticket?: SessionConnection;
+  /** Increments whenever the CLI is replaced; a provisioning result that started before then is stale. */
+  #version = 0;
   #child?: ChildProcess;
   #restarts = 0;
   #state: "running" | "moving" | "stopped" = "running";
@@ -123,6 +125,11 @@ class CliSupervisor {
     if (this.#state !== "running") return rejectUpgrade(socket, 503);
     const ticket = await this.#takeTicket();
     if (!ticket) return rejectUpgrade(socket, 503);
+    // The CLI gave up on this attempt while the ticket was provisioned: keep the unspent ticket for its next one.
+    if (socket.destroyed) {
+      this.#ticket ??= ticket;
+      return;
+    }
     const upstream = await openUpstream(new URL(ticket.url), ticket.token, request);
     if (!upstream || "status" in upstream) {
       if (upstream?.status === 401) this.#ticket = undefined;
@@ -138,20 +145,23 @@ class CliSupervisor {
 
   /**
    * A ticket for the next CLI connection: the unspent provisioned one while it is fresh, otherwise a new one. A new
-   * ticket whose server key differs from the CLI's pin means the session moved without a close the relay saw.
+   * ticket whose server key differs from the CLI's pin means the session moved without a close the relay saw. A result
+   * that started provisioning before the CLI was last replaced is discarded: it can name a placement that no longer
+   * serves the session, such as a crashed container the controller had not yet retired.
    */
   async #takeTicket(): Promise<SessionConnection | undefined> {
     let ticket = this.#ticket;
     this.#ticket = undefined;
     if (!ticket || Date.parse(ticket.expiresAt) - Date.now() < 5_000) {
+      const version = this.#version;
       try { ticket = await this.options.provision(); }
       catch {
         this.#notify("Could not provision a connection for this session; the CLI will report the disconnection.");
         return undefined;
       }
+      if (version !== this.#version || this.#state !== "running") return undefined;
       if (JSON.stringify(ticket.serverKey) !== JSON.stringify(this.#connection.serverKey) || ticket.ahpSessionId !== this.#connection.ahpSessionId) {
-        this.#ticket = ticket;
-        void this.#moved();
+        void this.#moved(ticket);
         return undefined;
       }
     }
@@ -203,10 +213,16 @@ class CliSupervisor {
     if (head.length) peer.write(head);
   }
 
-  /** The session moved: replace the CLI with one attached to the session's new placement. */
-  async #moved(): Promise<void> {
+  /**
+   * The session moved: replace the CLI with one attached to the session's new placement. `next` is the ticket that
+   * revealed the move, if any; otherwise the new placement is provisioned after the CLI stops.
+   */
+  async #moved(next?: SessionConnection): Promise<void> {
     if (this.#state !== "running") return;
     this.#state = "moving";
+    this.#version++;
+    // A ticket kept from before the move names the old placement.
+    this.#ticket = undefined;
     for (const socket of this.#live) socket.destroy();
     const child = this.#child;
     if (child && child.exitCode === null && child.signalCode === null) {
@@ -222,8 +238,7 @@ class CliSupervisor {
     }
     this.#notify(`Session ${this.#connection.sessionId} moved to a new placement. Reconnecting in this terminal...`);
     const deadline = Date.now() + (this.options.moveTimeoutMs ?? 300_000);
-    let connection = this.#ticket;
-    this.#ticket = undefined;
+    let connection = next && Date.parse(next.expiresAt) - Date.now() >= 5_000 ? next : undefined;
     while (!connection) {
       try { connection = await this.options.provision(); }
       catch (error) {
