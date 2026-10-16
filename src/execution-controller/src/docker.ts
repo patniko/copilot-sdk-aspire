@@ -85,7 +85,8 @@ export class DockerExecutionAdapter implements ExecutionAdapter {
       || container.labels?.["copilot.hybrid.managed"] !== "execution"
       || (allocation && (container.labels["copilot.hybrid.allocation"] !== allocation.id
         || container.image !== allocation.image || container.name !== `/${NAME(allocation)}`
-        || (allocation.kind === "session" && container.labels["copilot.hybrid.session"] !== allocation.sessionId)))) {
+        || (allocation.kind === "session" && container.labels["copilot.hybrid.session"] !== allocation.sessionId)
+        || (allocation.kind === "session" && (container.labels["copilot.hybrid.worker"] ?? undefined) !== allocation.workerId)))) {
       throw new Error("Refusing to operate on a container whose allocation identity does not match.");
     }
   }
@@ -198,7 +199,9 @@ export function sessionContainerArguments(
   if (volumes.some((volume) => !("name" in volume))) throw new Error("Bind the session allocation's volumes before creating its container.");
   const env = {
     SESSION_CONTAINER_KEY: credentials.token, SESSION_CONTAINER_INGRESS_CREDENTIAL: credentials.ingress,
-    SESSION_CONTAINER_ALLOCATION_ID: allocation.id, SESSION_CONTAINER_SESSION_ID: allocation.sessionId,
+    SESSION_CONTAINER_ALLOCATION_ID: allocation.id, SESSION_CONTAINER_SESSION_ID: allocation.workerId ?? allocation.sessionId,
+    // A worker container runs its worker's session and reports to the worker routes.
+    ...(allocation.workerId ? { SESSION_CONTAINER_PURPOSE: "worker" } : {}),
     IMAGE_DIGEST: allocation.image,
     "services__job-dispatcher__http__0": containerUrl(dispatcherUrl),
     "services__inference-gateway__http__0": containerUrl(gatewayUrl),
@@ -209,6 +212,7 @@ export function sessionContainerArguments(
     "--label", `copilot.hybrid.namespace=${namespace}`, "--label", "copilot.hybrid.managed=execution",
     "--label", `copilot.hybrid.allocation=${allocation.id}`, "--label", "copilot.hybrid.kind=session",
     "--label", `copilot.hybrid.session=${allocation.sessionId}`,
+    ...(allocation.workerId ? ["--label", `copilot.hybrid.worker=${allocation.workerId}`] : []),
     "--cpus", String(allocation.settings.cpus), "--memory", `${allocation.settings.memoryMiB}m`, "--pids-limit", "512",
     "--security-opt", "no-new-privileges", "--cap-drop", "ALL",
     ...["SETUID", "SETGID", "CHOWN", "DAC_OVERRIDE", "KILL"].flatMap((capability) => ["--cap-add", capability]),

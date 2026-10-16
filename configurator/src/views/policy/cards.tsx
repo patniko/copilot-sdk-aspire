@@ -644,6 +644,13 @@ export function HostingCeilingsCard({ policy, update, locked, title, actions, fo
               label="Allow inherited human authority"
               description="Coordinator harnesses may opt in to letting their assisted workers' judges treat the session's recorded human messages as authority. Off by default."
             />
+            <Toggle
+              checked={workers.allowCoordinatorAnswers}
+              help="policy.hosting.allowCoordinatorAnswers"
+              onChange={(on) => edit((h) => void (h.workers = { ...h.workers, allowCoordinatorAnswers: on }))}
+              label="Let coordinators answer worker questions"
+              description="A coordinator may answer its workers' questions. It never decides their permission requests, which always wait for a person. Off by default."
+            />
             {policy.hosting?.workers && (
               <button type="button" className="btn-ghost btn-sm" onClick={() => edit((h) => void delete h.workers)}>
                 <RotateCcw /> Default worker limits

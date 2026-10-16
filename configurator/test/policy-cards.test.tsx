@@ -24,7 +24,7 @@ const defaults: EffectiveHostingPolicy = {
   transports: ["direct", "github"],
   sizes: { small: { cpus: 0.5, memoryMiB: 1024 }, medium: { cpus: 1, memoryMiB: 2048 }, large: { cpus: 2, memoryMiB: 4096 } },
   defaultSize: "small",
-  workers: { maxConcurrentPerSession: 4, maxPerSession: 16, maxPerPrincipal: 8, idleSeconds: 900, maxLifetimeSeconds: 3600, allowInheritedAuthority: false },
+  workers: { maxConcurrentPerSession: 4, maxPerSession: 16, maxPerPrincipal: 8, idleSeconds: 900, maxLifetimeSeconds: 3600, allowInheritedAuthority: false, allowCoordinatorAnswers: false },
   promotion: { approval: ["ask"] },
   crafting: { templates: {} },
 };
@@ -102,6 +102,7 @@ describe("hosting ceilings card", () => {
     expect(html).toContain("Smallest (small)");
     expect(html).toContain('value="16"');
     expect(toggle(html, "Allow inherited human authority")).not.toContain('checked=""');
+    expect(toggle(html, "Let coordinators answer worker questions")).not.toContain('checked=""');
     expect(html).toContain("No crafting templates, so orchestrators cannot craft workers.");
     expect(html).not.toContain("Default sizes");
   });
@@ -113,7 +114,7 @@ describe("hosting ceilings card", () => {
         modes: ["isolated", "shared"],
         sizes: { tiny: { cpus: 0.25, memoryMiB: 512 } },
         defaultSize: "tiny",
-        workers: { allowInheritedAuthority: true },
+        workers: { allowInheritedAuthority: true, allowCoordinatorAnswers: true },
         crafting: {
           templates: {
             "general-worker": { toolBindings: [], builtinTools: ["files"], models: ["approved-model"], approvalModes: ["manual"], maxDurationSeconds: 1800, sizes: ["tiny"] },
@@ -128,6 +129,7 @@ describe("hosting ceilings card", () => {
     expect(html).toContain('aria-label="Remove size tiny" disabled=""');
     expect(html).toContain('value="general-worker"');
     expect(toggle(html, "Allow inherited human authority")).toContain('checked=""');
+    expect(toggle(html, "Let coordinators answer worker questions")).toContain('checked=""');
     const locked = renderToStaticMarkup(<HostingCeilingsCard {...shell} locked policy={custom} defaults={defaults} bindings={[]} />);
     expect(locked).toContain('<fieldset disabled=""');
   });

@@ -128,8 +128,9 @@ isolation, automatic retention/deletion, or uninterrupted failover is claimed.
 
 ## Local hybrid boundaries
 
-The experimental shared coordinator is a separate trust model from the singleton demo host.
-API principals are bound to operator-configured GitHub numeric identities. The API forwards principal-bound
+The experimental shared worker is a separate trust model from the singleton demo host. It runs harness-driven
+conversations for many harnesses and principals in one process. API principals are bound to operator-configured
+GitHub numeric identities. The API forwards principal-bound
 control requests using a worker service key; ticket digests are one-use, short-lived and activation-bound.
 The CLI still needs trusted key provisioning and sealed GitHub authentication to its expected account.
 The runtime has been exercised with one real account; independent synthetic scopes and negative checks
@@ -147,8 +148,15 @@ inside the same trust boundary as the worker. Locally it listens for plain WebSo
 the API returns unencrypted URLs only for a loopback broker; TLS ingress, Azure placement, and multi-replica
 routing are not implemented. The `moved` close is a routing signal, not an authorization control.
 
-The shared worker holds PostgreSQL access and its dispatcher grant key. Its agent sessions expose only
-registered application tools; native shell/project/terminal operations are restricted in provider mode.
+The shared worker holds PostgreSQL access and its dispatcher grant key. Each session runs the harness snapshot
+admitted at creation, re-checked against the current effective policy whenever it activates. Its agent sessions
+expose only the shared base tools that the harness requests: workspace file tools over the session's
+PostgreSQL-backed file store, a task list, the [filtered `web_fetch`](#shared-placement-egress-and-remote-mcp),
+approved remote MCP tools, delegation bindings that the conversation profile marks safe in-process, and the
+harness's own in-runtime sub-agents. Validation rejects shell, Python, and stdio MCP tools for shared harnesses,
+the runtime's built-in agents are not offered, and native shell/project/terminal operations are restricted in
+provider mode. Per-harness resident-session and
+turn ceilings keep one harness from taking every slot; they are scheduling controls, not isolation.
 There is no Docker socket, provider credential, or allocation-signing key in the worker. Native anchors
 contain no agent content; filesystem callbacks and API operations are fenced by principal and lease epoch.
 In-process isolation is application isolation, not a hostile-code/OS boundary.
@@ -174,6 +182,33 @@ untrusted model data; automatic completion turns are bounded and cannot delegate
 Ambiguous completion delivery is visible through session/job notification status instead of being
 silently replayed. A public service, Azure adapter, robust hostile-tenant containment and crash/failover
 qualification remain outside the proven local scope.
+
+### Shared conversation approvals
+
+A shared harness chooses its [approval mode](HOSTING-MODES-PLAN.md#approval-modes) within the effective policy's
+`approvalModes`. Its per-kind `deny` and `allow` rules decide first, before the runtime raises a request, so no mode
+runs a denied tool. Only requests the rules send to a person reach the approval mode, and the worker never approves
+on a person's behalf ([`permissions.ts`](../src/session-host/src/permissions.ts)).
+
+- `manual`: the runtime prompts the attached client through AHP. With nobody attached, the request stays pending
+  and does not run; the turn ends at its deadline.
+- `assisted`: the runtime's LLM judge reviews the request first, through the session's own provider, so the judge's
+  calls pass through the inference gateway and count against the session's budget. A request the judge approves
+  runs without a prompt: the AHP host acts on the verdict while a client is attached, and otherwise the worker follows
+  it through the SDK's `followAssistedApproval`. A decline or a judge error goes to the attached person; with nobody
+  attached it does not run. The worker never rejects on the judge's behalf, which would pre-empt the person. The
+  judge is a probabilistic review, not a security boundary; only a person's messages grant authority. This needs
+  runtime `d89cfe45b29` (host `006b030`) or later.
+- `allow-all`: the runtime approves requests without asking, except those the harness's rules deny. It is offered
+  only when the policy allows it.
+- `custom`: an integrator handler that the worker registers by name decides
+  ([`permission-handlers.ts`](../src/session-host/src/permission-handlers.ts)). Handlers are reviewed code with the
+  trust of tool implementations, and policy and the conversation profile must both allow the name. A handler can
+  approve, deny, or ask a person; one that throws, returns no valid decision, or does not answer within five seconds
+  denies. The session stays in `manual`, so the runtime never approves without the handler.
+
+The worker starts each session in its harness's mode and applies managed settings that refuse the runtime modes the
+policy does not allow, so a client cannot switch into them. Batch harnesses keep `manual`.
 
 ### Shared-placement egress and remote MCP
 

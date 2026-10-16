@@ -123,7 +123,8 @@ documented defaults rather than the base policy's values.
   lowercase name and discards input that looks like a credential instead of keeping it in the browser draft; the
   hosting process [resolves the name](SECURITY.md#shared-placement-egress-and-remote-mcp).
 - **Hosting**: allowed modes and client transports, promotion approval, the container size catalog and default size,
-  worker limits including inherited human authority, and crafting templates.
+  worker limits including inherited human authority and whether coordinators may answer worker questions, and
+  crafting templates.
 
 Policy validation also warns about settings that cannot take effect, such as a permission handler no profile
 provides, shared modes without the direct transport, inherited authority without the assisted mode, or a crafting
@@ -167,8 +168,9 @@ The preview does not deploy resources or modify settings, and planned nodes are 
 Native container-host inference is shown separately from the managed Foundry route.
 
 The connection card preserves existing container CLI launchers and shows the shared launcher when the
-local `session-host` resource is observed. Use the matching qualified CLI; service observation alone is
-not account/client readiness. The backend enforces local scheduling, budgets and one-shot container
+local `session-host` resource is observed. That launcher opens the `hybrid-coordinator` harness
+(`--destination shared`); run `pnpm host:connect --harness <name> --target local --transport direct` for another
+shared harness. Use the matching qualified CLI; service observation alone is not account/client readiness. The backend enforces local scheduling, budgets and one-shot container
 limits configured through [Aspire hybrid parameters](DEPLOYMENT.md#hybrid-controls).
 This page does not edit those settings or display live allocations yet. First-token measurements and
 cost estimates remain unavailable rather than fabricated; Azure and two-real-account qualification
@@ -213,7 +215,7 @@ The editor has one section per part of the harness contract:
 | Overview | Version, description, a summary, and what the platform does with the harness |
 | Prompt | Prompt mode (replace, append, or customize the Copilot foundation prompt section by section) and the instructions |
 | Model | Preferred model (from the policy-approved list), allowed models as an ordered fallback list, reasoning effort and context tier (options above the policy ceilings are disabled) |
-| Tools | Custom harness tool bindings from the execution profiles (**Delegated only** hides one from the coordinator), and **Built-in Copilot tools** in groups: files, shell, web, built-in agents |
+| Tools | Custom harness tool bindings from the execution profiles (**Delegated only** hides one from the coordinator), and **Built-in Copilot tools** in groups: files, shell, web, built-in agents. `shared:*` bindings run only in `shared` harnesses on the local hybrid worker; job submission and the demo host reject them |
 | Permissions | What happens when the agent asks to read or write a file, run a command or fetch a URL: deny, ask you (Copilot CLI defaults, where workspace reads and read-only commands run without a prompt), or allow (yolo), per kind with a default; whether the agent can ask you questions; how long a request waits |
 | Hosting | Batch jobs or conversations; for conversations the hosting mode and its settings, handoffs, the approval mode, and remote MCP servers from the operator's catalog, plus the running service's view of this version (see [Hosting, approvals and remote MCP](#hosting-approvals-and-remote-mcp)) |
 | Sub-agents | Read-only built-in agent status (controlled by the Tools tab), plus custom specialists: instructions, a subset of the tools, preloaded skills, model |
@@ -248,10 +250,13 @@ Other aids:
   built-in tools and agents with the Copilot CLI's approval defaults: workspace reads and read-only commands run,
   and it asks you before other commands, file writes and web access, and can ask you questions). Each template validates against
   the current policy.
-- **Import plan**: paste or open a plan JSON from the earlier Harness Builder. The report lists what was mapped
+- **Import**: paste or open a plan JSON from the earlier Harness Builder. The report lists what was mapped
   (prompt mode and sections, instructions, model, reasoning, sub-agents), what needs work (custom tools and MCP
   servers need bindings, unapproved models), and what does not apply to hosted jobs (provider credentials, client
-  mode, session storage, identity). Nothing is written until you create the harness.
+  mode, session storage, identity). The same dialog opens a harness definition, bare or as exported by
+  `GET /v1/sessions/{id}/workers/{worker}/definition` ([API](API.md#orchestrator-workers)), as an unsaved draft; a
+  crafted worker's definition is flagged for review because a model wrote its instructions. Nothing is written until
+  you create the harness.
 - **Export JSON** downloads the resolved definition the API loads (instructions and skills inlined).
 - **Changes from platform example** lists saved fields, instructions and skills that differ from the immutable
   example with the same folder name. Harnesses without a matching example are marked as customer-authored.

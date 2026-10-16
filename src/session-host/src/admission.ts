@@ -4,7 +4,7 @@ import {
   type HostingApproval, type HostingDeployment, type HostingEvaluation, type HostingMode, hostingModeOf, HostingPrerequisite, type HostingTarget,
   type HostingTransport, type PlacementKind, placementMoveAllowed, policyFor, RUNTIME_APPROVAL_MODES, type RuntimeApprovalMode,
   SHARED_TOOLS, SHARED_WORKER_BINDINGS, SHARED_WORKER_FEATURES, SHARED_WORKER_TRANSPORTS, type SharedHarnessRef, type SharedSessionCreation,
-  SharedSessionDefinition, SharedSessionLimits, CONVERSATION_PROFILE, startingPlacement,
+  SharedSessionDefinition, SharedSessionLimits, CONVERSATION_PROFILE, startingPlacement, WORKER_TOOLS,
 } from "@copilot-agent/contracts";
 import { canonicalJson, handoffToolName, hostingError, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
 import type { SharedConfiguration, SharedRegistry } from "./configuration.js";
@@ -69,6 +69,8 @@ export interface SharedAdmissionOptions {
 
 const DELEGATION_BINDINGS = new Set<string>(SHARED_WORKER_BINDINGS);
 const RESERVED_TOOL_NAMES = new Set<string>(Object.values(SHARED_TOOLS));
+/** An orchestrator coordinator also has the worker tools. */
+const ORCHESTRATOR_TOOL_NAMES = new Set<string>([...RESERVED_TOOL_NAMES, ...Object.values(WORKER_TOOLS)]);
 
 /**
  * Admits shared-placement sessions from published conversation harnesses and re-checks them against the current
@@ -89,11 +91,11 @@ export class SharedAdmission {
     const snapshot = request.version ? versions?.find((entry) => entry.definition.version === request.version) : versions?.[0];
     if (!snapshot) throw new HttpError(404, "harness_not_found", "The requested harness version is not published.");
     const policy = policyFor(registry.policies, snapshot.definition.name);
-    this.#evaluate(registry, snapshot.definition, policy, principal);
-    return this.#admitted(registry, snapshot, policy);
+    const evaluation = this.#evaluate(registry, snapshot.definition, policy, principal);
+    return this.#admitted(registry, snapshot, policy, evaluation.mode);
   }
 
-  #admitted(registry: SharedRegistry, snapshot: HarnessSnapshot, policy: ExecutionPolicy): SharedSessionDefinition {
+  #admitted(registry: SharedRegistry, snapshot: HarnessSnapshot, policy: ExecutionPolicy, mode: HostingMode): SharedSessionDefinition {
     const { definition } = snapshot;
     const model = admittedModel(definition, policy);
     const ceilings = this.options.sessionLimits;
@@ -110,7 +112,7 @@ export class SharedAdmission {
       limits,
       harness: {
         name: definition.name, version: definition.version, digest: snapshot.digest,
-        mode: "shared" as const, definition, policyDigest: policyDigest(policy),
+        mode, definition, policyDigest: policyDigest(policy),
       },
       ...(delegates ? { delegation: { harnesses: this.#delegationTargets(registry) } } : {}),
     });
@@ -167,8 +169,8 @@ export class SharedAdmission {
     }
     let admitted: SharedSessionDefinition;
     try {
-      this.#evaluate(registry, target, targetPolicy, input.principal);
-      admitted = this.#admitted(registry, snapshot, targetPolicy);
+      const evaluation = this.#evaluate(registry, target, targetPolicy, input.principal);
+      admitted = this.#admitted(registry, snapshot, targetPolicy, evaluation.mode);
     } catch (error) {
       if (!(error instanceof HttpError)) throw error;
       const prerequisite = HostingPrerequisite.safeParse((error.details as { prerequisite?: unknown } | undefined)?.prerequisite);
@@ -240,7 +242,7 @@ export class SharedAdmission {
     });
   }
 
-  #evaluate(registry: SharedRegistry, definition: HarnessDefinition, policy: ExecutionPolicy, principal?: string): void {
+  #evaluate(registry: SharedRegistry, definition: HarnessDefinition, policy: ExecutionPolicy, principal?: string): HostingEvaluation {
     const evaluation = this.#evaluation(registry, definition, policy, principal);
     if (evaluation.interaction !== "conversation") {
       throw new HttpError(422, "policy_rejected", "Batch harnesses run as jobs; create conversations from conversation harnesses.");
@@ -251,9 +253,10 @@ export class SharedAdmission {
         { prerequisite: { kind: "host", name: "session-containers" } });
     }
     const profile = registry.profiles.get(CONVERSATION_PROFILE)!;
+    const reserved = evaluation.mode === "orchestrator" ? ORCHESTRATOR_TOOL_NAMES : RESERVED_TOOL_NAMES;
     const transfers = new Set((definition.hosting?.handoffs ?? []).map((handoff) => handoffToolName(handoff.harness)));
     definition.tools.forEach((tool, index) => {
-      if (RESERVED_TOOL_NAMES.has(tool.name)) {
+      if (reserved.has(tool.name)) {
         throw new HttpError(422, "policy_rejected", `'${tool.name}' is reserved for the shared worker's own tools.`, { path: `tools.${index}.name` });
       }
       if (transfers.has(tool.name)) {
@@ -267,6 +270,7 @@ export class SharedAdmission {
     if (handler !== undefined && !this.options.permissionHandlers.has(handler)) {
       throw new HttpError(422, "policy_rejected", `The shared worker does not implement permission handler '${handler}'.`, { path: "permissions.handler" });
     }
+    return evaluation;
   }
 
   #delegationTargets(registry: SharedRegistry): SharedHarnessRef[] {

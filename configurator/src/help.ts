@@ -589,6 +589,17 @@ export const help: Record<string, HelpTopic> = {
     summary: "Whether orchestrator harnesses may let their assisted workers' judges treat the session's recorded human messages as authority. Off by default.",
     boundary: "Only the person's own recorded words count; text from the coordinator stays data. The judge remains guidance, not a security boundary.",
   },
+  "policy.hosting.allowCoordinatorAnswers": {
+    title: "Coordinator answers",
+    option: "hosting.workers.allowCoordinatorAnswers",
+    scope: "Operator policy",
+    summary: "Whether an orchestrator coordinator may answer its workers' questions instead of a person. Off by default.",
+    effects: [
+      { when: "On", then: "The coordinator gets answer_worker_question; its answers are recorded as answeredBy: coordinator." },
+      { when: "Off", then: "Worker questions wait for a person, like permission requests." },
+    ],
+    boundary: "A coordinator never decides a worker's permission request; those always reach a person.",
+  },
 
   // Local
   "local.foundryEndpoint": {

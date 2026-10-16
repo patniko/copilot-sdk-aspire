@@ -13,3 +13,4 @@ export * from "./artifacts.js";
 export * from "./hosting.js";
 export * from "./promotion.js";
 export * from "./handoff.js";
+export * from "./workers.js";

@@ -7,9 +7,21 @@ import { fieldProblem, SchemaForm, supportsForm } from "../src/components/Schema
 import { urlProblem } from "../src/components/UrlInput";
 import { bumpSemver, formatUnit, NumberInput, OrderedList, RadioCards, SegmentedControl } from "../src/components/ui";
 import { typingSlug } from "../src/views/harness/tabs";
+import { isHarnessDefinitionImport } from "../src/views/harness/dialogs";
 
 vi.mock("../src/state", () => ({ useApp: () => ({ workspace: { harnesses: [] } }) }));
 vi.mock("../src/api", () => ({ api: vi.fn(), errorMessage: String }));
+
+describe("import detection", () => {
+  it("routes harness definitions and worker exports to the definition import, and plans to the planner", () => {
+    const definition = { schemaVersion: "1", name: "notes", instructions: "Keep notes." };
+    expect(isHarnessDefinitionImport(definition)).toBe(true);
+    expect(isHarnessDefinitionImport({ workerId: "w", source: "crafted", definition })).toBe(true);
+    expect(isHarnessDefinitionImport({ schemaVersion: 2, name: "Plan", prompt: { content: "x" } })).toBe(false);
+    expect(isHarnessDefinitionImport([definition])).toBe(false);
+    expect(isHarnessDefinitionImport(null)).toBe(false);
+  });
+});
 
 describe("control helpers", () => {
   it("formats seconds and tokens for humans", () => {

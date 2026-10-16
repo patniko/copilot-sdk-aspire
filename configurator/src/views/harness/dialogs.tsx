@@ -197,8 +197,16 @@ function TemplateGrid({ templates, value, onChange }: { templates: TemplateInfo[
 }
 
 // ---------------------------------------------------------------------------
-// Import a Harness Builder plan
+// Import a Harness Builder plan or an exported harness definition
 // ---------------------------------------------------------------------------
+
+/** A harness definition (schemaVersion "1"), bare or in a worker definition export; Harness Builder plans use schemaVersion 2. */
+export function isHarnessDefinitionImport(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const object = value as Record<string, unknown>;
+  const candidate = object.definition && typeof object.definition === "object" ? (object.definition as Record<string, unknown>) : object;
+  return candidate.schemaVersion === "1" && typeof candidate.instructions === "string";
+}
 
 export function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone: (folder: string) => Promise<void> }) {
   const { toast } = useApp();
@@ -220,7 +228,9 @@ export function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone:
     }
     setBusy(true);
     try {
-      const mapped = await api<ImportResult>("/api/import/planner", { method: "POST", body: { plan, ...(name ? { name } : {}) } });
+      const mapped = isHarnessDefinitionImport(plan)
+        ? await api<ImportResult>("/api/import/definition", { method: "POST", body: { definition: plan, ...(name ? { name } : {}) } })
+        : await api<ImportResult>("/api/import/planner", { method: "POST", body: { plan, ...(name ? { name } : {}) } });
       setResult(mapped);
       if (!name) setName(mapped.document.manifest.name);
     } catch (error) {
@@ -248,8 +258,8 @@ export function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone:
   const errors = result?.issues.filter((i) => i.level === "error").length ?? 0;
   return (
     <Modal
-      title="Import a Harness Builder plan"
-      subtitle="Paste or open a plan JSON exported from the Harness Builder. Nothing is written until you create the harness."
+      title="Import a plan or harness definition"
+      subtitle="Paste or open a Harness Builder plan, or a harness definition such as a crafted worker's exported definition. Nothing is written until you create the harness."
       wide
       onClose={onClose}
       footer={
@@ -268,7 +278,7 @@ export function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone:
     >
       <div className="grid gap-4 lg:grid-cols-2">
         <div className="space-y-3">
-          <Field label="Plan JSON" error={parseError && `Invalid JSON: ${parseError}`}>
+          <Field label="Plan or definition JSON" error={parseError && `Invalid JSON: ${parseError}`}>
             <textarea
               className="input-mono"
               rows={16}
@@ -310,7 +320,8 @@ export function ImportDialog({ onClose, onDone }: { onClose: () => void; onDone:
           {!result ? (
             <Flash>
               The importer maps what a hosted job can run: prompt mode and sections, instructions, model choice and reasoning, and
-              sub-agents. It lists everything else, so nothing is dropped silently.
+              sub-agents. It lists everything else, so nothing is dropped silently. A harness definition, such as a crafted worker's
+              from the API, opens as an unsaved draft of that definition.
             </Flash>
           ) : (
             <>
