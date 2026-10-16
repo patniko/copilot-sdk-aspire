@@ -8,6 +8,7 @@ const Container = z.object({
   id: z.string().regex(/^[a-f0-9]{64}$/), image: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   name: z.string(), labels: z.record(z.string(), z.string()).nullable(),
   status: z.enum(["created", "running", "paused", "restarting", "removing", "exited", "dead"]),
+  exitCode: z.number().int().optional(),
 });
 export type ObservedContainer = z.infer<typeof Container>;
 const Ports = z.record(z.string(), z.array(z.object({ HostIp: z.string(), HostPort: z.string() }).passthrough()).nullable()).nullable();
@@ -67,7 +68,7 @@ export class DockerExecutionAdapter implements ExecutionAdapter {
 
   async inspect(idOrName: string): Promise<ObservedContainer | undefined> {
     const json = await this.command(["container", "inspect", idOrName, "--format",
-      '{"id":{{json .Id}},"image":{{json .Image}},"name":{{json .Name}},"labels":{{json .Config.Labels}},"status":{{json .State.Status}}}'], {}, true);
+      '{"id":{{json .Id}},"image":{{json .Image}},"name":{{json .Name}},"labels":{{json .Config.Labels}},"status":{{json .State.Status}},"exitCode":{{json .State.ExitCode}}}'], {}, true);
     if (json === undefined) return undefined;
     return Container.parse(JSON.parse(json));
   }
@@ -203,7 +204,8 @@ export function sessionContainerArguments(
     "services__inference-gateway__http__0": containerUrl(gatewayUrl),
   };
   const args = [
-    "container", "create", "--name", `hybrid-${allocation.namespace}-${allocation.id}`, "--rm",
+    // Not --rm: an exited session container stays inspectable (exit status, logs) until the controller retires it.
+    "container", "create", "--name", `hybrid-${allocation.namespace}-${allocation.id}`,
     "--label", `copilot.hybrid.namespace=${namespace}`, "--label", "copilot.hybrid.managed=execution",
     "--label", `copilot.hybrid.allocation=${allocation.id}`, "--label", "copilot.hybrid.kind=session",
     "--label", `copilot.hybrid.session=${allocation.sessionId}`,

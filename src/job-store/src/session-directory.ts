@@ -6,13 +6,13 @@ import { StoreError } from "./store.js";
 
 interface DirectoryRow {
   id: string; principal: string; github_user_id: string; label: string; definition: SharedSessionDefinition; closed: boolean;
-  placement: PlacementKind; tokens_used: string; tokens_reserved: string; jobs: number; continuations: number;
+  placement: PlacementKind; placement_generation: number; tokens_used: string; tokens_reserved: string; jobs: number; continuations: number;
   created_at: Date; last_activity_at: Date; shared_online: boolean;
   harness: HarnessSnapshot | null; mode: "isolated" | null; size: string | null; resources: ContainerSize | null;
   idle_seconds: number | null; activations: number | null;
   allocation_state: string | null; ready_at: Date | null; ingress: unknown;
 }
-const SELECT = `SELECT s.id,s.principal,s.github_user_id,s.label,s.definition,s.closed,s.placement,s.tokens_used,s.tokens_reserved,
+const SELECT = `SELECT s.id,s.principal,s.github_user_id,s.label,s.definition,s.closed,s.placement,s.placement_generation,s.tokens_used,s.tokens_reserved,
     s.jobs,s.continuations,s.created_at,s.last_activity_at,
     EXISTS (SELECT 1 FROM shared_activations a JOIN session_file_namespaces n ON n.id=a.session_id AND n.epoch=a.epoch
       WHERE a.session_id=s.id AND n.principal=s.principal AND n.lease_until>clock_timestamp()) AS shared_online,
@@ -45,22 +45,25 @@ function view(row: DirectoryRow): SessionView {
   const usedTokens = Number(row.tokens_used);
   const reservedTokens = Number(row.tokens_reserved);
   const containerOnline = row.allocation_state === "running" && row.ready_at !== null && row.ingress !== null;
+  const harness = row.harness && row.placement === "container"
+    ? { name: row.harness.definition.name, version: row.harness.definition.version, digest: row.harness.digest } : undefined;
   const base = {
     id: row.id, label: row.label, model: definition.model, closed: row.closed, placement: row.placement,
+    mode: row.placement === "container" ? (row.mode ?? "isolated") : "shared",
     online: row.placement === "shared" ? row.shared_online : !row.closed && containerOnline,
     createdAt: row.created_at.toISOString(), lastActivityAt: row.last_activity_at.toISOString(), limits: definition.limits,
     budget: { usedTokens, reservedTokens, remainingTokens: Math.max(0, definition.limits.tokenBudget - usedTokens - reservedTokens) },
     jobs: row.jobs, continuations: row.continuations,
+    segment: { generation: row.placement_generation, placement: row.placement, ...(harness ? { harness } : {}), ahpSessionId: row.id, startedAt: row.created_at.toISOString() },
   };
-  if (!row.harness || row.placement !== "container") return SessionView.parse(base);
+  if (!harness) return SessionView.parse(base);
   const resources = ContainerSize.parse(row.resources);
   const state: SessionContainerState = row.closed ? "closed"
     : row.allocation_state === null ? "dormant"
       : row.allocation_state === "retiring" ? "stopping"
         : containerOnline ? "running" : "starting";
   return SessionView.parse({
-    ...base, mode: row.mode ?? "isolated",
-    harness: { name: row.harness.definition.name, version: row.harness.definition.version, digest: row.harness.digest },
+    ...base, harness,
     container: { state, size: row.size, cpus: resources.cpus, memoryMiB: resources.memoryMiB, idleSeconds: row.idle_seconds, activations: row.activations },
   });
 }

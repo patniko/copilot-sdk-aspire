@@ -60,5 +60,7 @@ export const SharedConnection = z.object({
   sessionId: z.string().uuid(), destination: z.enum(["shared", "container"]),
   url: z.url().refine((value) => ["ws:", "wss:"].includes(new URL(value).protocol)),
   token: z.string().min(32).max(200), expiresAt: z.iso.datetime(), serverKey: SharedServerKey,
+  /** The runtime session to resume over AHP; the application session ID unless a handoff started a new segment. */
+  ahpSessionId: z.string().min(1).max(200).optional(),
 }).strict();
 export type SharedConnection = z.infer<typeof SharedConnection>;
