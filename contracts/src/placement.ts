@@ -9,7 +9,7 @@ import { z } from "zod";
  * `shared_sessions_placement_kind` constraint, {@link PlacementRoute}, ticket consumption in the job store's
  * `PlacementStore`, and the broker's upstream table.
  */
-export const PlacementKind = z.enum(["shared"]);
+export const PlacementKind = z.enum(["shared", "container"]);
 export type PlacementKind = z.infer<typeof PlacementKind>;
 
 export const PlacementGeneration = z.number().int().positive().safe();
