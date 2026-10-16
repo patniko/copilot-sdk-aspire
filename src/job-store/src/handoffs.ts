@@ -119,6 +119,9 @@ export class HandoffStore {
         "SELECT principal,closed,placement,placement_generation FROM shared_sessions WHERE id=$1 FOR UPDATE", [input.sessionId])).rows[0];
       if (!session || session.principal !== input.principal) throw new StoreError("not_found", "The conversation was not found.");
       let refusal = input.refusal;
+      if (!refusal && input.fromPlacement === "container" && input.toPlacement === "shared") {
+        refusal = { code: "handoff_one_way", message: "A conversation in a container never moves back to shared placement." };
+      }
       if (!refusal && (session.closed || session.placement !== input.fromPlacement || session.placement_generation !== input.fromGeneration)) {
         refusal = { code: "session_changed", message: "The conversation closed or moved before the handoff could start." };
       }
