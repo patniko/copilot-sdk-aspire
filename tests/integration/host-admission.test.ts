@@ -29,7 +29,7 @@ beforeAll(async () => {
     loadProfiles(root),
   ]);
 });
-beforeEach(async () => { await pool.query("TRUNCATE demo_host, hosted_sessions, hosted_connection_tickets CASCADE"); });
+beforeEach(async () => { await pool.query("TRUNCATE demo_host, owner_hosts, hosted_sessions, hosted_connection_tickets CASCADE"); });
 afterAll(async () => { await pool.end(); });
 
 function dispatcher(snapshot: HarnessSnapshot, effective: ExecutionPolicy): FastifyInstance {
@@ -40,7 +40,10 @@ function dispatcher(snapshot: HarnessSnapshot, effective: ExecutionPolicy): Fast
     executorKey: "executor-key-".padEnd(40, "x"),
     gatewayKey: "gateway-key-".padEnd(40, "x"),
     signingKey,
-    host: { store: hostStore, key: hostKey, owner: "alice", harness: snapshot, profiles, policy: effective, signingKey },
+    host: {
+      store: hostStore, profiles, signingKey,
+      hosts: [{ harness: snapshot.definition.name, owner: "alice", key: hostKey, transport: "direct", execution: "managed", snapshot, policy: effective }],
+    },
   });
 }
 
@@ -87,6 +90,6 @@ describe("demo host admission through the dispatcher", () => {
       error: { code: "hosting_unavailable", details: { path: "mcpServers", prerequisite: { kind: "feature", name: "remote-mcp" } } },
     });
     await withMcp.close();
-    expect((await pool.query("SELECT count(*)::int AS hosts FROM demo_host")).rows[0]).toEqual({ hosts: 0 });
+    expect((await pool.query("SELECT count(*)::int AS hosts FROM owner_hosts")).rows[0]).toEqual({ hosts: 0 });
   });
 });
