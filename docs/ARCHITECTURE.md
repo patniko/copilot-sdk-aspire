@@ -367,8 +367,9 @@ coordinator's tasks stay data. Grants and what the runtime accepted are recorded
 The coordinator has no filesystem of its own. Its file tools reach the shared volume only through the execution
 controller's file service (plan D10), which runs one bounded operation per short-lived helper container from the
 session image, with no network and only that volume mounted; writes are atomic and replacing a file needs its
-current etag. Volumes are retained: a stopped worker's private volume and a closed coordinator's shared volume are
-released, not deleted.
+current etag. The tools take paths relative to the volume and also accept them as workers see them (`/shared/plan.txt`
+is `plan.txt`); the rest must stay inside the volume. Volumes are retained: a stopped worker's private volume and a
+closed coordinator's shared volume are released, not deleted.
 
 ### Promotion
 
