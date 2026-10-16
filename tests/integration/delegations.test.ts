@@ -20,8 +20,8 @@ let namespace: string;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const harness = { ...inputHarness(), digest: `sha256:${hash("delegation-fixture")}` };
 const definition = SharedSessionDefinition.parse({
-  model: "fixture", instructions: "Synthetic coordinator.",
-  allowedHarnesses: [{ name: harness.definition.name, version: harness.definition.version, digest: harness.digest }],
+  model: "fixture",
+  delegation: { harnesses: [{ name: harness.definition.name, version: harness.definition.version, digest: harness.digest }] },
   limits: SharedSessionLimits.parse({ tokenBudget: 3000, turnTokenBudget: 500, maxParallelJobs: 1, maxJobs: 3 }),
 });
 const limits = SharedWorkerLimits.parse({ executionContainers: 2, containersPerPrincipal: 2 });

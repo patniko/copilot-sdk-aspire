@@ -74,6 +74,17 @@ Command output streams into the task drawer at the bottom; long tasks can be can
 deliberately not committed with the platform source. Back it up or version it in a separate customer-owned
 repository if it must be shared or audited.
 
+**Hosting and approval settings.** A conversation harness can request a [hosting mode](HOSTING-MODES-PLAN.md)
+(`hosting`), remote MCP tools from the operator's catalog (`mcpServers`), and an approval mode
+(`permissions.approvalMode`, `judgeModel`, `handler`); the policy sets their ceilings in `approvalModes`,
+`permissionHandlers`, `mcpServers`, and `hosting`, overridable per harness. The editor and the Policy page have no
+controls for them yet, so edit `harness.json` or the policy files in the workspace. Validation already checks them with
+the same contracts as the API, at their field paths: for example `hosting.mode` when the effective policy does not
+allow the mode, or `mcpServers.0.server` for a server outside the catalog. Saving a harness override from the Policy
+page keeps the values the override already has for these fields, and their issues are listed under **Applies to**.
+Harness-driven conversations run only in `isolated` mode today; the API's [hosting views](API.md#hosting-views) show
+what the running deployment can host.
+
 ## Hosting and topology
 
 **Hosting** shows selectable maps for the default pool stack, experimental local hybrid path, and the

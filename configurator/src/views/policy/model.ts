@@ -7,9 +7,19 @@ export const GROUPS = {
   tools: ["builtinTools", "permissionModes"],
   model: ["maxReasoningEffort", "allowLongContext"],
   controls: ["requirements", "acknowledgedGaps"],
+  approvalModes: ["approvalModes"],
+  permissionHandlers: ["permissionHandlers"],
+  mcpServers: ["mcpServers"],
+  hosting: ["hosting"],
 } as const satisfies Record<string, ReadonlyArray<keyof ExecutionPolicy>>;
 export type Group = keyof typeof GROUPS;
 export type Overrides = Partial<ExecutionPolicy>;
+
+/**
+ * Groups without a card on the page yet. A harness override keeps the values it already has for them when other
+ * cards are saved, and their issues are listed with the document-level issues.
+ */
+export const UNCARDED_GROUPS: readonly Group[] = ["approvalModes", "permissionHandlers", "mcpServers", "hosting"];
 
 /** Fields that only the base policy sets. They are shown on the limits card. */
 export const GLOBAL_FIELDS = ["leaseSeconds", "maxConcurrentAttemptsPerPrincipal", "maxQueuedJobsPerPrincipal"] as const;
@@ -66,7 +76,7 @@ export function isDirty(draft: PolicyDraft, saved: PolicyDraft, harnessScope: bo
 export function issueGroup(issue: Issue): Group | undefined {
   const field = issue.path.split(".")[0] ?? "";
   if ((GLOBAL_FIELDS as readonly string[]).includes(field)) return "limits";
-  return ORDER.find((group) => (GROUPS[group] as readonly string[]).includes(field));
+  return ORDER.find((group) => !UNCARDED_GROUPS.includes(group) && (GROUPS[group] as readonly string[]).includes(field));
 }
 
 export function countIssues(issues: Issue[]): { errors: number; warnings: number } {
@@ -90,6 +100,10 @@ export const FIELD_LABELS: Record<keyof ExecutionPolicy, string> = {
   allowLongContext: "Long context",
   builtinTools: "Tool groups",
   permissionModes: "Permission modes",
+  approvalModes: "Approval modes",
+  permissionHandlers: "Permission handlers",
+  mcpServers: "MCP servers",
+  hosting: "Hosting",
 };
 
 /** A short, human-readable rendering of one policy value. */

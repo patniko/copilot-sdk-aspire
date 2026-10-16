@@ -50,7 +50,7 @@ export class DelegationStore {
          AND source='user' AND state='running' AND deadline>clock_timestamp() AND tokens_used<token_budget`,
         [turnId, lease.id, lease.epoch, lease.principal]);
       if (!active.rowCount) throw new StoreError("invalid_state", "Only an active user turn may delegate; completion messages cannot create nested jobs.");
-      const allowed = session.definition.allowedHarnesses.some((harness) => harness.name === job.harness.definition.name
+      const allowed = (session.definition.delegation?.harnesses ?? []).some((harness) => harness.name === job.harness.definition.name
         && harness.version === job.harness.definition.version && harness.digest === job.harness.digest);
       if (!allowed) throw new StoreError("invalid_request", "This harness snapshot is not approved for the conversation.");
       if (session.jobs >= session.definition.limits.maxJobs) throw new StoreError("quota_exceeded", "The conversation fan-out limit is exhausted.");

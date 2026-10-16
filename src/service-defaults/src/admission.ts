@@ -8,11 +8,15 @@ import {
   policyFor,
   requiredRunnerCapabilities,
   securityRequirementsOf,
+  SHARED_WORKER_BINDINGS,
   toolPolicyViolations,
 } from "@copilot-agent/contracts";
 import { canonicalJson, createAjv, policyDigest, sha256Hex } from "./registry.js";
 import { HttpError } from "./http.js";
 import type { ValidateFunction } from "ajv";
+
+/** In-process bindings only the shared worker implements; batch runners cannot provide them. */
+const SHARED_ONLY_BINDINGS = new Set<string>(SHARED_WORKER_BINDINGS);
 
 export interface AdmissionContext {
   harnesses: Map<string, HarnessSnapshot[]>;
@@ -79,7 +83,7 @@ export class Admission {
     }
     const missingBindings = definition.tools
       .map((t) => t.binding)
-      .filter((binding) => !profile.toolBindings.includes(binding));
+      .filter((binding) => !profile.toolBindings.includes(binding) || SHARED_ONLY_BINDINGS.has(binding));
     if (missingBindings.length > 0) {
       throw new HttpError(422, "policy_rejected", `Profile '${profileId}' cannot satisfy the harness tool bindings.`, {
         missingBindings,

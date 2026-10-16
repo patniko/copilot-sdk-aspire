@@ -937,7 +937,84 @@ moves to its owning reference page; this record keeps the evidence.
 
 ### Stage 1: contracts, policy, validation, and admission
 
-Pending.
+Recorded 2026-10-15 on branch `patniko-stage-1-contracts-and-policy`: commits `b1695a3` (contract shapes), `cf0c789`
+(MCP `allowPrivateNetwork`, requested by the egress slice), `ea9ee58` (admission, API view, configurator checks),
+`e49f7ba` (shared deployment builder, documentation), and the commit that adds this record. Configurator editing is
+the separate slice below.
+
+Delivered:
+
+- **Harness contract** ([`harness.ts`](../contracts/src/harness.ts)): optional `hosting` (`mode`, `promotion`,
+  `workers`, `handoffs`), `mcpServers`, and `permissions.approvalMode`, `judgeModel`, and `handler`, with every
+  harness-only rule of [section 3](#3-per-harness-configuration-proposed-contract) as a field-scoped schema error.
+  `mode` is required inside the block; omitted settings resolve at evaluation time (`ask` approvals, the catalog's
+  default size, `none` for shared storage and human authority), so parsed definitions never gain defaults. Batch
+  harnesses reject `hosting`, `mcpServers`, and approval modes other than `manual`, because neither batch runner
+  implements them.
+- **Policy and profile** ([`profile.ts`](../contracts/src/profile.ts)): `approvalModes`, `permissionHandlers`, the
+  `mcpServers` catalog (`url`, `auth.secret` and optional `header`, `tools`, `allowPrivateNetwork`), and `hosting`
+  ceilings (`modes`, `transports`, `sizes` within the `ExecutionContainerSettings` bounds, `defaultSize`, `workers`
+  including `allowInheritedAuthority`, `promotion.approval`, `crafting.templates`), all overridable per harness by
+  whole-field replacement. Omitted fields keep today's behavior: isolated only, both transports, `manual` only, no
+  servers or handlers, a small/medium/large catalog, and `ask` for promotion. Profiles gain `inProcessBindings` and
+  `permissionHandlers`; the shipped profiles declare neither.
+- **Deployment capability and admission** ([`hosting.ts`](../contracts/src/hosting.ts)): `HostingDeployment` lists
+  the executor, isolated hosts per harness with their owner principal, session containers, the shared worker, and
+  worker containers, each with transports and implemented features. `evaluateHosting` reports, in order,
+  `hosting_mode_not_allowed`, `transport_not_allowed`, `policy_rejected`, and `hosting_unavailable` naming the
+  missing host, transport, or feature; per transport it also reports `transport_unsupported` and `relay_owner_only`.
+  [`hostingDeployment`](../src/agent-api/src/hosting-deployment.ts) describes today's deployment: the executor, the
+  managed demo host as the isolated host for its harness (direct or both; GitHub-native adds none), and the local
+  hybrid worker as the shared worker. No host implements any harness feature yet (`DEMO_HOST_FEATURES`,
+  `SHARED_WORKER_FEATURES`).
+- **Runtime**: the demo host's admission now refuses a non-isolated mode, isolated hosting its policy disallows, and
+  features it does not implement, instead of running without them. Runners, the shared worker, batch admission for
+  existing harnesses, and the existing host and session routes are unchanged.
+- **API**: read-only `GET /v1/hosting` and `GET /v1/hosting/{harness}` ([API](API.md#hosting-views)).
+- **Configurator server**: validation reports the new rules at their field paths, warns about policy settings that
+  cannot take effect, and the Policy page keeps an override's values for fields it has no card for yet.
+
+| Exit evidence | Result |
+| --- | --- |
+| Existing harnesses keep their digests | [`harness-digests.test.ts`](../tests/unit/harness-digests.test.ts) pins the five shipped digests computed on `0ad742e`; it passes on that commit and on this branch. [`hosting-contracts.test.ts`](../tests/unit/hosting-contracts.test.ts) shows omitted fields add no defaults and present fields change the digest |
+| Invalid combinations and disallowed modes fail with field-scoped errors | Schema rules in `hosting-contracts.test.ts`; policy, override, and profile rules in [`hosting-policy.test.ts`](../tests/unit/hosting-policy.test.ts); configurator issues in [`hosting-validation.test.ts`](../configurator/test/hosting-validation.test.ts); `hosting_mode_not_allowed` at `hosting.mode` in [`hosting-admission.test.ts`](../tests/unit/hosting-admission.test.ts) |
+| Unavailable modes name their prerequisite | `hosting-admission.test.ts`: `shared` names host `shared-worker`; `promotable` names feature `promotion` and host `session-containers`; `orchestrator` names host `worker-containers` and its feature needs; an isolated harness without a host names `isolated-host`; requested MCP, approval-mode, custom-handler, and handoff features name the feature. Transports name `session-containers` for non-owners, `relay_owner_only`, and `transport_unsupported` for the relay on shared modes |
+| Runtime behavior is unchanged | The full suites below pass. [`host-admission.test.ts`](../tests/integration/host-admission.test.ts) drives the dispatcher's demo host routes against PostgreSQL: the shipped harness and its session are admitted as before, and refused requests acquire no host lease |
+
+Commands and results, Windows ARM64 with Node 24.19, pnpm 10.34.5, and Docker Desktop:
+
+| Command | Result |
+| --- | --- |
+| `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build` | Passed |
+| `pnpm typecheck`, `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint` | Passed |
+| `pnpm test:unit` | 351 passed, 1 skipped (base `0ad742e`: 285 passed, 1 skipped) |
+| `pnpm test:integration` | 58 passed, 8 opt-in skipped (base: 56 passed) |
+| `HYBRID_SESSION_RUNTIME_TESTS=1` with `COPILOT_AHP_FACTORY_PROFILE=managed`: `shared-service.test.ts`, `shared-session-runtime.test.ts` | 2 passed |
+| `HYBRID_CLI_TESTS=1`, `HYBRID_USE_GH_ACCOUNT=1`: `shared-cli.test.ts` | Passed |
+| `HYBRID_DEPLOYMENT_TESTS=1`, `HYBRID_USE_GH_ACCOUNT=1`: `hybrid-deployment.test.ts`, executor image `copilot-hybrid-executor:local` | Passed |
+
+The opt-in suites used synthetic loopback inference and the runtime at revision `0a32c39595f`: launcher
+`copilot-runtime.exe` (SHA-256 `d843b17a242886e4504bebdd39c1563cece0eec248fc3dcbfe921d209cf88c4d`) and
+`runtime.node` (`ed6e2dda07580c86845b9edc30c59a03f584a4ef6651de6712cc34fedb3f357b`), the win32-arm64 build with the
+Windows workspace-path fix, with `HYBRID_CLI_PATH` at that checkout's `dist-cli\index.js`. With the older
+`dist-cli\prebuilds\win32-arm64` pair, `shared-cli.test.ts` fails identically on `0ad742e` and on this branch
+(`application session resume failed`), and `hybrid-deployment.test.ts` fails the same way on this branch. The demo
+host suites (`DEMO_HOST_RUNTIME_TESTS`, `DEMO_GITHUB_HOST_TESTS`) were not run: they need a rebuilt host image, and
+the dispatcher admission path they exercise is covered above.
+
+Limitations:
+
+- The editor and Policy page have no controls for the new fields; the configurator slice adds them. The Permissions
+  tab's presets still replace `permissions` without its approval-mode fields.
+- `ready` for `shared` reflects only that the local hybrid worker is deployed; it still runs its fixed coordinator
+  until stage 2 makes it harness-driven.
+- No host implements remote MCP, non-manual approval modes, custom handlers, handoffs, promotion, or workers, so
+  harnesses that request them evaluate as `hosting_unavailable`. No profile provides a permission handler.
+- Inherited human authority is a contract and policy ceiling only; the runtime capability is checked in stage 4.
+- Omitted handoff history (`summary` across placements, `full` within one) is resolved by stage 6, which may also
+  add policy ceilings for handoff approval and history.
+- The hosting views show every authenticated principal the harness names, mode problems, and effective ceilings,
+  including MCP server and tool names; server URLs, secret references, and owner principals are not returned.
 
 ### Stage 1: configurator hosting editor and views
 

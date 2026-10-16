@@ -1,5 +1,5 @@
 import { policyFor } from "@copilot-agent/contracts";
-import { AllocationStore, DelegationStore, HostStore, JobStore, SharedStore, migrate } from "@copilot-agent/job-store";
+import { AllocationStore, DelegationStore, HostStore, JobStore, PlacementStore, SharedStore, migrate } from "@copilot-agent/job-store";
 import {
   createPostgresPool,
   listen,
@@ -37,6 +37,9 @@ const app = buildDispatcher({
     shared: { store: sharedStore, key: requireEnv("SHARED_WORKER_KEY") },
     allocations: new AllocationStore(pool, sharedStore),
     delegations: new DelegationStore(pool, sharedStore, store),
+  } : {}),
+  ...(process.env.CONNECTION_BROKER_KEY ? {
+    broker: { store: new PlacementStore(pool), key: requireEnv("CONNECTION_BROKER_KEY") },
   } : {}),
   ...(hostOwner ? {
     host: {
