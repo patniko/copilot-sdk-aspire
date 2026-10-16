@@ -307,8 +307,8 @@ The Copilot runtime moves a tool result above 20 KiB into a temporary file and g
 with tools that shared placement does not have. Shared sessions disable that, which holds for turns no client drives;
 with a client attached, runtime `d89cfe45b29` moves large results anyway. Remote MCP results are therefore bounded to
 16 KiB of UTF-8 text, with a note asking for a narrower result, and stay inline. A `web_fetch` page near its
-20,000-character maximum or a workspace read above 20 KiB can still be moved while a client is attached; smaller
-pages and ranges avoid it.
+20,000-character maximum or a workspace or shared-volume read above 20 KiB can still be moved while a client is
+attached; smaller pages and ranges avoid it.
 
 An operator can set `allowPrivateNetwork` on one catalog server for development. Only that exact origin may
 then use a local or single-label host name, resolve to loopback, private, shared, or unique-local
