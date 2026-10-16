@@ -22,6 +22,8 @@
     { "name": "node", "version": "24" },
     { "name": "python", "version": "3.11" }
   ],
-  "toolBindings": ["python:stats"],
+  "toolBindings": ["python:stats", "shared:delegate-job", "shared:get-job", "shared:read-job-artifact", "shared:import-job-artifact"],
+  "inProcessBindings": ["shared:delegate-job", "shared:get-job", "shared:read-job-artifact", "shared:import-job-artifact"],
+  "permissionHandlers": ["workspace-drafts"],
   "capabilities": ["cancel", "structured-result", "prompt-sections", "model-options", "custom-agents", "skills", "builtin-tools", "interactive", "workspace-artifacts"]
 }

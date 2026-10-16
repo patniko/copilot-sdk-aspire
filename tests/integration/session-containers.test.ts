@@ -4,7 +4,7 @@ import pg from "pg";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeAll, afterAll, describe, expect, inject, it } from "vitest";
 import {
-  ExecutionContainerSettings, HarnessDefinition, SessionContainerSettings, SessionContainerSpec, SessionView, SharedConnection,
+  ExecutionContainerSettings, HarnessDefinition, SessionContainerSettings, SessionContainerSpec, SharedConnection, SharedSessionView,
   SharedWorkerLimits, type HarnessSnapshot,
 } from "@copilot-agent/contracts";
 import {
@@ -89,15 +89,16 @@ async function environment(options: { limits?: Partial<SharedWorkerLimits>; cont
     sessionContainers: { allocations, store, policies, heartbeatSeconds: settings.heartbeatSeconds },
   });
   apps.push(dispatcher);
-  const service = new ContainerSessionService({
-    store, allocations, directory: new SessionDirectory(pool), harnesses, profiles, policies, principals: bindings, settings, limits,
-    deployment: hostingDeployment({ executor: "on-demand", sharedWorker: false, sessionContainers: true }), connectWaitSeconds: 20,
-  });
+  const containers = options.containers !== false;
+  const catalog = { harnesses, profiles, policies, deployment: hostingDeployment({ executor: "on-demand", sharedWorker: !containers, sessionContainers: containers }) };
+  const service = containers ? new ContainerSessionService({
+    store, allocations, directory: new SessionDirectory(pool), catalog, principals: bindings, settings, limits, connectWaitSeconds: 20,
+  }) : undefined;
   const api = buildApi({
     store: jobs, listener: new JobEventListener(pool), admission: new Admission({ harnesses, profiles, policies }), harnesses,
     authenticator: new ApiKeyAuthenticator(`${principals.a}:${keys.a};${principals.b}:${keys.b};${principals.unbound}:${keys.unbound}`),
-    maxOpenJobsPerPrincipal: 10, console: false, delegations, execution: "dedicated",
-    ...(options.containers === false ? { shared: { url: "http://127.0.0.1:9", key: "unused-worker-key-".repeat(3) } } : { containers: service }),
+    maxOpenJobsPerPrincipal: 10, console: false, delegations, execution: "dedicated", hosting: catalog,
+    ...(service ? { containers: service } : { shared: { url: "http://127.0.0.1:9", key: "unused-worker-key-".repeat(3) } }),
   });
   apps.push(api);
   const controllers: ExecutionController[] = [];
@@ -133,10 +134,10 @@ async function environment(options: { limits?: Partial<SharedWorkerLimits>; cont
     heartbeats.set(container.id, setInterval(() => { void asContainer(container.token, "heartbeat", { activeTurn: false, activity: false }); }, 1_000));
     return { container, spec: SessionContainerSpec.parse(spec.json()) };
   };
-  const create = async (who: keyof typeof keys = "a", harness: object = { name: coder.definition.name }) => {
+  const create = async (who: keyof typeof keys = "a", harness = coder.definition.name) => {
     const response = await api.inject({ method: "POST", url: "/v1/sessions", headers: headers(who), payload: { harness, label: "synthetic" } });
     expect(response.statusCode, response.body).toBe(201);
-    return SessionView.parse(response.json());
+    return SharedSessionView.parse(response.json());
   };
   const connect = async (who: keyof typeof keys, id: string) => {
     const pending = api.inject({ method: "POST", url: `/v1/sessions/${id}/connection`, headers: headers(who) });
@@ -145,7 +146,7 @@ async function environment(options: { limits?: Partial<SharedWorkerLimits>; cont
     expect(response.statusCode, response.body).toBe(200);
     return { connection: SharedConnection.parse(response.json()), ...started, cache: response.headers["cache-control"] };
   };
-  const view = async (who: keyof typeof keys, id: string) => SessionView.parse((await api.inject({ method: "GET", url: `/v1/sessions/${id}`, headers: headers(who) })).json());
+  const view = async (who: keyof typeof keys, id: string) => SharedSessionView.parse((await api.inject({ method: "GET", url: `/v1/sessions/${id}`, headers: headers(who) })).json());
   const active = async () => (await pool.query<{ count: number }>(
     "SELECT count(*)::int AS count FROM execution_allocations WHERE (namespace=$1 OR namespace IS NULL) AND kind='session' AND state<>'retired'", [namespace])).rows[0]!.count;
   return { namespace, principals, keys, bindings, jobs, shared, allocations, store, dispatcher, api, fake, controller, headers, asContainer, ready, create, connect, view, active, limits, settings };
@@ -159,6 +160,10 @@ describe("resumable session containers", () => {
     expect(session).toMatchObject({ placement: "container", mode: "isolated", online: false,
       harness: { name: "session-coder", version: "1.0.0", digest: coder.digest }, container: { state: "dormant", size: "small", cpus: 0.5, memoryMiB: 1024, activations: 0 } });
     expect(session.segment).toEqual({ generation: 1, placement: "container", harness: session.harness, ahpSessionId: session.id, startedAt: session.createdAt });
+    const stored = (await pool.query<{ definition: Record<string, unknown> }>("SELECT definition FROM shared_sessions WHERE id=$1", [session.id])).rows[0]!.definition;
+    expect(stored).toEqual({ model: "grok-4.6", limits: session.limits, harness: {
+      name: "session-coder", version: "1.0.0", digest: coder.digest, mode: "isolated", policyDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) } });
+    expect(session.limits).toMatchObject({ idleSeconds: 30, maxJobs: 0, maxContinuations: 0 });
     const relay = await env.api.inject({ method: "POST", url: `/v1/sessions/${session.id}/connection`, headers: env.headers("a"), payload: { transport: "github" } });
     expect([relay.statusCode, relay.json().error.code]).toEqual([409, "hosting_unavailable"]);
     expect((await env.api.inject({ method: "POST", url: `/v1/sessions/${session.id}/connection`, headers: env.headers("a"), payload: { transport: "carrier-pigeon" } })).statusCode).toBe(400);
@@ -166,7 +171,7 @@ describe("resumable session containers", () => {
 
     const first = await env.connect("a", session.id);
     expect(first.cache).toBe("no-store");
-    expect(first.connection).toMatchObject({ sessionId: session.id, destination: "container", ahpSessionId: session.id, serverKey });
+    expect(first.connection).toMatchObject({ sessionId: session.id, destination: "container", transport: "direct", ahpSessionId: session.id, serverKey });
     expect(first.connection.url).toBe(`ws://127.0.0.1:${first.container.ingress!.port}/sessions/${session.id}`);
     expect(first.spec).toMatchObject({ sessionId: session.id, githubUserId: 1001, model: "grok-4.6", harness: { digest: coder.digest }, heartbeatSeconds: 2 });
     expect(await env.view("a", session.id)).toMatchObject({ online: true, container: { state: "running", activations: 1 } });
@@ -332,25 +337,26 @@ describe("resumable session containers", () => {
     }
     expect((await env.api.inject({ method: "GET", url: "/v1/sessions", headers: env.headers("b") })).json()).toEqual({ sessions: [] });
     expect((await env.api.inject({ method: "GET", url: "/v1/sessions", headers: env.headers("unbound") })).statusCode).toBe(404);
-    expect((await env.api.inject({ method: "POST", url: "/v1/sessions", headers: env.headers("unbound"), payload: { harness: { name: "session-coder" } } })).statusCode).toBe(404);
-    const listed = SessionView.array().parse((await env.api.inject({ method: "GET", url: "/v1/sessions", headers: env.headers("a") })).json().sessions);
+    expect((await env.api.inject({ method: "POST", url: "/v1/sessions", headers: env.headers("unbound"), payload: { harness: "session-coder" } })).statusCode).toBe(404);
+    const listed = SharedSessionView.array().parse((await env.api.inject({ method: "GET", url: "/v1/sessions", headers: env.headers("a") })).json().sessions);
     expect(listed.map((session) => session.id)).toEqual([mine.id]);
     expect((await env.api.inject({ method: "GET", url: `/v1/sessions/${mine.id}/jobs`, headers: env.headers("a") })).json()).toEqual({ jobs: [] });
 
     const create = (payload: object) => env.api.inject({ method: "POST", url: "/v1/sessions", headers: env.headers("a"), payload });
-    const missing = await create({ harness: { name: "not-published" } });
+    const missing = await create({ harness: "not-published" });
     expect([missing.statusCode, missing.json().error.code]).toEqual([404, "harness_not_found"]);
-    const version = await create({ harness: { name: "session-coder", version: "9.9.9" } });
+    const version = await create({ harness: "session-coder", version: "9.9.9" });
     expect(version.statusCode).toBe(404);
-    const batchSession = await create({ harness: { name: "batch-only" } });
+    const batchSession = await create({ harness: "batch-only" });
     expect([batchSession.statusCode, batchSession.json().error.code]).toEqual([422, "policy_rejected"]);
-    const sharedSession = await create({ harness: { name: "shared-chat" } });
+    const sharedSession = await create({ harness: "shared-chat" });
     expect([sharedSession.statusCode, sharedSession.json().error.code]).toEqual([422, "hosting_mode_not_allowed"]);
-    expect((await create({ harness: { name: "session-coder" }, unexpected: true })).statusCode).toBe(400);
+    expect((await create({ harness: "session-coder", unexpected: true })).statusCode).toBe(400);
+    expect((await create({ harness: { name: "session-coder" } })).statusCode).toBe(400);
 
     const withoutContainers = await environment({ containers: false });
     const unavailable = await withoutContainers.api.inject({ method: "POST", url: "/v1/sessions", headers: withoutContainers.headers("a"),
-      payload: { harness: { name: "session-coder" } } });
+      payload: { harness: "session-coder" } });
     expect([unavailable.statusCode, unavailable.json().error.code]).toEqual([409, "hosting_unavailable"]);
   }, 60_000);
 });

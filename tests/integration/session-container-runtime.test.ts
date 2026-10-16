@@ -10,7 +10,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { expect, inject, it } from "vitest";
 import {
-  ExecutionContainerSettings, HarnessDefinition, SessionContainerSettings, SessionView, SharedConnection, SharedWorkerLimits,
+  ExecutionContainerSettings, HarnessDefinition, SessionContainerSettings, SharedConnection, SharedSessionView, SharedWorkerLimits,
 } from "@copilot-agent/contracts";
 import {
   AllocationStore, DelegationStore, JobEventListener, JobStore, SessionContainerStore, SessionDirectory, SharedStore, migrate,
@@ -180,12 +180,13 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
     });
     apps.push(gateway);
     await gateway.listen({ port: 0, host: "0.0.0.0" });
+    const catalog = { harnesses, profiles, policies, deployment: hostingDeployment({ executor: "on-demand", sharedWorker: false, sessionContainers: true }) };
     const api = buildApi({
       store: jobs, listener: new JobEventListener(pool), admission: new Admission({ harnesses, profiles, policies }), harnesses,
-      authenticator: new ApiKeyAuthenticator(`${principal}:${apiKey}`), maxOpenJobsPerPrincipal: 10, console: false, delegations,
+      authenticator: new ApiKeyAuthenticator(`${principal}:${apiKey}`), maxOpenJobsPerPrincipal: 10, console: false, delegations, hosting: catalog,
       containers: new ContainerSessionService({
-        store, allocations, directory: new SessionDirectory(pool), harnesses, profiles, policies, principals: { [principal]: githubUserId },
-        settings, limits, deployment: hostingDeployment({ executor: "on-demand", sharedWorker: false, sessionContainers: true }), connectWaitSeconds: 180,
+        store, allocations, directory: new SessionDirectory(pool), catalog, principals: { [principal]: githubUserId },
+        settings, limits, connectWaitSeconds: 180,
       }),
     });
     apps.push(api);
@@ -197,9 +198,9 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
     });
     await controller.start();
     const headers = { authorization: `Bearer ${apiKey}` };
-    const created = await api.inject({ method: "POST", url: "/v1/sessions", headers, payload: { harness: { name: definition.name } } });
+    const created = await api.inject({ method: "POST", url: "/v1/sessions", headers, payload: { harness: definition.name } });
     expect(created.statusCode, created.body).toBe(201);
-    const session = SessionView.parse(created.json());
+    const session = SharedSessionView.parse(created.json());
     expect(session.container).toMatchObject({ state: "dormant", size: "large", cpus: 2, memoryMiB: 4096 });
     const connect = async () => {
       const response = await api.inject({ method: "POST", url: `/v1/sessions/${session.id}/connection`, headers });
@@ -208,7 +209,7 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
     };
 
     const first = await connect();
-    expect(first).toMatchObject({ sessionId: session.id, destination: "container", ahpSessionId: session.id });
+    expect(first).toMatchObject({ sessionId: session.id, destination: "container", transport: "direct", ahpSessionId: session.id });
     const [containerId] = containers();
     expect(containers()).toHaveLength(1);
     const inspected = z.array(z.object({
@@ -241,7 +242,7 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
     expect((await pool.query("SELECT state,last_error FROM execution_allocations WHERE session_id=$1", [session.id])).rows)
       .toEqual([{ state: "retired", last_error: "The session was idle." }]);
     expect(volumes()).toEqual([`hybrid-${namespace}-session-${session.id}`]);
-    expect(SessionView.parse((await api.inject({ method: "GET", url: `/v1/sessions/${session.id}`, headers })).json()).container)
+    expect(SharedSessionView.parse((await api.inject({ method: "GET", url: `/v1/sessions/${session.id}`, headers })).json()).container)
       .toMatchObject({ state: "dormant", activations: 1 });
 
     const second = await connect();
@@ -263,7 +264,7 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
     await wait(async () => containers().length === 0 && (await pool.query(
       "SELECT 1 FROM execution_allocations WHERE (namespace=$1 OR namespace IS NULL) AND state<>'retired'", [namespace])).rowCount === 0, "capacity to return to zero", 120_000);
     expect(volumes()).toEqual([`hybrid-${namespace}-session-${session.id}`]);
-    const view = SessionView.parse((await api.inject({ method: "GET", url: `/v1/sessions/${session.id}`, headers })).json());
+    const view = SharedSessionView.parse((await api.inject({ method: "GET", url: `/v1/sessions/${session.id}`, headers })).json());
     expect(view).toMatchObject({ closed: true, container: { state: "closed", activations: 2 } });
     expect(view.budget.usedTokens).toBeGreaterThan(0);
     expect(errors).toEqual([]);

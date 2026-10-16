@@ -210,7 +210,8 @@ if (hybridEnabled === 'true') {
     await dispatcher.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings);
     await api.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings)
       .withEnvironment('SHARED_PRINCIPALS', JSON.stringify(principals))
-      .withEnvironment('SHARED_WORKER_LIMITS', JSON.stringify(workerLimits));
+      .withEnvironment('SHARED_WORKER_LIMITS', JSON.stringify(workerLimits))
+      .withEnvironment('SHARED_SESSION_LIMITS', JSON.stringify(sessionLimits));
   }
 }
 

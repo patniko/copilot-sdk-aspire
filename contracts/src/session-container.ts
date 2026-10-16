@@ -1,9 +1,7 @@
 import { z } from "zod";
-import { HarnessDefinition, HOSTING_MODES, SEMVER, SLUG } from "./harness.js";
+import { HarnessDefinition } from "./harness.js";
 import type { HostingFeature } from "./hosting.js";
-import { PlacementKind } from "./placement.js";
-import { ContainerSize } from "./profile.js";
-import { SharedServerKey, SharedSessionView } from "./shared.js";
+import { SharedServerKey } from "./shared.js";
 
 /** Harness hosting features session containers implement. A harness that needs others is unavailable there. */
 export const SESSION_CONTAINER_FEATURES: readonly HostingFeature[] = [];
@@ -25,55 +23,6 @@ export const SessionContainerSettings = z.object({
 }).strict();
 export type SessionContainerSettings = z.infer<typeof SessionContainerSettings>;
 
-export const HarnessReference = z.object({ name: z.string().regex(SLUG), version: z.string().regex(SEMVER).optional() }).strict();
-export type HarnessReference = z.infer<typeof HarnessReference>;
-
-/** `POST /v1/sessions`. Without a harness the session uses the shared coordinator; with one, the harness's hosting mode decides. */
-export const SessionCreation = z.object({
-  harness: HarnessReference.optional(),
-  label: z.string().trim().max(120).default(""),
-}).strict();
-export type SessionCreation = z.infer<typeof SessionCreation>;
-
-/**
- * `dormant`: no container, volume retained. `starting`: allocated, listener not yet ready. `running`: attachable.
- * `stopping`: the container is being retired. `closed`: no further allocations.
- */
-export const SessionContainerState = z.enum(["dormant", "starting", "running", "stopping", "closed"]);
-export type SessionContainerState = z.infer<typeof SessionContainerState>;
-
-export const SessionContainerStatus = z.object({
-  state: SessionContainerState,
-  size: z.string().regex(SLUG),
-  cpus: ContainerSize.shape.cpus,
-  memoryMiB: ContainerSize.shape.memoryMiB,
-  idleSeconds: z.number().int().positive(),
-  activations: z.number().int().nonnegative(),
-}).strict();
-export type SessionContainerStatus = z.infer<typeof SessionContainerStatus>;
-
-const SessionHarness = z.object({ name: z.string().regex(SLUG), version: z.string().regex(SEMVER), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict();
-
-/** A period of one session with one harness snapshot at one placement. Promotion and handoff start a new segment. */
-export const SessionSegment = z.object({
-  generation: z.number().int().positive(),
-  placement: PlacementKind,
-  harness: SessionHarness.optional(),
-  ahpSessionId: z.string().min(1).max(200),
-  startedAt: z.iso.datetime(),
-}).strict();
-export type SessionSegment = z.infer<typeof SessionSegment>;
-
-/** The placement-agnostic session view returned by `GET /v1/sessions` and `GET /v1/sessions/{id}`. */
-export const SessionView = SharedSessionView.extend({
-  placement: PlacementKind,
-  mode: z.enum(HOSTING_MODES),
-  harness: SessionHarness.optional(),
-  segment: SessionSegment,
-  container: SessionContainerStatus.optional(),
-}).strict();
-export type SessionView = z.infer<typeof SessionView>;
-
 // Internal protocol between a session container's supervisor and the dispatcher. Every route authenticates the
 // container's allocation-scoped credential, which is bound to exactly one session.
 
@@ -84,7 +33,7 @@ export const SessionContainerSpec = z.object({
   githubUserId: z.number().int().positive().safe(),
   harness: z.object({ definition: HarnessDefinition, digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict(),
   model: z.string().min(1).max(200),
-  maxTurnSeconds: z.number().int().min(10).max(3600),
+  maxTurnSeconds: z.number().int().min(1).max(3600),
   heartbeatSeconds: z.number().int().min(2).max(60),
 }).strict();
 export type SessionContainerSpec = z.infer<typeof SessionContainerSpec>;

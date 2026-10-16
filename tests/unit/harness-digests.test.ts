@@ -12,6 +12,9 @@ const PINNED: Record<string, string> = {
   "insights-team@1.0.0": "sha256:d351346958920cd19ed8f7acb1fbdee2a1be469b9aa3e045d28c05ee58fe81d3",
   "interactive-demo@1.0.0": "sha256:cb437f4980ac183cf73d987f5e082bb7693352581a5f4851b23b58f134d7264a",
   "text-summarizer@1.0.0": "sha256:af1301c4dcd766c08f31801b8c0b24e88d569319f71345f97825d332db220ddb",
+  // Shared-hosting examples added with harness-driven shared mode (stage 2).
+  "hybrid-coordinator@1.0.0": "sha256:0e92c067827d0ab0cb44fe316bd594ce591b622328eb481ae25f97e561a33869",
+  "shared-researcher@1.0.0": "sha256:179deb7d1204d773a6e0631cf17029ebdffe5acfa1effd2fab458b32c0d2ec45",
 };
 
 describe("published harness digests", () => {

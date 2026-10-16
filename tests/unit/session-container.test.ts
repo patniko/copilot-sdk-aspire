@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  ContainerSize, DEFAULT_CONTAINER_SIZES, ExecutionContainerSettings, SessionContainerSettings, SessionContainerSpec, SessionCreation, SessionView,
-  SharedConnection,
+  ContainerSize, DEFAULT_CONTAINER_SIZES, ExecutionContainerSettings, SessionContainerSettings, SessionContainerSpec, SharedConnection,
+  SharedSessionView,
 } from "@copilot-agent/contracts";
 import type { SessionAllocation } from "@copilot-agent/job-store";
 import { sessionContainerArguments, volumeLabels } from "../../src/execution-controller/src/docker.js";
@@ -70,33 +70,32 @@ describe("session container contracts", () => {
     expect(ContainerSize.safeParse({ cpus: 16, memoryMiB: 1024 }).success).toBe(false);
   });
 
-  it("accepts harness references on creation and keeps connection material placement-generic", () => {
-    expect(SessionCreation.parse({})).toEqual({ label: "" });
-    expect(SessionCreation.parse({ harness: { name: "coding-agent" }, label: " demo " })).toEqual({ harness: { name: "coding-agent" }, label: "demo" });
-    for (const invalid of [{ harness: "coding-agent" }, { harness: { name: "Coding" } }, { harness: { name: "coding-agent", image: "x" } }, { size: "large" }]) {
-      expect(SessionCreation.safeParse(invalid).success, JSON.stringify(invalid)).toBe(false);
-    }
-    const connection = { sessionId, destination: "container", url: `ws://127.0.0.1:49152/sessions/${sessionId}`, token: "t".repeat(43),
-      expiresAt: new Date().toISOString(), serverKey: { keyId: "k", algorithm: "x25519-sealedbox", publicKey: "p" }, ahpSessionId: sessionId };
+  it("keeps connection material placement-generic and advertises container hosting", () => {
+    const connection = { sessionId, destination: "container", transport: "direct", ahpSessionId: sessionId,
+      url: `ws://127.0.0.1:49152/sessions/${sessionId}`, token: "t".repeat(43), expiresAt: new Date().toISOString(),
+      serverKey: { keyId: "k", algorithm: "x25519-sealedbox", publicKey: "p" } };
     expect(SharedConnection.parse(connection).destination).toBe("container");
     expect(SharedConnection.safeParse({ ...connection, destination: "host" }).success).toBe(false);
+    expect(SharedConnection.safeParse({ ...connection, transport: "github" }).success).toBe(false);
     expect(hostingDeployment({ executor: "on-demand", sharedWorker: false, sessionContainers: true }).sessionContainers).toEqual({ transports: ["direct"], features: [] });
     expect(hostingDeployment({ executor: "pool", sharedWorker: true }).sessionContainers).toBeUndefined();
   });
 
-  it("describes container placement, mode, segment and container state in session views", () => {
+  it("describes container placement, mode, segment and container state in the shared session view", () => {
     const at = new Date().toISOString();
     const view = {
       id: sessionId, label: "", model: "m", closed: false, online: false, createdAt: at, lastActivityAt: at,
+      harness: { name: "coding-agent", version: "1.0.0", digest: `sha256:${"c".repeat(64)}` }, mode: "isolated", placement: "container",
+      segment: { generation: 1, placement: "container", ahpSessionId: sessionId, startedAt: at },
       limits: { tokenBudget: 1000, turnTokenBudget: 1000, maxTurnSeconds: 60, idleSeconds: 60, maxJobs: 0, maxParallelJobs: 1, maxContinuations: 0 },
       budget: { usedTokens: 0, reservedTokens: 0, remainingTokens: 1000 }, jobs: 0, continuations: 0,
-      placement: "container", mode: "isolated", harness: { name: "coding-agent", version: "1.0.0", digest: `sha256:${"c".repeat(64)}` },
-      segment: { generation: 1, placement: "container", ahpSessionId: sessionId, startedAt: at },
       container: { state: "dormant", size: "small", cpus: 0.5, memoryMiB: 1024, idleSeconds: 60, activations: 0 },
     };
-    expect(SessionView.parse(view).container?.state).toBe("dormant");
-    expect(SessionView.safeParse({ ...view, container: { ...view.container, state: "paused" } }).success).toBe(false);
-    expect(SessionView.safeParse({ ...view, placement: "host" }).success).toBe(false);
+    expect(SharedSessionView.parse(view).container?.state).toBe("dormant");
+    expect(SharedSessionView.safeParse({ ...view, container: { ...view.container, state: "paused" } }).success).toBe(false);
+    expect(SharedSessionView.safeParse({ ...view, container: { ...view.container, gpus: 1 } }).success).toBe(false);
+    expect(SharedSessionView.safeParse({ ...view, placement: "host" }).success).toBe(false);
+    expect(SharedSessionView.parse({ ...view, placement: "shared", mode: "shared", container: undefined }).container).toBeUndefined();
   });
 });
 

@@ -3,15 +3,14 @@
 ALTER TABLE shared_sessions DROP CONSTRAINT shared_sessions_placement_kind;
 ALTER TABLE shared_sessions ADD CONSTRAINT shared_sessions_placement_kind CHECK (placement IN ('shared','container'));
 
--- What a container-placed session runs. The session's `definition` carries only its admitted limits and model.
+-- The container placement of a session. The session's `definition` carries its harness reference, hosting mode, model
+-- and limits (including the idle stop and turn deadline); this table keeps the admitted harness snapshot the
+-- container runs and the size it was admitted with.
 CREATE TABLE session_containers (
   session_id uuid PRIMARY KEY REFERENCES shared_sessions(id) ON DELETE CASCADE,
   harness jsonb NOT NULL,
-  mode text NOT NULL CHECK (mode IN ('isolated')),
-  max_turn_seconds integer NOT NULL CHECK (max_turn_seconds BETWEEN 10 AND 3600),
   size text NOT NULL,
   resources jsonb NOT NULL,
-  idle_seconds integer NOT NULL CHECK (idle_seconds > 0),
   activations integer NOT NULL DEFAULT 0 CHECK (activations >= 0)
 );
 

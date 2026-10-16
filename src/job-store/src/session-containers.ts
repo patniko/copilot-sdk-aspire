@@ -9,13 +9,15 @@ import { StoreError } from "./store.js";
 
 /** The admitted container placement of one isolated conversation session. */
 export interface ContainerSessionAdmission {
+  /** The admitted harness snapshot, kept with the container placement rather than in the session's definition. */
   harness: HarnessSnapshot;
   model: string;
-  tokenBudget: number;
-  maxTurnSeconds: number;
+  /** The session's limits; `idleSeconds` is the container's idle stop and `maxTurnSeconds` its turn deadline. */
+  limits: SharedSessionLimits;
+  /** Digest of the harness's effective operator policy at admission, for provenance. */
+  policyDigest: string;
   size: string;
   resources: ContainerSize;
-  idleSeconds: number;
 }
 export interface ContainerSessionRecord extends ContainerSessionAdmission {
   id: string;
@@ -38,8 +40,7 @@ export interface ContainerGrant {
 }
 interface RecordRow {
   id: string; principal: string; github_user_id: string; closed: boolean; placement_generation: number;
-  definition: SharedSessionDefinition; harness: HarnessSnapshot; max_turn_seconds: number; size: string;
-  resources: ContainerSize; idle_seconds: number; activations: number;
+  definition: SharedSessionDefinition; harness: HarnessSnapshot; size: string; resources: ContainerSize; activations: number;
 }
 
 /**
@@ -52,16 +53,15 @@ export class SessionContainerStore {
   async create(principal: string, githubUserId: number, label: string, admitted: ContainerSessionAdmission, maximum: number): Promise<ContainerSessionRecord> {
     const snapshot = { definition: HarnessDefinition.parse(admitted.harness.definition), digest: admitted.harness.digest };
     ContainerSize.parse(admitted.resources);
-    if (!principal || !Number.isSafeInteger(githubUserId) || githubUserId < 1 || label.length > 120 || !/^sha256:[a-f0-9]{64}$/.test(snapshot.digest)
+    if (!principal || !Number.isSafeInteger(githubUserId) || githubUserId < 1 || label.length > 120
       || !Number.isSafeInteger(maximum) || maximum < 1 || maximum > 1000) throw new StoreError("invalid_request", "Invalid container session admission.");
     const definition = SharedSessionDefinition.parse({
       model: admitted.model,
-      instructions: `Session container for ${snapshot.definition.name}@${snapshot.definition.version}; the harness snapshot defines its behavior.`,
-      allowedHarnesses: [],
-      limits: SharedSessionLimits.parse({
-        tokenBudget: admitted.tokenBudget, turnTokenBudget: Math.min(admitted.tokenBudget, 1_000_000),
-        maxTurnSeconds: admitted.maxTurnSeconds, idleSeconds: admitted.idleSeconds, maxJobs: 0, maxParallelJobs: 1, maxContinuations: 0,
-      }),
+      limits: SharedSessionLimits.parse({ ...admitted.limits, maxJobs: 0, maxContinuations: 0 }),
+      harness: {
+        name: snapshot.definition.name, version: snapshot.definition.version, digest: snapshot.digest, mode: "isolated",
+        policyDigest: admitted.policyDigest,
+      },
     });
     return this.shared.transaction(async (db) => {
       await this.shared.checkIdentity(principal, githubUserId, db);
@@ -71,10 +71,8 @@ export class SessionContainerStore {
       await db.query(
         "INSERT INTO shared_sessions(id,principal,github_user_id,label,definition,placement) VALUES($1,$2,$3,$4,$5,'container')",
         [id, principal, githubUserId, label, JSON.stringify(definition)]);
-      await db.query(
-        `INSERT INTO session_containers(session_id,harness,mode,max_turn_seconds,size,resources,idle_seconds)
-         VALUES($1,$2,'isolated',$3,$4,$5,$6)`,
-        [id, JSON.stringify(snapshot), admitted.maxTurnSeconds, admitted.size, JSON.stringify(admitted.resources), admitted.idleSeconds]);
+      await db.query("INSERT INTO session_containers(session_id,harness,size,resources) VALUES($1,$2,$3,$4)",
+        [id, JSON.stringify(snapshot), admitted.size, JSON.stringify(admitted.resources)]);
       return (await this.#record(db, principal, id))!;
     });
   }
@@ -145,7 +143,7 @@ export class SessionContainerStore {
 
   async spec(allocationId: string, heartbeatSeconds: number): Promise<SessionContainerSpec> {
     const row = (await this.pool.query<RecordRow & { allocation_id: string }>(
-      `SELECT s.*,c.harness,c.max_turn_seconds,c.size,c.resources,c.idle_seconds,c.activations,e.id AS allocation_id
+      `SELECT s.*,c.harness,c.size,c.resources,c.activations,e.id AS allocation_id
        FROM execution_allocations e JOIN shared_sessions s ON s.id=e.session_id JOIN session_containers c ON c.session_id=s.id
        WHERE e.id=$1 AND e.kind='session' AND e.state IN ('starting','running') AND NOT s.closed AND s.placement='container'`,
       [allocationId])).rows[0];
@@ -153,7 +151,7 @@ export class SessionContainerStore {
     const definition = SharedSessionDefinition.parse(row.definition);
     return {
       sessionId: row.id, allocationId: row.allocation_id, githubUserId: Number(row.github_user_id), harness: row.harness,
-      model: definition.model, maxTurnSeconds: row.max_turn_seconds, heartbeatSeconds,
+      model: definition.model, maxTurnSeconds: definition.limits.maxTurnSeconds, heartbeatSeconds,
     };
   }
 
@@ -216,7 +214,7 @@ export class SessionContainerStore {
 
   async #record(db: pg.Pool | pg.PoolClient, principal: string, id: string): Promise<ContainerSessionRecord | undefined> {
     const row = (await db.query<RecordRow>(
-      `SELECT s.*,c.harness,c.max_turn_seconds,c.size,c.resources,c.idle_seconds,c.activations
+      `SELECT s.*,c.harness,c.size,c.resources,c.activations
        FROM shared_sessions s JOIN session_containers c ON c.session_id=s.id
        WHERE s.id=$1 AND s.principal=$2 AND s.placement='container'`, [id, principal])).rows[0];
     if (!row) return undefined;
@@ -225,8 +223,8 @@ export class SessionContainerStore {
       id: row.id, principal: row.principal, githubUserId: Number(row.github_user_id), closed: row.closed,
       generation: row.placement_generation, activations: row.activations,
       harness: { definition: HarnessDefinition.parse(row.harness.definition), digest: row.harness.digest },
-      model: definition.model, tokenBudget: definition.limits.tokenBudget, maxTurnSeconds: row.max_turn_seconds,
-      size: row.size, resources: ContainerSize.parse(row.resources), idleSeconds: row.idle_seconds,
+      model: definition.model, limits: definition.limits, policyDigest: definition.harness?.policyDigest ?? "",
+      size: row.size, resources: ContainerSize.parse(row.resources),
     };
   }
 }

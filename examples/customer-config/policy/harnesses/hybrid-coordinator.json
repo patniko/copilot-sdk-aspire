@@ -1,0 +1,7 @@
+{
+  "schemaVersion": "1",
+  "harness": "hybrid-coordinator",
+  "overrides": {
+    "hosting": { "modes": ["shared"], "transports": ["direct"] }
+  }
+}

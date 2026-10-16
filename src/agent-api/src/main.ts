@@ -1,4 +1,4 @@
-import { SessionContainerSettings, SharedPrincipalBindings, SharedWorkerLimits } from "@copilot-agent/contracts";
+import { SessionContainerSettings, SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits } from "@copilot-agent/contracts";
 import {
   AllocationStore, DelegationStore, HostStore, JobEventListener, JobStore, SessionContainerStore, SessionDirectory, SharedStore, migrate,
 } from "@copilot-agent/job-store";
@@ -46,6 +46,7 @@ const deployment = hostingDeployment({
 const listener = new JobEventListener(pool);
 await listener.start();
 const sharedStore = new SharedStore(pool);
+const hosting = { harnesses, profiles, policies, deployment };
 
 const app = buildApi({
   store,
@@ -57,15 +58,15 @@ const app = buildApi({
   console: optionalEnv("CONSOLE_ENABLED", "true") !== "false",
   execution: execution === "on-demand" ? "dedicated" : "pool",
   delegations: new DelegationStore(pool, sharedStore, store),
-  hosting: { harnesses, profiles, policies, deployment },
+  hosting,
   ...(process.env.SHARED_WORKER_KEY ? { shared: { url: serviceUrl("session-host"), key: requireEnv("SHARED_WORKER_KEY") } } : {}),
   ...(sessionContainers ? {
     containers: new ContainerSessionService({
       store: new SessionContainerStore(pool, sharedStore), allocations: new AllocationStore(pool, sharedStore), directory: new SessionDirectory(pool),
-      harnesses, profiles, policies, settings: sessionContainers,
+      catalog: hosting, settings: sessionContainers,
       principals: SharedPrincipalBindings.parse(JSON.parse(requireEnv("SHARED_PRINCIPALS"))),
       limits: SharedWorkerLimits.parse(JSON.parse(optionalEnv("SHARED_WORKER_LIMITS", "{}"))),
-      deployment,
+      sessionLimits: SharedSessionLimits.parse(JSON.parse(optionalEnv("SHARED_SESSION_LIMITS", "{}"))),
       ...(process.env.CONNECTION_BROKER_URL ? { brokerUrl: requireEnv("CONNECTION_BROKER_URL") } : {}),
     }),
   } : {}),

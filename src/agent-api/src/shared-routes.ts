@@ -1,21 +1,29 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { SessionCreation, SharedConnection, SharedSessionClosure, SharedSessionView } from "@copilot-agent/contracts";
-import { HttpError } from "@copilot-agent/service-defaults";
+import { SharedConnection, SharedConnectionRequest, SharedSessionClosure, SharedSessionCreation, SharedSessionView } from "@copilot-agent/contracts";
+import { harnessHostingView, hostingError, HttpError, type HostingCatalog } from "@copilot-agent/service-defaults";
 import type { DelegationStore } from "@copilot-agent/job-store";
 import type { ContainerSessionService } from "./container-sessions.js";
 
 export interface SharedApiDependencies { url: string; key: string }
 
+const PASSED_THROUGH = new Set([400, 403, 404, 409, 422, 429]);
+
 /**
- * Application-session routes. Sessions are placement-agnostic to callers: views come from the ledger when session
- * containers are configured, and connection and close go to the session's placement (the shared worker, or the
- * container service for container-placed sessions).
+ * Harness-driven conversations. When a hosting catalog is available, creation is evaluated against the deployment
+ * first: `shared` placement goes to the shared worker, which re-checks everything it admits, and `container`
+ * placement to the session-container service. Views are placement-agnostic; with session containers configured they
+ * come from the ledger, and connection and close go to the session's placement.
  */
 export function registerSharedSessionRoutes(
-  app: FastifyInstance, deps: SharedApiDependencies | undefined, principalOf: (request: FastifyRequest) => string,
-  delegations?: DelegationStore, containers?: ContainerSessionService,
+  app: FastifyInstance,
+  deps: SharedApiDependencies | undefined,
+  principalOf: (request: FastifyRequest) => string,
+  delegations?: DelegationStore,
+  hosting?: HostingCatalog,
+  containers?: ContainerSessionService,
 ): void {
+  const catalog = hosting ?? containers?.catalog;
   const idOf = (request: FastifyRequest): string => {
     const parsed = z.object({ id: z.string().uuid() }).safeParse(request.params);
     if (!parsed.success) throw new HttpError(404, "not_found", "The shared conversation was not found.");
@@ -38,9 +46,11 @@ export function registerSharedSessionRoutes(
     }
     const value: unknown = await response.json();
     if (!response.ok) {
-      const parsed = z.object({ error: z.object({ code: z.string().max(100), message: z.string().max(1000) }) }).safeParse(value);
-      if (parsed.success && [400, 404, 409, 429].includes(response.status)) {
-        throw new HttpError(response.status, parsed.data.error.code, parsed.data.error.message);
+      const parsed = z.object({
+        error: z.object({ code: z.string().max(100), message: z.string().max(1000), details: z.record(z.string(), z.unknown()).optional() }),
+      }).safeParse(value);
+      if (parsed.success && PASSED_THROUGH.has(response.status)) {
+        throw new HttpError(response.status, parsed.data.error.code, parsed.data.error.message, parsed.data.error.details);
       }
       throw new HttpError(503, "shared_unavailable", "The shared session service could not complete this request.");
     }
@@ -50,21 +60,33 @@ export function registerSharedSessionRoutes(
   };
   app.post("/v1/sessions", async (request, reply) => {
     const principal = principalOf(request);
-    const body = SessionCreation.safeParse(request.body ?? {});
-    if (!body.success) throw new HttpError(400, "invalid_request", "Invalid conversation request.");
-    if (body.data.harness) {
-      if (!containers) {
-        throw new HttpError(409, "hosting_unavailable", "Harness-selected sessions need session containers, which this deployment does not provide.",
+    const body = SharedSessionCreation.safeParse(request.body ?? {});
+    if (!body.success) throw new HttpError(400, "invalid_request", "Name a published conversation harness: { \"harness\": \"<name>\", \"label\": \"...\" }.");
+    let creation = body.data;
+    if (catalog) {
+      const versions = catalog.harnesses.get(creation.harness);
+      const snapshot = creation.version === undefined ? versions?.[0] : versions?.find((entry) => entry.definition.version === creation.version);
+      if (!snapshot) throw new HttpError(404, "harness_not_found", "The requested harness version is not published.");
+      const view = harnessHostingView(catalog, snapshot, principal);
+      if (view.interaction !== "conversation") {
+        throw new HttpError(422, "policy_rejected", "Batch harnesses run as jobs; create conversations from conversation harnesses.");
+      }
+      if (view.problems[0]) throw hostingError(view.problems[0]);
+      creation = { ...creation, version: snapshot.definition.version };
+      if (view.placement === "container" && containers) {
+        const session = await containers.create(principal, creation);
+        return reply.header("location", `/v1/sessions/${session.id}`).status(201).send(session);
+      }
+      if (view.placement !== "shared") {
+        throw new HttpError(409, "hosting_unavailable", `${snapshot.definition.name} uses ${view.mode} hosting, which needs session containers.`,
           { prerequisite: { kind: "host", name: "session-containers" } });
       }
-      const session = await containers.create(principal, body.data);
-      return reply.header("location", `/v1/sessions/${session.id}`).status(201).send(session);
     }
     if (!deps) {
-      throw new HttpError(409, "hosting_unavailable", "Sessions without a harness need the shared coordinator, which this deployment does not provide.",
+      throw new HttpError(409, "hosting_unavailable", "Shared conversations need the shared worker, which this deployment does not provide.",
         { prerequisite: { kind: "host", name: "shared-worker" } });
     }
-    const session = await control(principal, { operation: "create", request: { label: body.data.label } }, SharedSessionView);
+    const session = await control(principal, { operation: "create", request: creation }, SharedSessionView);
     return reply.header("location", `/v1/sessions/${session.id}`).status(201).send(session);
   });
   app.get("/v1/sessions", async (request) => containers
@@ -89,8 +111,10 @@ export function registerSharedSessionRoutes(
     reply.header("cache-control", "no-store");
     const principal = principalOf(request);
     const id = idOf(request);
-    if (containers && await containers.owns(principal, id)) return containers.connect(principal, id, request.body);
-    return control(principal, { operation: "connect", id }, SharedConnection);
+    const body = SharedConnectionRequest.safeParse(request.body ?? {});
+    if (!body.success) throw new HttpError(400, "invalid_request", "Request a connection with { \"transport\": \"direct\" }.");
+    if (containers && await containers.owns(principal, id)) return containers.connect(principal, id, body.data);
+    return control(principal, { operation: "connect", id, request: body.data }, SharedConnection);
   });
   app.post("/v1/sessions/:id/close", async (request) => {
     const principal = principalOf(request);
