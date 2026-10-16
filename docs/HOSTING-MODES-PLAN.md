@@ -1034,7 +1034,66 @@ Pending.
 
 ### Stage 3: session containers
 
-Pending.
+Recorded 2026-10-15 on branch `patniko-session-containers` (implementation commit `a7d44b7`, merged with the broker
+placement interface `b0cc328` and the integration branch at `78db20c`). Local only: Windows ARM64 host, Docker
+Desktop with linux/arm64 containers, disposable PostgreSQL 17.
+
+Delivered:
+
+- The allocation ledger's `session` kind (migration `011_session_containers.sql`): an allocation request names one
+  application session, its purpose, a size resolved from the effective policy's catalog, and the volumes it mounts;
+  admission counts it with job allocations against `executionContainers` and `containersPerPrincipal` in one
+  transaction. The controller binds the immutable image, an HMAC-derived allocation credential and ingress
+  credential, and named volumes (`execution_volumes`, labeled with the controller namespace), then creates, observes,
+  and retires containers: idle stop, maximum lifetime, stale heartbeats, exits before readiness, and closure. Volumes
+  are retained and released on close, never deleted; orphan containers are removed and unknown labeled volumes
+  reported.
+- Mode-1 sessions are `shared_sessions` rows with placement `container` (the broker's placement table) plus
+  `session_containers`. `POST /v1/sessions` with `{ harness }` admits an `isolated` conversation harness through
+  stage 1's `evaluateHosting`; connection requests an allocation, waits for readiness, and issues a ticket bound to
+  the allocation and placement generation. Views are placement-agnostic (`SessionDirectory`); the shared worker
+  refuses to activate or authorize container-placed sessions. `PlacementStore.consumeTicket` routes the `container`
+  kind with the ingress endpoint and credential; the broker service's container upstream is not implemented yet.
+- The session-container image (`deploy/SessionContainer.Dockerfile`, package `src/session-container`): a root
+  supervisor holding only the allocation and ingress credentials, and an owner as uid 10001 running the locally built
+  runtime in-process with `buildSessionOptions(..., "conversation")`, packaged tools, skills, sub-agents and the
+  hosted permission policy (moved unchanged to `harness-hosting`), on the volume's real filesystem. Inference uses
+  two-minute session grants fenced by the allocation; the dispatcher's allocation-scoped routes serve the spec,
+  readiness, heartbeats, ticket checks and grants.
+- Docs: [architecture](ARCHITECTURE.md#session-containers) and its diagram, [deployment](DEPLOYMENT.md#session-containers),
+  [API](API.md#session-containers), [security](SECURITY.md#session-container-boundaries), the developer guide, and REST
+  examples.
+
+Runtime artifacts: Linux bundle `hybrid-linux-arm64-verified` (runtime `0a32c39595f734b28cb1930f1af9cb7ead50091b`,
+hosting `b20e188cd895852d046f80ca9630480be82aff57`, mxc `622d4f197739692686f94ed6cd78ef4e5e03c82f`, `fast`
+configuration; SHA-256 `copilot-runtime` `4e34c560…`, `runtime.node` `abe1e751…`, `sdk.tgz` `3707195d…`), image
+`copilot-session-container:patniko-session-containers` `sha256:9012e8a1…` (3.9 GB). The real-CLI gates used the
+CLI built at the same runtime revision (`dist-cli/index.js`); the shared-worker gate used the Windows pair with the
+workspace path fix (`copilot-runtime.exe` `d843b17a…`, `runtime.node` `ed6e2dda…`).
+
+Exit evidence, each command passing:
+
+- `pnpm exec vitest run --project integration tests\integration\session-containers.test.ts` (5 tests): allocation
+  lifecycle with a one-use ticket, idle stop that keeps the volume, reallocation from the same volume, retirement on
+  close with capacity zero; controller replacement that adopts a running container, removes an orphan, and retires a
+  vanished one; concurrent requests capped by deployment and principal limits, also blocking job reservations;
+  allocation and job credentials refused on each other's routes, cross-session tickets refused, grants charged once
+  per request and revoked on close, the shared worker refusing a container session; other principals denied.
+- `HYBRID_SESSION_CONTAINER_TESTS=1 HYBRID_USE_GH_ACCOUNT=1` with `HYBRID_CLI_PATH` set:
+  `pnpm exec vitest run --project integration tests\integration\session-container-runtime.test.ts` passed in 50 s. A
+  mode-1 session ran in its own container (environment limited to the allocation credentials and service URLs, one
+  named volume at `/data`, `CapDrop: ALL`, `no-new-privileges`, 2 CPUs and 4 GiB from the policy's `large` size; uid
+  10001 cannot read the supervisor's environment); the real CLI attached over direct WSS with a pinned key and the
+  approved account; the shell tool wrote a file as uid 10001 in `/data/execution/workspace`; the container stopped
+  when idle; a new container resumed from the volume, the CLI replayed history, and the next model request contained
+  the earlier turn and the file's content; capacity returned to zero after close with the volume retained.
+- `HYBRID_DEPLOYMENT_TESTS=1` `tests\integration\hybrid-deployment.test.ts` still passed (60 s).
+
+Remaining: the broker's container upstream and launcher `--harness` (stage 2 owns both); Azure reachability through
+an outbound tunnel (plan D14) and an Azure backend; egress control; hosting features (`SESSION_CONTAINER_FEATURES`
+is empty: no remote MCP, approval modes beyond `manual`, custom handlers, or handoffs); a per-harness size field for
+isolated hosting (the policy's default size applies); automated volume retention; synthetic inference only, with one
+real account.
 
 ### Stage 3: per-harness owner hosts and relay
 

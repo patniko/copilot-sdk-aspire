@@ -31,6 +31,41 @@ Authorization: Bearer {{apiKey}}
 GET {{baseUrl}}/v1/hosting/no-such-harness
 Authorization: Bearer {{apiKey}}
 
+### Session containers (local hybrid with session-containers): create an isolated conversation session; no container starts yet
+# @name containerSession
+POST {{baseUrl}}/v1/sessions
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{ "harness": { "name": "interactive-demo" }, "label": "isolated session" }
+
+@containerSessionId = {{containerSession.response.body.$.id}}
+
+### The session's placement-agnostic view: placement, mode, segment, and container state
+GET {{baseUrl}}/v1/sessions/{{containerSessionId}}
+Authorization: Bearer {{apiKey}}
+
+### Connection material: starts or resumes the session's container (the ticket is a secret; do not log it)
+POST {{baseUrl}}/v1/sessions/{{containerSessionId}}/connection
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{ "transport": "direct" }
+
+### Negative check: session containers do not offer the GitHub relay (expect 409 hosting_unavailable)
+POST {{baseUrl}}/v1/sessions/{{containerSessionId}}/connection
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{ "transport": "github" }
+
+### Close: retires the container and releases its retained volume (nothing is deleted)
+POST {{baseUrl}}/v1/sessions/{{containerSessionId}}/close
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{}
+
 ### Submit a job with the TypeScript agent (change "profile" to "python-agent" for the Python agent)
 # @name submit
 POST {{baseUrl}}/v1/jobs
