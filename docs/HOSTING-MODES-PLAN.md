@@ -2575,3 +2575,51 @@ ran with staff feature flags (`AHP_CLIENT`, `RELAY_CLIENT`); a CLI permission pr
 has answered it (a runtime limitation recorded above), so some of the driver's keypresses had no effect; after each
 move the relaunched CLI asked for folder trust again; the demonstration is not a measurement (section 13 metrics remain
 deferred), and turn counts and token use vary between runs.
+
+### Integrated local verification
+
+Recorded 2026-10-16 on the integration branch `patniko-plan-review-and-parallel-build-out`. Every stage branch above,
+the runtime capabilities, the documentation reconciliation, and the follow-up fixes were merged into it; each merge was
+checked with the full baseline before it was pushed. The final code tree is `eb606c3`; later commits change
+documentation only.
+
+Baseline on `eb606c3`: `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`, `pnpm typecheck`,
+`pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, and `pnpm lint` passed;
+`pnpm test:unit` 753 passed, 1 skipped; `pnpm test:integration` 149 passed, 32 opt-in skipped. A fresh worktree also
+ran `aspire restore --apphost apphost.mts` and `dotnet build deploy\CopilotAgent.Hosting\CopilotAgent.Hosting.csproj`
+successfully after the hosting integration suppressed the unpatched MessagePack advisory
+([developer guide](DEVELOPER-GUIDE.md#build-and-check)).
+
+Opt-in gates, run in a separate worktree at `eb606c3` with images rebuilt from that tree and the Linux bundle from
+runtime `d89cfe45b29` and hosting `006b030`. The test process had every `COPILOT_*` variable removed except
+`COPILOT_CLI_PATH` and `COPILOT_AHP_FACTORY_PROFILE`, and `AUTO_APPROVAL` removed, so the results do not depend on
+flags that the GitHub Copilot app sets for its own processes. The Windows natives were the matching pair from that
+runtime build:
+
+| Group | Suites | Result |
+| --- | --- | --- |
+| Shared and handoff runtime and CLI | `shared-service`, `shared-session-runtime`, `shared-egress-runtime`, `shared-approvals`, `shared-cli`, `shared-gate`, `shared-approval-cli`, `handoff-runtime`, `handoff-cli` | 28 passed |
+| Bounded output | `shared-large-output-cli` | 1 passed |
+| Shared-worker image | `shared-image`, `artifact-safety` | 2 passed |
+| Local hybrid deployment | `hybrid-deployment` | 1 passed |
+| Session containers | `session-container-runtime`, including a deny-default harness whose shell `ask` a person approves | 1 passed |
+| Promotion | `promotion-transplant` (Windows worker and Linux image), `promotion-cli` | 3 passed |
+| Handoffs into containers | `handoff-container-cli` | 1 passed |
+| Orchestrator workers | `worker-runtime` | 1 passed |
+| Owner hosts | `host-runtime`, `owner-host-cli` | 2 passed |
+| GitHub-native host | `github-native-host` | 1 passed |
+| Runtime primitives | `pnpm test:runtime`, including `workspace-ahp` | 8 passed |
+
+The [real-model demonstration](#local-demonstration-with-a-real-model) passed all six steps of
+[section 13](#13-measurements-and-demonstration) on the same tree with default limits.
+
+Follow-ups recorded across the stages, none of them claimed as delivered:
+
+- Azure (stage 7) and the comparison (stage 8) remain proposals.
+- Container-sourced handoffs (decision N8) and a per-session host key (N5) are not implemented.
+- Idle eviction disconnects an attached CLI; the launcher's supervisor reports it as a move, and the user resumes
+  with the launcher. A relaunched CLI asks for folder trust again after a promotion or handoff.
+- In runtime `d89cfe45b29`, an attached client overrides a session's large-output setting; shared and worker tools
+  bound their own results to stay inline instead.
+- The CLI's message after `/permissions manual` suggests an organization policy forced the change.
+- Egress remains unenforced for containers; the shared worker filters only its own requests.
