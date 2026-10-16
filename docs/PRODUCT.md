@@ -138,7 +138,9 @@ container, a shared multi-tenant runtime, a shared runtime with one-way promotio
 coordinator that manages container workers. Its first delivery targets Copilot CLI over direct WSS, plus GitHub relay
 for isolated harness hosts; the GitHub Copilot app comes later. It also proposes handoffs and compares the design
 with OpenAI's Agents API. None of these modes is supported until its stage lands with evidence; the first stage adds
-only the harness and policy contract, its validation and admission errors, and the read-only hosting view.
+only the harness and policy contract, its validation and admission errors, and the read-only hosting view. Handoffs
+work locally between conversations on the shared worker, with person approval, history policies and a handoff ledger
+([stage 6 record](HOSTING-MODES-PLAN.md#stage-6-handoffs)).
 
 ## Acceptance criteria for changes
 

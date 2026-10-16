@@ -163,6 +163,7 @@ deployed. The [hosting views](#hosting-views) show whether a harness can be crea
 | `GET` | `/v1/sessions/{id}` | The session view: `harness` (`name`, `version`, `digest`), `mode`, `placement` (`shared` or `container`), the current `segment` (`generation`, `placement`, `harness`, `ahpSessionId`, `startedAt`), a session container's `container` status, admitted model, limits, activity timestamp, closed/online state, used/reserved/remaining budget, and jobs and continuation counts |
 | `POST` | `/v1/sessions/{id}/connection` | Body `{ "transport": "direct" }` (the default; `github` returns the harness's hosting error, such as `422 transport_unsupported` for shared hosting). Activate/resume, then return `{ sessionId, destination, transport: "direct", ahpSessionId, url, token, expiresAt, serverKey }` with `Cache-Control: no-store`. `destination` is `shared` or `container`; `url` is the connection broker's `/sessions/{id}` path; resume `ahpSessionId` after attaching |
 | `GET` | `/v1/sessions/{id}/jobs` | Child job IDs/states and completion-notification state/error, including `needs_review` |
+| `GET` | `/v1/sessions/{id}/handoffs` | `{ handoffs }`: the session's [handoffs](#handoffs), newest first, up to 50 |
 | `POST` | `/v1/sessions/{id}/close` | Body `{ "cancelChildren": false }` by default; prevents new work and disconnects runtime residency without deleting retained data |
 
 Connect a WebSocket client to `url` with the ticket in a `tkn` query parameter. The URL belongs to the separate
@@ -193,8 +194,8 @@ among the modes the effective policy allows. With nobody attached, a request tha
 
 If a session's placement changes while a client is attached, the broker closes the WebSocket with code `4301`
 and reason `moved` after any frame already in flight. Request a new connection for the same session and
-reconnect to the same URL. No current operation moves a session between the `shared` and `container` placements,
-so clients do not receive this close in ordinary use yet. Other closes, such as idle eviction, pass through unchanged.
+reconnect to the same URL, resuming the `ahpSessionId` the new connection returns. A [handoff](#handoffs) closes
+attached clients this way when the target's segment starts. Other closes, such as idle eviction, pass through unchanged.
 
 Idle eviction disconnects the CLI but preserves history/files. Closure does not cancel already-admitted
 children unless `cancelChildren` is true. Child outputs remain available through job/artifact endpoints.
@@ -211,6 +212,58 @@ attempt's `outputs/` files are exposed; failed-attempt files are not downloadabl
 names, artifacts have SHA-256 digests, and downloads use attachment disposition and `nosniff`.
 The coordinator can explicitly import an output into its session filesystem; overwriting an existing file
 requires its exact current etag. Arbitrary attempt files and runtime history are not exported.
+
+### Handoffs
+
+A conversation harness can hand its conversation to one of its predefined `hosting.handoffs` targets
+([hosting modes plan](HOSTING-MODES-PLAN.md#75-handoffs-and-crafted-harnesses)). The agent sees each target as a
+`transfer_to_<target>` tool (hyphens become underscores, and names over 64 characters are shortened with a hash)
+described by the target's `description`. Its arguments are a `reason` of up to 500 characters and, for `summary`
+history, a `summary` of up to 8,000 that the source writes for the target; nothing else is accepted.
+
+Before anything changes, the shared worker checks that the target is still one of the admitted harness's targets, is
+a published conversation harness whose own policy allows its mode, is within the source's handoff ceilings
+(`hosting.handoffs.approval` and `hosting.handoffs.history` in its effective policy), and can be hosted here. With
+`approval: "ask"`, the default, the attached person approves the transfer in the CLI; the LLM judge, custom handlers
+and `allow-all` never approve it, and with nobody attached it does not run
+([security](SECURITY.md#shared-conversation-handoffs)). A refused or declined transfer fails the tool call and leaves
+the source in control. Repeated calls of one tool call return its recorded outcome.
+
+An accepted handoff admits no new turns. When the source's turn ends, the cutover starts the target's segment under
+the same application session ID: the session's `harness` and `segment` change, its placement generation increases,
+attached clients are closed with `4301` "moved", and the target's first turn is a notice that quotes the source's
+reason, and for `summary` its summary, as untrusted data. Reconnect and resume the new `ahpSessionId`.
+
+| History | The target sees | Runtime session (`ahpSessionId`) |
+| --- | --- | --- |
+| `full` | The whole conversation, under its own instructions and tools | Continues |
+| `summary` | The source's summary and reason | New |
+| `none` | Only the reason | New |
+
+Without an explicit `history`, a target in the same placement gets `full` and one in another placement `summary`.
+History policies filter the conversation only; the session's workspace files stay with it. A handoff never raises the
+conversation's aggregate token budget or its job and continuation limits; per-turn limits are the target's. A
+conversation in a container never hands off to a harness that runs on the shared worker (`handoff_one_way`). The shared
+worker performs handoffs to targets that also run on it; a target that runs in a container is refused with
+`handoff_unavailable` (prerequisite `session-containers`).
+
+`GET /v1/sessions/{id}/handoffs` lists the transfers the tool ran. Each has `id`, `state` (`refused`, `accepted`,
+`committed` or `failed`), the `source` and `target` harnesses, `history`, `approval`, `approvedBy` (`person` or
+`policy`), `reason` and `summary`, `from` and, once committed, `to` (`generation`, `placement`, `ahpSessionId`),
+timestamps, and an `error` with `code`, `message` and an optional `prerequisite`. A target that is refused before a
+person would be asked, and a transfer the person denies, fail the tool call without a record.
+
+| Code | Meaning; the source stays in control |
+| --- | --- |
+| `handoff_not_allowed` | Not one of the source's targets, not a published conversation harness, or its mode, the approval or the history is outside current policy |
+| `handoff_unavailable` | This deployment cannot host the target; `prerequisite` names what it lacks |
+| `handoff_one_way` | The target runs on the shared worker and the conversation runs in a container |
+| `handoff_declined` | The handoff needs a person's approval and no person approved it |
+| `handoff_busy` | Another handoff or a promotion of the conversation is in progress |
+| `session_changed` | The conversation closed or moved while the handoff was in progress |
+| `handoff_failed` | The cutover could not complete |
+
+A handoff that fails after it was accepted also tells the source agent, in a system turn, why it did not happen.
 
 ### Session containers
 
@@ -305,8 +358,8 @@ Implemented in [hosting-routes.ts](../src/agent-api/src/hosting-routes.ts) with 
 `executor` (`pool` or `dedicated`), `isolatedHosts` (each managed agent host and the harness it serves, with its
 transports), `sharedWorker` (the local hybrid worker), `sessionContainers` (per-session containers, when enabled), and later
 `workerContainers`. Each host lists the harness `features` it implements: the shared worker implements `remote-mcp`,
-`approval-modes`, and `custom-approval`; agent hosts and session containers implement none, and no host implements
-handoffs, promotion, or workers yet. GitHub-native demo hosting runs Copilot's own sessions rather than a harness, so
+`approval-modes`, `custom-approval`, and `handoffs`; agent hosts and session containers implement none, and no host
+implements promotion or workers yet. GitHub-native demo hosting runs Copilot's own sessions rather than a harness, so
 it adds no isolated host. Owner principals are not returned.
 
 Each harness view (latest version, or `?version=` on the single-harness route) contains:

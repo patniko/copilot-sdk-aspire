@@ -25,6 +25,8 @@ CREATE TABLE session_handoffs (
   error_code text,
   error_message text CONSTRAINT session_handoff_error_message CHECK (error_message IS NULL OR length(error_message) <= 500),
   error_prerequisite jsonb,
+  -- A move into the target's container runs as a promotion of kind 'handoff'; that promotion's outcome settles this handoff.
+  promotion_id uuid UNIQUE REFERENCES session_promotions(id) ON DELETE SET NULL,
   -- Set once the target was told about the handoff in its first turn.
   notified_at timestamptz,
   -- Set once the target's first activation prepared the session's storage: a fresh runtime session moves the source's
@@ -39,7 +41,8 @@ CREATE TABLE session_handoffs (
     (state = 'committed') = (committed_at IS NOT NULL) AND (state IN ('refused','failed')) = (failed_at IS NOT NULL)
     AND (state NOT IN ('refused','failed') OR error_code IS NOT NULL)
     AND (state NOT IN ('accepted','committed') OR (target IS NOT NULL AND to_placement IS NOT NULL AND approved_by IS NOT NULL))
-    AND (state <> 'committed' OR (to_generation IS NOT NULL AND ahp_session_id IS NOT NULL)))
+    AND (state <> 'committed' OR (to_generation IS NOT NULL AND ahp_session_id IS NOT NULL))
+    AND (promotion_id IS NULL OR to_placement = 'container'))
 );
 CREATE UNIQUE INDEX session_handoff_one_open ON session_handoffs(session_id) WHERE state = 'accepted';
 CREATE INDEX session_handoff_session ON session_handoffs(session_id, created_at);

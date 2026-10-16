@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import type pg from "pg";
 import {
-  HandoffErrorCode, HandoffPayload, HandoffTarget, HandoffView, HostingPrerequisite, PROMOTION_EXCLUDED_STATE_FILES,
-  SharedHarnessRef, SharedSessionDefinition,
+  HandoffErrorCode, HandoffPayload, HandoffTarget, HandoffView, handoffMoveError, HostingPrerequisite, PROMOTION_EXCLUDED_STATE_FILES,
+  PromotionErrorCode, SharedHarnessRef, SharedSessionDefinition,
   type HandoffApprover, type HandoffHistory, type HandoffState, type HostingApproval, type PlacementKind,
 } from "@copilot-agent/contracts";
 import type { SessionFileLease } from "./session-files.js";
@@ -27,6 +27,8 @@ export interface HandoffRecord {
   payload: HandoffPayload;
   toGeneration?: number;
   ahpSessionId?: string;
+  /** The promotion of kind `handoff` that moves the conversation into the target's container. */
+  promotionId?: string;
   notified: boolean;
   /** Whether the target's storage was prepared; see {@link HandoffStore.prepareStorage}. */
   prepared: boolean;
@@ -73,7 +75,7 @@ interface HandoffRow {
   id: string; session_id: string; principal: string; request_key: string; state: HandoffState;
   from_generation: number; from_placement: PlacementKind; source: unknown; target_name: string; target: unknown;
   to_placement: PlacementKind | null; history: HandoffHistory; approval: HostingApproval; approved_by: HandoffApprover | null;
-  payload: unknown; to_generation: number | null; ahp_session_id: string | null;
+  payload: unknown; to_generation: number | null; ahp_session_id: string | null; promotion_id: string | null;
   error_code: string | null; error_message: string | null; error_prerequisite: unknown;
   notified_at: Date | null; storage_prepared_at: Date | null; created_at: Date; committed_at: Date | null; failed_at: Date | null;
 }
@@ -266,18 +268,67 @@ export class HandoffStore {
 
   /**
    * Fails an accepted handoff before its cutover: the source stays in control and the conversation admits turns again.
-   * Failing a refused or failed handoff returns it unchanged; a committed handoff cannot fail.
+   * Failing a refused or failed handoff returns it unchanged; a committed handoff cannot fail, and a handoff whose move
+   * into a container is under way is settled only by that move ({@link settleMove}).
    */
   async fail(id: string, code: HandoffErrorCode, message: string): Promise<HandoffRecord> {
     HandoffErrorCode.parse(code);
     const row = (await this.pool.query<HandoffRow>(
       `UPDATE session_handoffs SET state='failed',failed_at=clock_timestamp(),updated_at=clock_timestamp(),error_code=$2,error_message=$3
-       WHERE id=$1 AND state='accepted' RETURNING *`, [id, code, message.slice(0, 500)])).rows[0];
+       WHERE id=$1 AND state='accepted' AND promotion_id IS NULL RETURNING *`, [id, code, message.slice(0, 500)])).rows[0];
     if (row) return record(row);
     const current = await this.byId(id);
     if (!current) throw new StoreError("not_found", "The handoff was not found.");
     if (current.state === "committed") throw new StoreError("invalid_state", "A committed handoff cannot fail; the target is in control.");
+    if (current.state === "accepted") throw new StoreError("invalid_state", "The handoff's move into a container decides its outcome.");
     return current;
+  }
+
+  /**
+   * Links an accepted handoff into a container to the promotion of kind `handoff` that moves the conversation there.
+   * From then on only that promotion's outcome settles the handoff. Linking the same promotion again is a no-op.
+   */
+  async attachMove(id: string, promotionId: string): Promise<HandoffRecord> {
+    const row = (await this.pool.query<HandoffRow>(
+      `UPDATE session_handoffs SET promotion_id=$2,updated_at=clock_timestamp()
+       WHERE id=$1 AND state='accepted' AND to_placement='container' AND (promotion_id IS NULL OR promotion_id=$2) RETURNING *`,
+      [id, promotionId])).rows[0];
+    if (!row) throw new StoreError("invalid_state", "The handoff cannot take this move.");
+    return record(row);
+  }
+
+  /**
+   * Settles an accepted handoff from the promotion that moves it into the target's container: committed once that
+   * promotion's cutover committed, linking the segment it started, and failed when it failed, with the move's error
+   * mapped to a handoff error. While the move is in progress the handoff is returned unchanged.
+   */
+  async settleMove(id: string): Promise<HandoffRecord> {
+    return this.shared.transaction(async (db) => {
+      const handoff = (await db.query<HandoffRow>("SELECT * FROM session_handoffs WHERE id=$1 FOR UPDATE", [id])).rows[0];
+      if (!handoff) throw new StoreError("not_found", "The handoff was not found.");
+      if (handoff.state !== "accepted" || !handoff.promotion_id) return record(handoff);
+      const promotion = (await db.query<{ session_id: string; state: string; error_code: string | null; error_message: string | null }>(
+        "SELECT session_id,state,error_code,error_message FROM session_promotions WHERE id=$1", [handoff.promotion_id])).rows[0];
+      if (!promotion || promotion.session_id !== handoff.session_id) throw new StoreError("invalid_state", "The handoff's move is not recorded.");
+      if (promotion.state === "committed") {
+        const segment = (await db.query<{ generation: number; placement: string; ahp_session_id: string }>(
+          "SELECT generation,placement,ahp_session_id FROM session_segments WHERE session_id=$1 AND promotion_id=$2",
+          [handoff.session_id, handoff.promotion_id])).rows[0];
+        if (!segment || segment.placement !== "container") throw new StoreError("invalid_state", "The handoff's move committed without a container segment.");
+        await db.query("UPDATE session_segments SET handoff_id=$3 WHERE session_id=$1 AND promotion_id=$2", [handoff.session_id, handoff.promotion_id, id]);
+        const committed = await db.query<HandoffRow>(
+          `UPDATE session_handoffs SET state='committed',to_generation=$2,ahp_session_id=$3,committed_at=clock_timestamp(),updated_at=clock_timestamp()
+           WHERE id=$1 RETURNING *`, [id, segment.generation, segment.ahp_session_id]);
+        return record(committed.rows[0]!);
+      }
+      if (promotion.state !== "failed") return record(handoff);
+      const code = PromotionErrorCode.safeParse(promotion.error_code);
+      const error = handoffMoveError(code.success ? code.data : "startup_failed", promotion.error_message ?? "The move did not complete.");
+      const failed = await db.query<HandoffRow>(
+        `UPDATE session_handoffs SET state='failed',failed_at=clock_timestamp(),updated_at=clock_timestamp(),error_code=$2,error_message=$3
+         WHERE id=$1 RETURNING *`, [id, error.code, error.message.slice(0, 500)]);
+      return record(failed.rows[0]!);
+    });
   }
 
   /** Records that the conversation was told about the handoff's outcome; returns false when it already was. */
@@ -339,6 +390,7 @@ function record(row: HandoffRow): HandoffRecord {
     history: row.history, approval: row.approval, ...(row.approved_by ? { approvedBy: row.approved_by } : {}), payload,
     ...(row.to_generation ? { toGeneration: row.to_generation } : {}),
     ...(row.ahp_session_id ? { ahpSessionId: row.ahp_session_id } : {}),
+    ...(row.promotion_id ? { promotionId: row.promotion_id } : {}),
     notified: row.notified_at !== null,
     prepared: row.storage_prepared_at !== null,
     view: HandoffView.parse({

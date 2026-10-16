@@ -378,6 +378,16 @@ with no client attached: `allow-all` runs, `manual` never runs, the `assisted` j
 what it approves runs and a decline or judge error does not, custom handlers approve, deny, and deny when they fail
 or time out, and managed settings refuse a mode the policy does not allow.
 
+It also enables `handoff-runtime.test.ts` for [handoffs](API.md#handoffs): the in-process runtime hands a conversation
+to another shared harness with `full`, `summary` and `none` history (the target resumes the same runtime session under
+its own instructions and tools, or starts a new one that sees only the filtered payload), refuses unavailable and
+disallowed targets without transferring control, and never transfers an `ask` handoff with nobody attached. The
+handoff ledger, contracts, transfer tools, and approval rules need no runtime: `tests/integration/handoffs.test.ts`
+runs in the default integration suite, and the unit suites are `handoff-contracts`, `shared-handoffs`, and
+`handoff-container`. With `HYBRID_CLI_TESTS=1` and the account opt-in, `handoff-cli.test.ts` has the person decline
+one transfer in the real CLI (the source keeps control and nothing is recorded), approve the next, and attach a new
+CLI to the target's runtime session.
+
 The same flag enables `shared-egress-runtime.test.ts` for the
 [shared-placement egress library](SECURITY.md#shared-placement-egress-and-remote-mcp). A
 `SharedSessionRuntime` conversation driven by synthetic inference calls the filtered `web_fetch` and

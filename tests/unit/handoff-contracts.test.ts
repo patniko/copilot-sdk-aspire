@@ -7,8 +7,11 @@ import {
   handoffArguments,
   handoffFailureNotice,
   handoffHistoryFor,
+  handoffMoveError,
   handoffNotice,
   handoffNoticeMarker,
+  HANDOFF_NOTICE_MAX,
+  HANDOFF_PAYLOAD_LIMITS,
   HandoffView,
   HarnessDefinition,
   hostingCeilingsOf,
@@ -143,6 +146,48 @@ describe("the handoff payload and notices", () => {
     expect(handoffArguments("none").safeParse({ reason: "Code.", target: "other" }).success).toBe(false);
     expect(handoffArguments("summary").safeParse({ reason: "Code.", summary: "y".repeat(8001) }).success).toBe(false);
     expect(handoffArguments("none").parse({ reason: "  Trimmed.  " })).toEqual({ reason: "Trimmed." });
+    // Tabs and line breaks are text; other control characters and broken Unicode are not.
+    expect(handoffArguments("summary").safeParse({ reason: "Code.", summary: "Goal:\n\t- fix the build\r\n" }).success).toBe(true);
+    expect(handoffArguments("none").safeParse({ reason: "Code\u0000." }).success).toBe(false);
+    expect(handoffArguments("none").safeParse({ reason: "Code\u001b[31m." }).success).toBe(false);
+    expect(handoffArguments("none").safeParse({ reason: "Broken \ud800 text." }).success).toBe(false);
+    expect(handoffArguments("none").safeParse({ reason: "Emoji \ud83d\ude00 text." }).success).toBe(true);
+  });
+
+  it("keeps every notice within its bound, even for a payload that escaping doubles", () => {
+    const payload = { reason: "\"".repeat(HANDOFF_PAYLOAD_LIMITS.reason), summary: "\\\n".repeat(HANDOFF_PAYLOAD_LIMITS.summary / 2) };
+    expect(handoffArguments("summary").safeParse(payload).success).toBe(true);
+    const notice = handoffNotice({
+      id: "11111111-1111-4111-8111-111111111111", source: "s".repeat(64), target: "t".repeat(64), history: "full", payload: { reason: payload.reason },
+      move: { previousWorkspace: "/w".repeat(256) },
+    });
+    const summary = handoffNotice({ id: "11111111-1111-4111-8111-111111111111", source: "s".repeat(64), target: "t".repeat(64), history: "summary", payload, move: {} });
+    for (const text of [notice, summary]) expect(text.length).toBeLessThanOrEqual(HANDOFF_NOTICE_MAX);
+    expect(summary.length).toBeGreaterThan(17_000);
+  });
+
+  it("tells a target in its own container that the workspace came with it, and maps the old path only with full history", () => {
+    const payload = { reason: "Needs a shell.", summary: "Fix the build." };
+    const full = handoffNotice({
+      id: "11111111-1111-4111-8111-111111111111", source: "triage", target: "coder", history: "full", payload, move: { previousWorkspace: "C:\\Worker\\Anchors\\S" },
+    });
+    expect(full).toContain("You run in your own container");
+    expect(full).toContain("Earlier messages name the workspace as C:\\Worker\\Anchors\\S");
+    const summary = handoffNotice({
+      id: "11111111-1111-4111-8111-111111111111", source: "triage", target: "coder", history: "summary", payload, move: { previousWorkspace: "C:\\Worker\\Anchors\\S" },
+    });
+    expect(summary).toContain("workspace files came with it");
+    expect(summary).not.toContain("C:\\Worker");
+    expect(handoffNotice({ id: "11111111-1111-4111-8111-111111111111", source: "triage", target: "notes", history: "summary", payload })).not.toContain("container");
+  });
+
+  it("maps a failed move into the target's container to a handoff error", () => {
+    expect(handoffMoveError("promotion_capacity", "No capacity.")).toEqual({ code: "handoff_unavailable", message: "No capacity." });
+    expect(handoffMoveError("session_changed", "Closed.")).toEqual({ code: "session_changed", message: "Closed." });
+    expect(handoffMoveError("startup_failed", "Image missing.")).toEqual({
+      code: "handoff_failed", message: "The move into the target's container failed (startup_failed): Image missing.",
+    });
+    expect(handoffMoveError("restore_failed", "x".repeat(600)).message.length).toBeLessThanOrEqual(500);
   });
 
   it("passes the payload to the target as untrusted data, filtered by the history policy", () => {

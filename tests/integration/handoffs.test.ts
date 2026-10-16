@@ -176,4 +176,54 @@ describe("handoff ledger", () => {
     expect((await shared.get(owner.principal, owner.id))!.view).toMatchObject({ harness: { name: "triage" }, segment: { generation: 1 } });
     expect(await handoffs.pending("shared")).not.toContainEqual(expect.objectContaining({ id: handoff.id }));
   });
+
+  it("settles a move into the target's container only from the promotion that performs it", async () => {
+    const promotions = new PromotionStore(pool, shared);
+    const coder = { name: "coder", version: "1.0.0", digest: digest("c"), mode: "isolated" as const };
+    const resources = { cpus: 0.5, memoryMiB: 1024 };
+    // A shared target never takes a move.
+    const sharedOwner = await session();
+    const sharedHandoff = (await handoffs.request(request(sharedOwner))).handoff;
+    const other = await promotions.request({ principal: sharedOwner.principal, sessionId: sharedOwner.id, source: "tool", requestKey: "other", size: "small", resources });
+    await expect(handoffs.attachMove(sharedHandoff.id, other.promotion.id)).rejects.toMatchObject({ code: "invalid_state" });
+    for (const outcome of ["committed", "failed"] as const) {
+      const owner = await session();
+      const { handoff } = await handoffs.request(request(owner, { target: coder, toPlacement: "container" }));
+      const { promotion } = await promotions.request({
+        principal: owner.principal, sessionId: owner.id, source: "tool", requestKey: `handoff:${handoff.id}`, size: "small", resources,
+      });
+      expect(await handoffs.attachMove(handoff.id, promotion.id)).toMatchObject({ state: "accepted", promotionId: promotion.id });
+      expect(await handoffs.attachMove(handoff.id, promotion.id)).toMatchObject({ promotionId: promotion.id });
+      await expect(handoffs.attachMove(handoff.id, other.promotion.id)).rejects.toMatchObject({ code: "invalid_state" });
+      // While the move is under way the handoff stays accepted, and nothing but the move decides it.
+      expect(await handoffs.settleMove(handoff.id)).toMatchObject({ state: "accepted" });
+      await expect(handoffs.fail(handoff.id, "handoff_failed", "Stopped.")).rejects.toMatchObject({ code: "invalid_state" });
+      if (outcome === "failed") {
+        await promotions.fail(promotion.id, "promotion_capacity", "No session container capacity is available now.");
+        const failed = await handoffs.settleMove(handoff.id);
+        expect(failed.view).toMatchObject({ state: "failed", error: { code: "handoff_unavailable", message: "No session container capacity is available now." } });
+        expect(await handoffs.unnotifiedFailure(owner.id, 1)).toMatchObject({ id: handoff.id });
+        expect((await shared.get(owner.principal, owner.id))!.view).toMatchObject({ harness: { name: "triage" }, placement: "shared", segment: { generation: 1 } });
+        continue;
+      }
+      // The promotion's cutover, as PromotionStore.commit records a move of kind 'handoff'.
+      const runtime = randomUUID();
+      await shared.transaction(async (db) => {
+        await db.query("UPDATE shared_sessions SET placement='container',placement_generation=2 WHERE id=$1", [owner.id]);
+        await db.query(
+          `INSERT INTO session_segments(session_id,generation,placement,reason,harness,ahp_session_id,promotion_id)
+           VALUES($1,2,'container','handoff',$2,$3,$4)`,
+          [owner.id, JSON.stringify({ name: coder.name, version: coder.version, digest: coder.digest }), runtime, promotion.id]);
+        await db.query(
+          `UPDATE session_promotions SET state='committed',committed_at=clock_timestamp(),snapshot_epoch=$2,snapshot_digest=$3 WHERE id=$1`,
+          [promotion.id, randomUUID(), digest("d")]);
+      });
+      const committed = await handoffs.settleMove(handoff.id);
+      expect(committed.view).toMatchObject({ state: "committed", to: { generation: 2, placement: "container", ahpSessionId: runtime } });
+      expect(await handoffs.forSegment(owner.id, 2)).toMatchObject({ id: handoff.id });
+      expect((await pool.query("SELECT handoff_id FROM session_segments WHERE session_id=$1", [owner.id])).rows).toEqual([{ handoff_id: handoff.id }]);
+      expect(await handoffs.settleMove(handoff.id)).toMatchObject({ state: "committed" });
+      await expect(handoffs.fail(handoff.id, "handoff_failed", "Late.")).rejects.toMatchObject({ code: "invalid_state" });
+    }
+  });
 });

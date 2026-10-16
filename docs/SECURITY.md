@@ -222,6 +222,36 @@ on a person's behalf ([`permissions.ts`](../src/session-host/src/permissions.ts)
 The worker starts each session in its harness's mode and applies managed settings that refuse the runtime modes the
 policy does not allow, so a client cannot switch into them. Batch harnesses keep `manual`.
 
+### Shared conversation handoffs
+
+A [handoff](API.md#handoffs) moves control of a conversation to another published harness that the source's admitted
+snapshot lists. These controls apply ([`service.ts`](../src/session-host/src/service.ts),
+[`handoffs.ts`](../src/job-store/src/handoffs.ts)):
+
+- **Authorization before any effect.** The worker re-checks the target against current policy and this deployment
+  before it asks anyone and again at the cutover: it must be a published conversation harness whose own policy allows
+  its mode, within the source policy's `hosting.handoffs` ceilings, and hostable here. A failed check leaves the source
+  in control. Crafted harnesses cannot be targets.
+- **A person approves `ask` handoffs.** The worker forces a permission prompt for the transfer tool in every approval
+  mode, including `allow-all`, never lets the LLM judge or a custom handler answer it, and accepts the transfer only
+  when the runtime reports that a person answered through the attached client. With nobody attached, it does not run.
+  `ask` is the only approval the default policy allows; an operator can allow `allow`.
+- **History filters remove content and add no authority.** `full` continues the runtime session under the target's
+  instructions and tools, without the source's session-scoped approvals (`permissions.json`, `settings.json` and
+  `config.json`). `summary` and `none` start a new runtime session; the source's runtime history moves aside in the
+  session's storage, where it is retained and counts against the session's quota but the target cannot reach it. The
+  target's first turn quotes the source's payload as untrusted data in a system message, which is not a person's
+  message; only `full` keeps the person's own messages.
+- **No new authority or budget.** A handoff never raises the conversation's aggregate token budget, job, or
+  continuation limits, and a conversation in a container never moves back to the shared worker.
+- **One move at a time.** The ledger records each transfer once per tool call, keeps at most one handoff open, refuses
+  one while a promotion is open, admits no turns while one is open, and commits the cutover with a new placement
+  generation, which voids outstanding connection tickets and closes attached clients with `moved`.
+
+The person approves on the reason and summary the source agent wrote, which the CLI prompt shows; they are model
+output and can be wrong or manipulated by content the source read. Workspace files stay with the conversation across
+handoffs, so the target sees files the source wrote.
+
 ### Shared-placement egress and remote MCP
 
 Status: the harness-driven shared worker uses this code for `web` and remote MCP; served-harness evidence is in
