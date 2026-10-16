@@ -90,6 +90,10 @@ export const FIELD_LABELS: Record<keyof ExecutionPolicy, string> = {
   allowLongContext: "Long context",
   builtinTools: "Tool groups",
   permissionModes: "Permission modes",
+  approvalModes: "Approval modes",
+  permissionHandlers: "Permission handlers",
+  mcpServers: "MCP servers",
+  hosting: "Hosting",
 };
 
 /** A short, human-readable rendering of one policy value. */

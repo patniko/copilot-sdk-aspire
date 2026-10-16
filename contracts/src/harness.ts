@@ -3,6 +3,8 @@ import { z } from "zod";
 export const SLUG = /^[a-z][a-z0-9-]{1,62}$/;
 export const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 const TOOL_NAME = /^[a-z][a-z0-9_]{1,62}$/;
+/** A tool name on a remote MCP server: 1-128 ASCII letters, digits, underscores, hyphens, or dots. */
+export const MCP_TOOL_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
 
 /** A JSON Schema document. Validated structurally by Ajv at load time, not by zod. */
 export const JsonSchemaDocument = z.record(z.string(), z.unknown());
@@ -103,6 +105,20 @@ export const PermissionMode = z.enum(["deny", "ask", "allow"]);
 export type PermissionMode = z.infer<typeof PermissionMode>;
 
 /**
+ * What happens to a permission request that the per-kind rules would route to a person (`ask`). Per-kind `deny`
+ * and `allow` rules still apply first.
+ * - manual (default): a person decides.
+ * - assisted: the Copilot runtime's safety judge approves the request or sends it to a person. The judge is
+ *   probabilistic guidance, not a security boundary.
+ * - allow-all: the request is approved automatically.
+ * - custom: an integrator-registered permission handler, selected by name, decides.
+ * Batch harnesses support manual only; the other modes apply to conversation harnesses.
+ */
+export const APPROVAL_MODES = ["manual", "assisted", "allow-all", "custom"] as const;
+export type ApprovalMode = (typeof APPROVAL_MODES)[number];
+export const DEFAULT_APPROVAL_MODE: ApprovalMode = "manual";
+
+/**
  * How the runner answers the agent's permission requests and questions. Omitted means every
  * permission request is denied and the agent cannot ask questions. Harness tools never ask.
  */
@@ -122,11 +138,33 @@ export const PermissionsConfig = z
     questions: z.boolean().optional(),
     /** How long one approval or question waits for an answer before it is denied. Default 600, capped by the attempt deadline. */
     timeoutSeconds: z.number().int().min(30).max(3600).optional(),
+    /** Who decides requests that would otherwise prompt a person. Omitted means manual. */
+    approvalMode: z.enum(APPROVAL_MODES).optional(),
+    /** Model for the assisted judge; one of the harness's allowed models. Omitted means the session's model. */
+    judgeModel: z.string().min(1).max(200).optional(),
+    /** The registered permission handler for the custom approval mode. */
+    handler: z.string().regex(SLUG).optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((permissions, ctx) => {
+    if (permissions.judgeModel !== undefined && permissions.approvalMode !== "assisted") {
+      ctx.addIssue({ code: "custom", path: ["judgeModel"], message: "A judge model applies only to the assisted approval mode." });
+    }
+    if (permissions.approvalMode === "custom" && permissions.handler === undefined) {
+      ctx.addIssue({ code: "custom", path: ["handler"], message: "The custom approval mode needs a registered permission handler." });
+    }
+    if (permissions.handler !== undefined && permissions.approvalMode !== "custom") {
+      ctx.addIssue({ code: "custom", path: ["handler"], message: "A permission handler applies only to the custom approval mode." });
+    }
+  });
 export type PermissionsConfig = z.infer<typeof PermissionsConfig>;
 
 export const DEFAULT_INPUT_TIMEOUT_SECONDS = 600;
+
+/** The approval mode that applies to a harness's permission requests. */
+export function approvalModeOf(permissions: Pick<PermissionsConfig, "approvalMode"> | undefined): ApprovalMode {
+  return permissions?.approvalMode ?? DEFAULT_APPROVAL_MODE;
+}
 
 /** The mode that applies to a permission request kind (unknown kinds use the default). */
 export function permissionModeFor(permissions: PermissionsConfig | undefined, kind: string): PermissionMode {
@@ -175,6 +213,108 @@ export const AgentDefinition = z
   .strict();
 export type AgentDefinition = z.infer<typeof AgentDefinition>;
 
+/** A remote MCP server from the operator's catalog, with the tools this harness requests from it. */
+export const HarnessMcpServer = z
+  .object({
+    /** Server name in the operator policy's `mcpServers` catalog. The harness never sees its URL or credential. */
+    server: z.string().regex(SLUG),
+    tools: z.array(z.string().regex(MCP_TOOL_NAME)).min(1).max(64),
+  })
+  .strict();
+export type HarnessMcpServer = z.infer<typeof HarnessMcpServer>;
+
+/**
+ * Where a conversation harness's agent loop runs (docs/HOSTING-MODES-PLAN.md, section 2). A harness without a
+ * `hosting` block is `isolated`.
+ * - isolated: entirely inside a dedicated Linux container.
+ * - shared: on a shared in-process runtime with virtual files; no shell, Python, or local MCP tools.
+ * - promotable: starts shared and can move one way into a dedicated container.
+ * - orchestrator: a shared coordinator that runs worker harnesses in containers.
+ */
+export const HOSTING_MODES = ["isolated", "shared", "promotable", "orchestrator"] as const;
+export type HostingMode = (typeof HOSTING_MODES)[number];
+export const DEFAULT_HOSTING_MODE: HostingMode = "isolated";
+
+/** Whether a model-initiated promotion or handoff needs a person (`ask`) or runs automatically (`allow`). */
+export const HOSTING_APPROVALS = ["ask", "allow"] as const;
+export type HostingApproval = (typeof HOSTING_APPROVALS)[number];
+export const DEFAULT_HOSTING_APPROVAL: HostingApproval = "ask";
+
+/** History a handoff target receives. */
+export const HANDOFF_HISTORY = ["full", "summary", "none"] as const;
+export type HandoffHistory = (typeof HANDOFF_HISTORY)[number];
+
+/** Promotion settings for `promotable` harnesses. */
+export const HostingPromotion = z
+  .object({
+    /** Container size after promotion, from the operator's catalog. Omitted means the catalog's default size. */
+    size: z.string().regex(SLUG).optional(),
+    /** Whether a model-initiated promotion needs a person. Omitted means `ask`. */
+    approval: z.enum(HOSTING_APPROVALS).optional(),
+  })
+  .strict();
+export type HostingPromotion = z.infer<typeof HostingPromotion>;
+
+/** Container workers an `orchestrator` coordinator may start. */
+export const HostingWorkers = z
+  .object({
+    /** Published conversation harnesses with isolated hosting that may run as workers. */
+    harnesses: z.array(z.string().regex(SLUG)).max(16),
+    /** Requested subset of the operator's sizes. Omitted means the catalog's default size only. */
+    sizes: z.array(z.string().regex(SLUG)).min(1).max(8).optional(),
+    /** Concurrent workers per session; capped by policy. */
+    maxConcurrent: z.number().int().min(1).max(32).optional(),
+    /** Workers created over one session's lifetime; capped by policy. */
+    maxPerSession: z.number().int().min(1).max(256).optional(),
+    /** `session` gives the session's workers one shared volume. Omitted means `none`. */
+    sharedStorage: z.enum(["none", "session"]).optional(),
+    /**
+     * `inherit` lets workers' assisted judges use this session's recorded human messages as authority, within a
+     * policy ceiling. Omitted means `none`.
+     */
+    humanAuthority: z.enum(["none", "inherit"]).optional(),
+    /** An operator crafting template; omitted means the coordinator cannot craft worker harnesses. */
+    crafting: z.object({ template: z.string().regex(SLUG) }).strict().optional(),
+  })
+  .strict();
+export type HostingWorkers = z.infer<typeof HostingWorkers>;
+
+/** A predefined handoff target. */
+export const HostingHandoff = z
+  .object({
+    /** A published conversation harness. */
+    harness: z.string().regex(SLUG),
+    /** Shown to the model as the transfer tool's description. */
+    description: z.string().min(1).max(1000),
+    /** Omitted means `summary` across placements and `full` within one placement. */
+    history: z.enum(HANDOFF_HISTORY).optional(),
+    /** Omitted means `ask`. */
+    approval: z.enum(HOSTING_APPROVALS).optional(),
+  })
+  .strict();
+export type HostingHandoff = z.infer<typeof HostingHandoff>;
+
+/** Per-harness hosting request. Operator policy decides which modes and settings are allowed. */
+export const HostingConfig = z
+  .object({
+    mode: z.enum(HOSTING_MODES),
+    promotion: HostingPromotion.optional(),
+    workers: HostingWorkers.optional(),
+    handoffs: z.array(HostingHandoff).max(8).optional(),
+  })
+  .strict();
+export type HostingConfig = z.infer<typeof HostingConfig>;
+
+/** The hosting mode a harness requests; harnesses without a `hosting` block are isolated. */
+export function hostingModeOf(definition: { hosting?: Pick<HostingConfig, "mode"> }): HostingMode {
+  return definition.hosting?.mode ?? DEFAULT_HOSTING_MODE;
+}
+
+/** True for modes whose agent loop never leaves the shared worker, where shell, Python, and local MCP tools cannot run. */
+export function runsOnSharedWorker(mode: HostingMode): boolean {
+  return mode === "shared" || mode === "orchestrator";
+}
+
 /**
  * Harness definition v1. A harness requests capabilities; it never grants them.
  * Effective capabilities are the intersection of the harness, caller authorization,
@@ -189,6 +329,8 @@ export const HarnessDefinition = z
     description: z.string().min(1).max(2000),
     /** Explicit opt-in to the hosted conversation path; not a batch result contract. */
     interaction: z.literal("conversation").optional(),
+    /** Where a conversation harness's agent loop runs. Omitted means isolated; batch harnesses cannot set it. */
+    hosting: HostingConfig.optional(),
     instructions: z.string().min(1).max(100_000),
     prompt: PromptConfig.optional(),
     model: z
@@ -201,6 +343,8 @@ export const HarnessDefinition = z
       .strict(),
     tools: z.array(ToolRequest).max(64),
     builtinTools: z.array(z.enum(BUILTIN_TOOL_GROUPS)).max(BUILTIN_TOOL_GROUPS.length).optional(),
+    /** Remote MCP servers and tools from the operator's catalog. Conversation harnesses only. */
+    mcpServers: z.array(HarnessMcpServer).max(16).optional(),
     permissions: PermissionsConfig.optional(),
     skills: z.array(SkillDefinition).max(10).optional(),
     agents: z.array(AgentDefinition).max(8).optional(),
@@ -271,8 +415,100 @@ export const HarnessDefinition = z
         issue(["tools", h.tools.indexOf(tool), "delegatedOnly"], `No sub-agent can call delegated-only tool '${tool.name}'.`);
       }
     }
+    hostingIssues(h, issue);
   });
 export type HarnessDefinition = z.infer<typeof HarnessDefinition>;
+
+/**
+ * Hosting, remote MCP, and approval-mode rules that depend only on the harness itself (docs/HOSTING-MODES-PLAN.md,
+ * section 3). Rules that depend on operator policy, execution profiles, other harnesses, or the deployment live in
+ * profile.ts and hosting.ts.
+ */
+function hostingIssues(
+  h: {
+    name: string;
+    interaction?: "conversation";
+    hosting?: HostingConfig;
+    mcpServers?: HarnessMcpServer[];
+    permissions?: PermissionsConfig;
+    model: { allowed: string[] };
+    builtinTools?: BuiltinToolGroup[];
+    tools: ToolRequest[];
+  },
+  issue: (path: (string | number)[], message: string) => void,
+): void {
+  const permissions = h.permissions;
+  if (permissions?.judgeModel !== undefined && !h.model.allowed.includes(permissions.judgeModel)) {
+    issue(["permissions", "judgeModel"], "The judge model must be one of the harness's allowed models.");
+  }
+  const servers = new Set<string>();
+  h.mcpServers?.forEach((entry, index) => {
+    if (servers.has(entry.server)) issue(["mcpServers", index, "server"], `MCP server '${entry.server}' is listed more than once.`);
+    servers.add(entry.server);
+    entry.tools.forEach((tool, toolIndex) => {
+      if (entry.tools.indexOf(tool) !== toolIndex) issue(["mcpServers", index, "tools", toolIndex], `Tool '${tool}' is listed more than once.`);
+    });
+  });
+
+  // Batch runners do not implement these features in both languages, so batch harnesses cannot request them.
+  if (h.interaction !== "conversation") {
+    if (h.hosting !== undefined) {
+      issue(["hosting"], "Hosting applies only to conversation harnesses; batch harnesses run as jobs on the executor.");
+    }
+    if (h.mcpServers !== undefined) issue(["mcpServers"], "Remote MCP servers are available only to conversation harnesses.");
+    if (approvalModeOf(permissions) !== DEFAULT_APPROVAL_MODE) {
+      issue(["permissions", "approvalMode"], "Batch harnesses use the manual approval mode; other approval modes need a conversation harness.");
+    }
+    return;
+  }
+
+  const hosting = h.hosting;
+  const mode = hostingModeOf(h);
+  if (hosting?.promotion && mode !== "promotable") {
+    issue(["hosting", "promotion"], "Promotion settings apply only to promotable harnesses.");
+  }
+  if (hosting?.workers && mode !== "orchestrator") {
+    issue(["hosting", "workers"], "Worker settings apply only to orchestrator harnesses.");
+  }
+  if (mode === "orchestrator" && !hosting?.workers) {
+    issue(["hosting", "workers"], "An orchestrator harness needs workers: list worker harnesses or a crafting template.");
+  }
+  const workers = hosting?.workers;
+  if (workers) {
+    if (workers.harnesses.length === 0 && !workers.crafting) {
+      issue(["hosting", "workers", "harnesses"], "List at least one worker harness or set a crafting template.");
+    }
+    workers.harnesses.forEach((name, index) => {
+      if (name === h.name) issue(["hosting", "workers", "harnesses", index], "A harness cannot be its own worker.");
+      else if (workers.harnesses.indexOf(name) !== index) issue(["hosting", "workers", "harnesses", index], `Worker harness '${name}' is listed more than once.`);
+    });
+    workers.sizes?.forEach((size, index) => {
+      if (workers.sizes!.indexOf(size) !== index) issue(["hosting", "workers", "sizes", index], `Size '${size}' is listed more than once.`);
+    });
+    if (workers.maxConcurrent !== undefined && workers.maxPerSession !== undefined && workers.maxConcurrent > workers.maxPerSession) {
+      issue(["hosting", "workers", "maxConcurrent"], "maxConcurrent cannot exceed maxPerSession.");
+    }
+  }
+  hosting?.handoffs?.forEach((handoff, index) => {
+    if (handoff.harness === h.name) issue(["hosting", "handoffs", index, "harness"], "A harness cannot hand off to itself.");
+    else if (hosting.handoffs!.findIndex((other) => other.harness === handoff.harness) !== index) {
+      issue(["hosting", "handoffs", index, "harness"], `Handoff target '${handoff.harness}' is listed more than once.`);
+    }
+  });
+
+  // A shared worker has no shell, real filesystem, or process isolation. Promotable harnesses activate these tools
+  // only after promotion; orchestrators reach them through workers.
+  if (runsOnSharedWorker(mode)) {
+    const instead = "use isolated or promotable hosting, or an orchestrator worker";
+    h.builtinTools?.forEach((group, index) => {
+      if (group === "shell") issue(["builtinTools", index], `Shared placement cannot run shell commands; ${instead}.`);
+    });
+    h.tools.forEach((tool, index) => {
+      if (tool.kind === "python") issue(["tools", index, "kind"], `Shared placement cannot run Python tools; ${instead}.`);
+      if (tool.kind === "mcp-local") issue(["tools", index, "kind"], `Shared placement cannot run local (stdio) MCP tools; ${instead}.`);
+    });
+  }
+}
 
 /** A published, immutable harness version with its content digest. */
 export interface HarnessSnapshot {
