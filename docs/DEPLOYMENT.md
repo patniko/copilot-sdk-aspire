@@ -180,12 +180,7 @@ For example, `{"executionContainers":1,"activeTurns":2,"residentSessions":16}` l
 one physical allocation while permitting two model turns. By default one harness can hold at most 12 resident
 sessions, one running turn, and 24 queued turns, so a busy harness cannot starve the others; for example,
 `{"activeTurns":4,"harnesses":{"shared-researcher":{"activeTurns":2}}}` lets that harness run two turns at once.
-A per-harness value never exceeds the matching worker-wide limit.
-
-By default a conversation may use 500,000 tokens, and each turn up to 100,000 tokens and 300 seconds. Every model request
-in a turn resends the conversation, about 4,200 tokens of base prompt plus the turn's tool results so far, so real turns
-of a few tool calls with a real model used 21,000 to 38,000 tokens. Lower these for tighter cost control, or raise the
-turn budget for turns with many large tool results; a harness's own limits and its policy still apply. Starting and retiring allocations count too;
+A per-harness value never exceeds the matching worker-wide limit. Starting and retiring allocations count too;
 failed deletion does not free capacity. Zero containers disables new allocation without discarding queued
 jobs. Warm pooling is deliberately not offered: the implemented mode retires one-shot containers.
 Session containers count against the same `executionContainers` and `containersPerPrincipal` limits as jobs.
@@ -193,6 +188,13 @@ The exact defaults and ranges live in [`shared.ts`](../contracts/src/shared.ts) 
 [`session-container.ts`](../contracts/src/session-container.ts).
 Controller CPU/memory/startup settings live in [`artifacts.ts`](../contracts/src/artifacts.ts) and can be
 supplied through `EXECUTION_CONTAINER_SETTINGS` when hosting that service directly.
+
+By default a shared conversation may use 500,000 tokens, and each turn up to 100,000 tokens and 300 seconds. Every
+model request in a turn resends the conversation: about 4,200 tokens of base prompt plus the turn's tool results so
+far. Real turns of a few tool calls with a real model used 21,000 to 38,000 tokens. Lower these for tighter cost
+control, or raise the turn budget for turns with many large tool results; a harness's own limits and its policy still
+apply. An orchestrator's workers are funded from the same conversation budget, which always holds back one coordinator
+turn, so a larger turn budget leaves less for workers.
 
 ### Session containers
 

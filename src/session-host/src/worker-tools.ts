@@ -66,7 +66,8 @@ const ListFiles = z.object({
 }).strict();
 const ReadFile = z.object({
   path: sharedPath(`A file, such as plan.txt or ${WORKER_SHARED_MOUNT}/plan.txt.`),
-  offset: z.number().int().min(0).max(1024 * 1024).default(0), length: z.number().int().min(1).max(READ_LIMIT).default(8192),
+  // No maximum offset: each part's nextOffset must stay valid for files up to the shared file service's 4 MiB.
+  offset: z.number().int().min(0).default(0), length: z.number().int().min(1).max(READ_LIMIT).default(8192),
 }).strict();
 const WriteFile = z.object({
   path: sharedPath(`The file to create or replace, such as plan.txt or ${WORKER_SHARED_MOUNT}/plan.txt.`),

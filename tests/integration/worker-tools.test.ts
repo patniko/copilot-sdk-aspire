@@ -232,6 +232,9 @@ describe("coordinator worker tools", () => {
     expect(json(page)).toBeLessThanOrEqual(SHARED_TOOL_OUTPUT_BYTES);
     expect(page).toMatchObject({ total: 201, truncated: true });
     expect(await c.call(WORKER_TOOLS.listFiles, { offset: page.nextOffset })).toMatchObject({ offset: page.nextOffset });
+    // Files up to the service's 4 MiB read limit can be read to the end.
+    service.contents.set("huge.txt", Buffer.alloc(3 * 1024 * 1024, "x"));
+    expect(await c.call(WORKER_TOOLS.readFile, { path: "huge.txt", offset: 3 * 1024 * 1024 - 10 })).toMatchObject({ data: "x".repeat(10), truncated: false });
   });
 
   it("accept paths as workers see them under /shared, as the volume-relative path, and nothing outside the volume", async () => {
