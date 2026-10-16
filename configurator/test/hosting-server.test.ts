@@ -14,7 +14,7 @@ import { hostingOverview } from "@copilot-agent/service-defaults";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildApp } from "../server/app.js";
-import { harnessHostingDetail, hostingTargets, latestDocuments, readServiceView, staleVersions } from "../server/hosting.js";
+import { harnessHostingDetail, hostingTargets, latestDocuments, readOwnerHosts, readServiceView, staleVersions } from "../server/hosting.js";
 import { templateHarness } from "../server/repo.js";
 import type { HarnessDocument, ProfileSummary } from "../server/types.js";
 import { definitionOf, executionProfiles, harnessDigest } from "../server/validate.js";
@@ -72,10 +72,10 @@ function snapshotOf(document: HarnessDocument): HarnessSnapshot {
 }
 
 /** A real `GET /v1/hosting` view built with the service's own function. */
-function serviceView(documents: HarnessDocument[], deployment: HostingDeployment, policies: PolicySet): HostingOverview {
+function serviceView(documents: HarnessDocument[], deployment: HostingDeployment, policies: PolicySet, principal?: string): HostingOverview {
   const harnesses = new Map<string, HarnessSnapshot[]>();
   for (const document of latestDocuments(documents)) harnesses.set(document.manifest.name, [snapshotOf(document)]);
-  return hostingOverview({ harnesses, profiles: executionProfiles(profiles), policies, deployment });
+  return hostingOverview({ harnesses, profiles: executionProfiles(profiles), policies, deployment }, principal);
 }
 
 describe("hosting detail for the harness editor", () => {
@@ -146,6 +146,19 @@ describe("agent-api hosting views", () => {
     const newer = conversation("chat", "1.1.0");
     expect(staleVersions([loaded, newer], view)).toEqual([{ harness: "chat", version: "1.1.0", reason: "missing" }]);
   });
+
+  it("reads the caller's owner hosts as the launcher looks them up", async () => {
+    const host = { harness: "chat", transport: "both", execution: "managed", owned: true, online: true, resource: "host-chat" };
+    await expect(readOwnerHosts(async () => ({ status: 200, body: { hosts: [host] } }))).resolves.toEqual({ hosts: [host] });
+    await expect(readOwnerHosts(async () => ({ status: 404, body: {} }))).resolves.toEqual({ hosts: [] });
+    await expect(readOwnerHosts(async () => ({ status: 500, body: {} }))).resolves.toEqual({ error: "The owner host lookup failed (500)." });
+    await expect(readOwnerHosts(async () => ({ status: 200, body: { hosts: [{ harness: "chat" }] } }))).resolves.toEqual({
+      error: "The agent-api returned owner hosts this configurator does not recognize.",
+    });
+    await expect(readOwnerHosts(async () => {
+      throw new Error("Could not reach agent-api at http://127.0.0.1:1.");
+    })).resolves.toEqual({ error: "Could not reach agent-api at http://127.0.0.1:1." });
+  });
 });
 
 describe("configurator hosting routes", () => {
@@ -214,15 +227,45 @@ describe("configurator hosting routes", () => {
     expect(body.overview.hosts.sessionContainers).toEqual({ transports: ["direct"], features: [] });
     // The fixtures in hosting.test.tsx mirror this view: direct WSS is ready, and the relay names its missing transport.
     expect(body.overview.harnesses[0]).toMatchObject({ harness: "chat", placement: "container", status: "ready", problems: [] });
+    const noRelay = { code: "hosting_unavailable", message: "No host for 'chat' offers the GitHub relay.", prerequisite: { kind: "transport", name: "github" } };
     expect(body.overview.harnesses[0].transports).toEqual([
       { transport: "direct", allowed: true, available: true },
-      {
-        transport: "github",
-        allowed: true,
-        available: false,
-        problem: { code: "hosting_unavailable", message: "No host for 'chat' offers the GitHub relay.", prerequisite: { kind: "transport", name: "github" } },
-      },
+      { transport: "github", allowed: true, available: false, problem: noRelay },
     ]);
+    // Without an owner host, the page needs no owner-host lookup, and the launcher would use a session container.
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(body.connections).toEqual({
+      chat: { ownsHost: false, transports: { direct: { route: { kind: "sessions", placement: "container" } }, github: { problem: noRelay } } },
+    });
+  });
+
+  it("sends an owner to their own owner host before session containers, as the launcher does", async () => {
+    const deployment: HostingDeployment = {
+      executor: "pool",
+      isolatedHosts: [{ harness: "chat", owner: "dev", transports: ["direct", "github"], features: [] }],
+      sessionContainers: { transports: ["direct"], features: [] },
+    };
+    const policies: PolicySet = { base: policy, overrides: new Map() };
+    const host = (owned: boolean) => ({ harness: "chat", transport: "both", execution: "managed", owned, online: true, resource: "host-chat" });
+    const serve = (principal: string) =>
+      fetcher.mockImplementation(async (_target, path) =>
+        path === "/v1/hosting"
+          ? { status: 200, body: serviceView([conversation("chat")], deployment, policies, principal) }
+          : path === "/v1/hosts"
+            ? { status: 200, body: { hosts: [host(principal === "dev")] } }
+            : { status: 404, body: {} });
+    serve("dev");
+    const owner = (await app.inject({ method: "GET", url: "/api/hosting?target=local", headers })).json();
+    expect(fetcher).toHaveBeenCalledWith("local", "/v1/hosts");
+    expect(owner.connections.chat).toEqual({
+      ownsHost: true,
+      transports: { direct: { route: { kind: "owner-host" } }, github: { route: { kind: "owner-host" } } },
+    });
+    serve("other");
+    const other = (await app.inject({ method: "GET", url: "/api/hosting?target=local", headers })).json();
+    expect(other.connections.chat.ownsHost).toBe(false);
+    expect(other.connections.chat.transports.direct).toEqual({ route: { kind: "sessions", placement: "container" } });
+    expect(other.connections.chat.transports.github.problem.code).toBe("relay_owner_only");
   });
 
   it("says why the view is unavailable instead of evaluating hosting itself", async () => {

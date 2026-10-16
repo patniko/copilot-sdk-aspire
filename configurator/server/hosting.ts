@@ -9,12 +9,25 @@ import {
   hostingModeOf,
   type HostingOverview,
   type HostingTarget,
+  OwnerHostView,
   type PolicySet,
   policyFor,
 } from "@copilot-agent/contracts";
-import type { z } from "zod";
+import { z } from "zod";
+import { connectProblem, routeFor, routeTargetProblem } from "./connect-route.js";
+import { ownedManagedHostOffers } from "./owner-host-client.js";
 import { compareVersions } from "./repo.js";
-import type { HarnessDocument, HarnessHostingDetail, HostingPageInfo, HostingTargetSummary, ProfileSummary } from "./types.js";
+import { sessionContainersIn } from "./shared-client.js";
+import type {
+  HarnessConnectDecision,
+  HarnessConnectInfo,
+  HarnessDocument,
+  HarnessHostingDetail,
+  HostingPageInfo,
+  HostingTargetSummary,
+  ProfileSummary,
+  TryTarget,
+} from "./types.js";
 import { harnessDigest } from "./validate.js";
 
 /** The highest version of each harness name, which callers get when they do not pin a version. */
@@ -111,4 +124,66 @@ export function staleVersions(documents: HarnessDocument[], overview: HostingOve
     const digest = harnessDigest(document);
     return digest && digest !== view.digest ? [{ harness: name, version, reason: "changed" as const }] : [];
   });
+}
+
+const OwnerHostList = z.object({ hosts: z.array(OwnerHostView) });
+export type OwnerHosts = { hosts: OwnerHostView[] } | { error: string };
+
+/**
+ * The caller's view of each deployed owner host (`GET /v1/hosts`), as the launcher looks it up per harness. A service
+ * without owner hosts has no such route, which means the caller owns none.
+ */
+export async function readOwnerHosts(fetchHosts: () => Promise<{ status: number; body: unknown }>): Promise<OwnerHosts> {
+  try {
+    const response = await fetchHosts();
+    if (response.status === 404) return { hosts: [] };
+    if (response.status !== 200) return { error: `The owner host lookup failed (${response.status}).` };
+    const parsed = OwnerHostList.safeParse(response.body);
+    return parsed.success ? { hosts: parsed.data.hosts } : { error: "The agent-api returned owner hosts this configurator does not recognize." };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : "The owner hosts could not be read." };
+  }
+}
+
+/**
+ * How `pnpm host:connect --harness` would connect the caller to each conversation harness over each transport on
+ * `target`, decided with the launcher's own refusal check, routing order, and target rule, from the same facts it looks
+ * up: the target's hosting view and the caller's owner hosts.
+ */
+export async function harnessConnections(overview: HostingOverview, owners: OwnerHosts, target: TryTarget): Promise<Record<string, HarnessConnectInfo>> {
+  const connections: Record<string, HarnessConnectInfo> = {};
+  for (const view of overview.harnesses) {
+    if (view.interaction !== "conversation") continue;
+    const placement = view.placement;
+    const hosts = "hosts" in owners ? owners.hosts.filter((host) => host.harness === view.harness) : [];
+    // Only a deployed managed host can be the caller's own, so harnesses without one need no lookup.
+    const deployed = overview.hosts.isolatedHosts.some((host) => host.harness === view.harness);
+    const transports: HarnessConnectInfo["transports"] = {};
+    for (const { transport } of view.transports) {
+      const problem = connectProblem(view, transport, false);
+      if (problem) {
+        transports[transport] = { problem };
+        continue;
+      }
+      if (placement !== "shared" && placement !== "container") continue;
+      let decision: HarnessConnectDecision;
+      try {
+        const route = await routeFor(placement, {
+          ownedOwnerHost: async () => {
+            if (!deployed) return false;
+            if ("error" in owners) throw new Error(owners.error);
+            return hosts.some((host) => ownedManagedHostOffers(host, transport));
+          },
+          sessionContainers: async () => sessionContainersIn(overview.hosts, transport),
+        });
+        const refusal = routeTargetProblem(route, target);
+        decision = refusal ? { route, refusal } : { route };
+      } catch (error) {
+        decision = { refusal: error instanceof Error ? error.message : "The launcher could not route this connection." };
+      }
+      transports[transport] = decision;
+    }
+    connections[view.harness] = { ownsHost: hosts.some((host) => host.owned && host.execution === "managed"), transports };
+  }
+  return connections;
 }
