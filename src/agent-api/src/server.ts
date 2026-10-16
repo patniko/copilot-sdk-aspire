@@ -5,13 +5,14 @@ import {
   type HarnessSnapshot,
   type JobEventView,
 } from "@copilot-agent/contracts";
-import { HostStore, JobEventListener, JobStore, StoreError, type DelegationStore } from "@copilot-agent/job-store";
+import { HostStore, JobEventListener, JobStore, StoreError, type DelegationStore, type WorkerStore } from "@copilot-agent/job-store";
 import { ApiKeyAuthenticator, createService, HttpError, type HostingCatalog } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Admission } from "@copilot-agent/service-defaults";
 import { registerConsole } from "./console.js";
 import { registerHostingRoutes } from "./hosting-routes.js";
 import { registerSharedSessionRoutes, type SharedApiDependencies } from "./shared-routes.js";
+import { registerWorkerRoutes } from "./worker-routes.js";
 
 export interface ApiDependencies {
   store: JobStore;
@@ -26,6 +27,8 @@ export interface ApiDependencies {
   shared?: SharedApiDependencies;
   execution?: "pool" | "dedicated";
   delegations?: DelegationStore;
+  /** Orchestrator workers of shared conversations and their request queue. */
+  workers?: WorkerStore;
   /** Published harnesses, profiles, policies, and deployment capabilities for the read-only `/v1/hosting` views. */
   hosting?: HostingCatalog;
 }
@@ -42,6 +45,7 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
 
   const principalOf = (request: FastifyRequest) => deps.authenticator.authenticate(request).id;
   if (deps.shared) registerSharedSessionRoutes(app, deps.shared, principalOf, deps.delegations, deps.hosting);
+  if (deps.workers) registerWorkerRoutes(app, deps.workers, principalOf);
   if (deps.hosting) registerHostingRoutes(app, deps.hosting, principalOf);
   if (deps.host) {
     const host = deps.host;

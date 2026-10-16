@@ -180,10 +180,13 @@ Other aids:
   built-in tools and agents with the Copilot CLI's approval defaults: workspace reads and read-only commands run,
   and it asks you before other commands, file writes and web access, and can ask you questions). Each template validates against
   the current policy.
-- **Import plan**: paste or open a plan JSON from the earlier Harness Builder. The report lists what was mapped
+- **Import**: paste or open a plan JSON from the earlier Harness Builder. The report lists what was mapped
   (prompt mode and sections, instructions, model, reasoning, sub-agents), what needs work (custom tools and MCP
   servers need bindings, unapproved models), and what does not apply to hosted jobs (provider credentials, client
-  mode, session storage, identity). Nothing is written until you create the harness.
+  mode, session storage, identity). The same dialog opens a harness definition, bare or as exported by
+  `GET /v1/sessions/{id}/workers/{worker}/definition` ([API](API.md#orchestrator-workers)), as an unsaved draft; a
+  crafted worker's definition is flagged for review because a model wrote its instructions. Nothing is written until
+  you create the harness.
 - **Export JSON** downloads the resolved definition the API loads (instructions and skills inlined).
 - **Changes from platform example** lists saved fields, instructions and skills that differ from the immutable
   example with the same folder name. Harnesses without a matching example are marked as customer-authored.

@@ -132,6 +132,40 @@ Content-Type: application/json
 
 { "kind": "question", "answer": "Use Python 3.12." }
 
+### Orchestrator workers of a shared conversation (needs the shared worker; set SHARED_SESSION_ID in http/.env)
+# @name workers
+GET {{baseUrl}}/v1/sessions/{{$dotenv SHARED_SESSION_ID}}/workers
+Authorization: Bearer {{apiKey}}
+
+@workerId = {{workers.response.body.$.workers[0].id}}
+
+### One worker, by id or name
+GET {{baseUrl}}/v1/sessions/{{$dotenv SHARED_SESSION_ID}}/workers/{{workerId}}
+Authorization: Bearer {{apiKey}}
+
+### A worker's recorded definition (open a crafted one in the configurator's Import dialog as an unsaved draft)
+GET {{baseUrl}}/v1/sessions/{{$dotenv SHARED_SESSION_ID}}/workers/{{workerId}}/definition
+Authorization: Bearer {{apiKey}}
+
+### Pending worker approvals and questions across your conversations (oldest first)
+# @name workerPending
+GET {{baseUrl}}/v1/worker-input-requests?state=pending
+Authorization: Bearer {{apiKey}}
+
+@workerRequestId = {{workerPending.response.body.$.requests[0].id}}
+@workerRequestSession = {{workerPending.response.body.$.requests[0].sessionId}}
+
+### Approve the oldest pending worker permission request; only a person can decide it, never the coordinator
+POST {{baseUrl}}/v1/sessions/{{workerRequestSession}}/input-requests/{{workerRequestId}}/respond
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{ "kind": "permission", "approved": true, "scope": "once" }
+
+### Negative check: unknown request state filter (expect 400 invalid_request)
+GET {{baseUrl}}/v1/sessions/{{$dotenv SHARED_SESSION_ID}}/input-requests?state=open
+Authorization: Bearer {{apiKey}}
+
 ### Negative check: invalid input is rejected before queuing (expect 400 invalid_input)
 POST {{baseUrl}}/v1/jobs
 Authorization: Bearer {{apiKey}}

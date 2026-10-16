@@ -1,4 +1,4 @@
-import { DelegationStore, HostStore, JobEventListener, JobStore, SharedStore, migrate } from "@copilot-agent/job-store";
+import { DelegationStore, HostStore, JobEventListener, JobStore, SharedStore, WorkerStore, migrate } from "@copilot-agent/job-store";
 import {
   ApiKeyAuthenticator,
   assertOverridesMatchHarnesses,
@@ -52,7 +52,7 @@ const app = buildApi({
   hosting: { harnesses, profiles, policies, deployment },
   ...(process.env.SHARED_WORKER_KEY ? { shared: {
     url: serviceUrl("session-host"), key: requireEnv("SHARED_WORKER_KEY"), brokerUrl: requireEnv("CONNECTION_BROKER_URL"),
-  } } : {}),
+  }, workers: new WorkerStore(pool, new SharedStore(pool)) } : {}),
   ...(hostOwner ? {
     host: {
       store: new HostStore(pool), owner: hostOwner, principal: hostPrincipal,

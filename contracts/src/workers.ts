@@ -143,6 +143,9 @@ export const WorkerCreation = z
     if ((value.harness === undefined) === (value.craft === undefined)) {
       ctx.addIssue({ code: "custom", path: ["harness"], message: "Name one listed worker harness or craft a worker, not both." });
     }
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value.name)) {
+      ctx.addIssue({ code: "custom", path: ["name"], message: "A worker name cannot look like a worker id." });
+    }
   });
 export type WorkerCreation = z.infer<typeof WorkerCreation>;
 
@@ -408,6 +411,7 @@ export function craftWorkerDefinition(input: CraftingInput): CraftingResult {
   const where = `crafting template '${input.template}'`;
   const model = spec.model ?? ceiling.models.find((name) => input.policy.allowedModels.includes(name)) ?? ceiling.models[0]!;
   if (!ceiling.models.includes(model)) reject("model", `Model '${model}' is not in ${where}.`);
+  else if (!input.policy.allowedModels.includes(model)) reject("model", `Model '${model}' is not approved by the operator policy.`);
   spec.builtinTools?.forEach((group, index) => {
     if (!ceiling.builtinTools.includes(group)) reject(`builtinTools.${index}`, `The '${group}' built-in tools are not in ${where}.`);
   });
@@ -420,6 +424,8 @@ export function craftWorkerDefinition(input: CraftingInput): CraftingResult {
   if (!ceiling.approvalModes.includes(approvalMode)) reject("permissions.approvalMode", `The '${approvalMode}' approval mode is not in ${where}.`);
   if (permissions.judgeModel !== undefined && !ceiling.models.includes(permissions.judgeModel)) {
     reject("permissions.judgeModel", `Judge model '${permissions.judgeModel}' is not in ${where}.`);
+  } else if (permissions.judgeModel !== undefined && !input.policy.allowedModels.includes(permissions.judgeModel)) {
+    reject("permissions.judgeModel", `Judge model '${permissions.judgeModel}' is not approved by the operator policy.`);
   }
   const maxDurationSeconds = spec.maxDurationSeconds ?? ceiling.maxDurationSeconds;
   if (maxDurationSeconds > ceiling.maxDurationSeconds) reject("maxDurationSeconds", `${capitalize(where)} allows at most ${ceiling.maxDurationSeconds} seconds.`);

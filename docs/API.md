@@ -190,6 +190,52 @@ names, artifacts have SHA-256 digests, and downloads use attachment disposition 
 The coordinator can explicitly import an output into its session filesystem; overwriting an existing file
 requires its exact current etag. Arbitrary attempt files and runtime history are not exported.
 
+## Orchestrator workers
+
+An `orchestrator` coordinator's workers are child sessions of a shared conversation, each with its own harness, size,
+and container ([plan, section 7.4](HOSTING-MODES-PLAN.md#74-mode-4-orchestrator-shared-brain-container-workers)).
+The worker ledger, its request queue, and the routes below are implemented. Workers are created only by a
+coordinator's worker tools, which are not available yet, so the lists stay empty until that part of stage 4 lands.
+The routes exist when `agent-api` is connected to the shared worker. Implemented in
+[worker-routes.ts](../src/agent-api/src/worker-routes.ts) and the [worker ledger](../src/job-store/src/workers.ts),
+with contracts in [workers.ts](../contracts/src/workers.ts).
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| `GET` | `/v1/sessions/{id}/workers` | `{ workers }`: the conversation's workers, oldest first, up to 256 |
+| `GET` | `/v1/sessions/{id}/workers/{worker}` | One worker, by id or name |
+| `GET` | `/v1/sessions/{id}/workers/{worker}/definition` | The worker's recorded harness definition with its `digest`, `source`, crafting `template`, and creating `toolCallId`; `Cache-Control: no-store` |
+| `GET` | `/v1/sessions/{id}/input-requests` | `{ requests }`: the conversation's worker approvals and questions; `state` and `limit` as in [approvals and questions](#approvals-and-questions) |
+| `GET` | `/v1/worker-input-requests` | `{ requests }` across the caller's conversations |
+| `POST` | `/v1/sessions/{id}/input-requests/{requestId}/respond` | A person's answer, with the same bodies as job input requests |
+
+A worker view contains `id` (the worker's own session ID), `sessionId`, `name`, `source` (`listed` or `crafted`),
+`harness` (name, version, digest), `template`, `size` and `resources`, `sharedVolume` (`none`, `read-write`, or
+`read-only`), `approvalMode`, `inheritsHumanAuthority`, `state` (`starting`, `working`, `idle`, `needs_input`, or
+`stopped`), `stopReason` (`archived`, `idle_timeout`, `max_lifetime`, `budget_exhausted`, `coordinator_closed`, or
+`failed`), `result` (the final message of its latest completed turn, up to 16,000 characters: untrusted model output),
+`error`, `usage` (`tokenBudget`, `tokensUsed`, `turns`, `containerSeconds`), `pendingMessages`, `pendingInputs`,
+`capacityReleased`, and timestamps including `expiresAt` (its maximum lifetime).
+
+The ledger enforces these rules:
+
+- Workers, their definitions, and their requests belong to the conversation's principal; other principals receive
+  `404`.
+- A worker holds capacity from creation until its container is confirmed gone (`capacityReleased`), so starting,
+  running, and stopping workers all count against the coordinator harness's per-conversation and per-principal
+  ceilings and the deployment's ceiling.
+- A worker reserves part of the conversation's aggregate token budget, always leaving the coordinator one turn's
+  budget, and its usage is charged to the conversation when its capacity is released.
+- A worker stops at its maximum lifetime, when its reservation is used up, or after its idle time, and all of a
+  conversation's workers stop when it closes. A stopped worker keeps its record and volumes; nothing is deleted
+  automatically.
+- Worker approvals and questions wait for a person until they expire (the worker harness's `timeoutSeconds`,
+  default 600). A coordinator never answers a permission request. When the coordinator's policy sets
+  `hosting.workers.allowCoordinatorAnswers`, it may answer questions, shown as `answeredBy: "coordinator"`; answers
+  through this API show `answeredBy: "principal"`.
+- A crafted worker's definition is recorded and never published. The configurator's **Import** dialog opens a
+  definition export as an unsaved draft ([configurator](CONFIGURATOR.md#editing-harnesses)).
+
 ## Hosting views
 
 `GET /v1/hosting` and `GET /v1/hosting/{harness}` report where each published harness's agent loop would run and

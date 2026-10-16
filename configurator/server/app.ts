@@ -16,7 +16,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { z, ZodError } from "zod";
 import { AuthoringError, AuthoringRequest, AuthoringService, type DraftGenerator } from "./authoring.js";
 import { GitHubAuthError, GitHubDeviceAuth } from "./github-auth.js";
-import { mapPlannerPlan } from "./import.js";
+import { mapHarnessDefinition, mapPlannerPlan } from "./import.js";
 import { bumpPatch, compareVersions, Repo, RepoError } from "./repo.js";
 import { deployEnvironment, Settings, SettingsError } from "./settings.js";
 import { StatusService } from "./status.js";
@@ -510,6 +510,19 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     const { document, report } = mapPlannerPlan(body.plan as Record<string, unknown>, body.name, policy, profiles);
     const ctx = await context(document, [...documents, document]);
     return { document, report, issues: validateHarness(document, ctx) };
+  });
+
+  // An exported definition, such as a crafted worker's, becomes an unsaved draft; nothing is written or published.
+  app.post("/api/import/definition", async (request) => {
+    const body = z.object({ definition: z.unknown(), name: z.string().max(200).optional() }).parse(request.body);
+    if (Buffer.byteLength(JSON.stringify(body.definition) ?? "", "utf8") > 1024 * 1024) {
+      throw new RepoError(400, "Definition import payload must be 1 MB or smaller.");
+    }
+    const mapped = mapHarnessDefinition(body.definition, body.name);
+    if ("error" in mapped) throw new RepoError(400, `The harness definition is invalid: ${mapped.error}`);
+    const documents = await repo.listHarnesses();
+    const ctx = await context(mapped.document, [...documents, mapped.document]);
+    return { document: mapped.document, report: mapped.report, issues: validateHarness(mapped.document, ctx) };
   });
 
   app.get("/api/harnesses/:folder/export", async (request) => {
