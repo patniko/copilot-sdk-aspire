@@ -1961,8 +1961,10 @@ Delivered, local only:
 Runtime: `copilot-agent-runtime-hybrid` at `62a6b07a10a` (artifacts from `d89cfe45b29`, hosting `006b030`). The
 Windows pair is `copilot-runtime.exe` `be1213d6…` with `runtime.node` `2dd77fc0…`, and the CLI is `dist-cli/index.js`
 from the same build. The Linux bundle `hybrid-linux-arm64-d89cfe45b29-host-006b030` has `copilot-runtime` `207690e4…`,
-`runtime.node` `21aebad9…` and `sdk.tgz` `1f056620…`. The image `copilot-session-container:patniko-stage6-handoffs`
-(`sha256:b2c140db…`, 3.9 GB) was built from `39647b8`; its packaged sources are unchanged at the recorded commits.
+`runtime.node` `21aebad9…` and `sdk.tgz` `1f056620…`. The final gates used the image
+`copilot-session-container:patniko-stage6-handoffs` (`sha256:d131b4f5…`, 3.9 GB), built from `e06a907`. Its packaged
+sources (contracts, service defaults, harness hosting, the session container, and tools) are unchanged at `59e1cc3`.
+The earlier runs used `sha256:b2c140db…`, built from `39647b8`.
 
 Exit evidence: "A shared triage harness hands off to an isolated coding harness with summary history; a disallowed or
 unavailable target fails without transferring control".
@@ -1970,15 +1972,15 @@ unavailable target fails without transferring control".
 - `HYBRID_HANDOFF_TESTS=1 HYBRID_CLI_TESTS=1 HYBRID_USE_GH_ACCOUNT=1` with
   `HYBRID_SESSION_CONTAINER_IMAGE=copilot-session-container:patniko-stage6-handoffs`, `COPILOT_CLI_PATH` and
   `HYBRID_CLI_PATH`: `pnpm exec vitest run --project integration tests\integration\handoff-container-cli.test.ts`
-  passed in 40 s. It ran the real CLI under the launcher's supervisor, the in-process shared worker, a real container
-  from the image, the broker, and synthetic inference. After the target's policy was narrowed, the transfer was
-  refused before anyone was asked: the CLI showed "Denied by preToolUse hook: Handoff refused (handoff_not_allowed)",
-  no handoff was recorded, and nothing moved. With the policy restored, the CLI showed the approval prompt with the
-  source's reason and summary, and the person chose "Approve once". The handoff committed (`approvedBy: "person"`,
-  `history: "summary"`, generation 2, `container`, a new `ahpSessionId`), and the segment was recorded with reason
-  `handoff`. The launcher printed "moved to a new placement" and "Resuming session" once each in the same terminal.
-  The coder's first request held the summary and none of the earlier conversation; it read the moved `Plan.md` with
-  the shell and later wrote `Build.log` there.
+  passed in 40 s at `0043905`, and in 41 s at `59e1cc3` without the app-injected environment (below). It ran the real
+  CLI under the launcher's supervisor, the in-process shared worker, a real container from the image, the broker, and
+  synthetic inference. After the target's policy was narrowed, the transfer was refused before anyone was asked: the
+  CLI showed "Denied by preToolUse hook: Handoff refused (handoff_not_allowed)", no handoff was recorded, and nothing
+  moved. With the policy restored, the CLI showed the approval prompt with the source's reason and summary, and the
+  person chose "Approve once". The handoff committed (`approvedBy: "person"`, `history: "summary"`, generation 2,
+  `container`, a new `ahpSessionId`), and the segment was recorded with reason `handoff`. The launcher printed "moved to
+  a new placement" and "Resuming session" once each in the same terminal. The coder's first request held the summary
+  and none of the earlier conversation; it read the moved `Plan.md` with the shell and later wrote `Build.log` there.
 - `tests\integration\handoff-container.test.ts` (4 tests, default suite; container simulated through its allocation
   credential) covered three moves. `summary` moved only the workspace into a new runtime session under the target's
   model, turn deadline and container limits, with the notice in the spec and `409` connections during the move.
@@ -1993,26 +1995,26 @@ unavailable target fails without transferring control".
 - Default suites: `handoffs.test.ts` (ledger: idempotency, one open handoff, refusals, commits, storage preparation,
   settling only from the handoff's own move); unit `handoff-contracts`, `shared-handoffs` (tools, approval in every
   mode, admission including container targets) and `handoff-container`; configurator ceiling tests.
-- Baseline on the code at `0043905` plus documentation: `pnpm install`, `pnpm build`,
+- Baseline at `59e1cc3` (after the last integration merge): `pnpm install`, `pnpm build`,
   `pnpm --filter @copilot-agent/configurator build`, `aspire restore --apphost apphost.mts` (with
   `ASPIRE_CLI_NUGET_SERVICE_INDEX` set to the package proxy and `NuGetAudit=false`, because NuGet audit warning NU1902
   is treated as an error here), `pnpm typecheck`, `pnpm typecheck:tests`,
-  `pnpm --filter @copilot-agent/configurator typecheck` and `pnpm lint` passed. `pnpm test:unit`: 707 passed, 1
-  skipped. `pnpm test:integration`: 144 passed, 27 opt-in skipped.
-- Affected opt-in suites, each passing. `HYBRID_SESSION_RUNTIME_TESTS=1`: `handoff-runtime`, `shared-approvals`,
-  `shared-egress-runtime`, `shared-service` and `shared-session-runtime` (5 files, 12 tests). `HYBRID_CLI_TESTS=1`
-  with the account opt-in: `handoff-cli`, `shared-approval-cli`, `shared-cli` and `shared-gate` (4 files). With
-  `HYBRID_PROMOTION_TESTS=1` and the image above, `promotion-cli` passed. `promotion-transplant` (2 tests) needs a
-  shared-worker image with promotion's restore code: it passed with
-  `HYBRID_SESSION_IMAGE=copilot-hybrid-session-host:stage-5-promotion`, and with the older default
-  `copilot-hybrid-session-host:local` it fails on a missing export.
-- With every `COPILOT_*` variable the GitHub Copilot app injects removed, plus `AUTO_APPROVAL` (the runs set only
-  `COPILOT_CLI_PATH` and `COPILOT_AHP_FACTORY_PROFILE`), the handoff gates passed again: `handoff-runtime`,
-  `handoff-cli`, `handoff-container-cli` (36 s), `promotion-cli` and `promotion-transplant`. So did `shared-cli`,
-  `shared-service`, `shared-session-runtime` and `shared-egress-runtime`, plus `shared-gate` on a rerun after one
-  transient "relay authentication request failed" on its second attach. The stage-2 suites `shared-approvals` and
-  `shared-approval-cli` fail without those variables because the runtime refuses the assisted and allow-all approval
-  modes. The handoff targets here use manual approval; a target with another approval mode inherits that dependence.
+  `pnpm --filter @copilot-agent/configurator typecheck` and `pnpm lint` passed. `pnpm test:unit`: 717 passed, 1
+  skipped. `pnpm test:integration`: 147 passed, 28 opt-in skipped.
+- Opt-in suites at `59e1cc3`, run with every `COPILOT_*` variable the GitHub Copilot app injects removed, plus
+  `AUTO_APPROVAL`; the runs set only `COPILOT_CLI_PATH` and `COPILOT_AHP_FACTORY_PROFILE`. With
+  `HYBRID_SESSION_RUNTIME_TESTS=1`, `handoff-runtime`, `shared-egress-runtime`, `shared-service` and
+  `shared-session-runtime` passed. With `HYBRID_CLI_TESTS=1` and the account opt-in, `handoff-cli`, `shared-cli` and
+  `shared-gate` passed. `handoff-container-cli` passed. With `HYBRID_PROMOTION_TESTS=1` and the image above,
+  `promotion-cli` passed, and `promotion-transplant` passed with
+  `HYBRID_SESSION_IMAGE=copilot-hybrid-session-host:stage-5-promotion`; it needs a shared-worker image with
+  promotion's restore code, and the older default `copilot-hybrid-session-host:local` fails on a missing export.
+  With `HYBRID_WORKER_TESTS=1` and `HYBRID_WORKER_IMAGE` set to the image above, `worker-runtime` passed.
+- The stage-2 suites `shared-approvals` and `shared-approval-cli` fail without those variables, because the runtime
+  refuses the assisted and allow-all approval modes. They pass with them (5 tests at `59e1cc3`), as did every suite
+  above at `0043905`. The handoff targets here use manual approval; a target with another approval mode inherits
+  that dependence. At `0043905`, one clean `shared-gate` run failed on a transient "relay authentication request
+  failed" at its second attach and passed on rerun.
 
 Remaining:
 
