@@ -365,7 +365,10 @@ describe("agent-api hosting view", () => {
     expect(overview.harnesses.map((view) => `${view.harness}:${view.interaction}:${view.placement}:${view.status}`)).toEqual([
       "copilot-coding-agent:batch:executor:ready",
       "dataset-analyst:batch:executor:ready",
+      "hybrid-builder:conversation:container:unavailable",
       "hybrid-coordinator:conversation:shared:ready",
+      "hybrid-orchestrator:conversation:shared:unavailable",
+      "hybrid-reviewer:conversation:container:unavailable",
       "insights-team:batch:executor:ready",
       "interactive-demo:conversation:container:ready",
       "shared-researcher:conversation:shared:ready",

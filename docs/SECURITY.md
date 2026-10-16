@@ -309,6 +309,7 @@ output.
 | Capacity and cost | Worker ceilings per conversation, principal, and deployment count starting, running, and stopping workers until their containers are retired; reservations come from the conversation's aggregate budget. These are admission and accounting controls, not exact spending caps |
 | Data at rest | Private and shared volumes outlive their workers and are released, never deleted, when the worker stops or the coordinator closes |
 
-The local gate verified worker credential scoping, both sizes, both mounts, person-only approvals, a
-request covered by the person's inherited words running without a prompt while one only the coordinator asked for
-reached a person, and capacity returning to zero, with synthetic inference. Clients cannot attach to workers.
+The integration suites verify the worker credential scoping above. The local real-container gate verified both
+sizes, both mounts, person-only approvals, a request covered by the person's inherited words running without a
+prompt while one only the coordinator asked for reached a person, and capacity returning to zero, with synthetic
+inference. Clients cannot attach to workers.

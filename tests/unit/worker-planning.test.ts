@@ -1,6 +1,12 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { CRAFTED_WORKER_VERSION, policyFor, WorkerCreation, type HarnessDefinition } from "@copilot-agent/contracts";
-import { craftedWorkerPolicy, HttpError, planWorker, policyDigest, type WorkerRegistry } from "@copilot-agent/service-defaults";
+import {
+  CRAFTED_WORKER_VERSION, evaluateHosting, policyFor, WORKER_CONTAINER_FEATURES, WorkerCreation, type HarnessDefinition,
+} from "@copilot-agent/contracts";
+import {
+  craftedWorkerPolicy, HttpError, loadHarnesses, loadPolicySet, loadProfiles, planWorker, policyDigest, type WorkerRegistry,
+} from "@copilot-agent/service-defaults";
+import { hostingDeployment } from "../../src/agent-api/src/hosting-deployment.js";
 import { conversation, coordinator, MODEL, snapshot, TEMPLATE, workerRegistry } from "../fixtures/workers.js";
 
 const FEATURES = ["approval-modes", "crafted-workers", "inherited-authority", "shared-storage"] as const;
@@ -125,5 +131,42 @@ describe("crafted workers", () => {
     expect(shell).toMatchObject({ statusCode: 422, code: "policy_rejected" });
     expect(shell.message).toMatch(/^The crafted worker: .*'shell' built-in tools/);
     expect(path(shell)).toBe("craft");
+  });
+});
+
+describe("the shipped orchestrator example", () => {
+  it("is ready with worker containers and plans its listed and crafted workers within the example policy", async () => {
+    const root = join(import.meta.dirname, "..", "..");
+    const examples = join(root, "examples", "customer-config");
+    const [harnesses, profiles, policies] = await Promise.all([loadHarnesses(examples), loadProfiles(root), loadPolicySet(examples)]);
+    const shipped: WorkerRegistry = { harnesses, profiles, policies };
+    const lead = harnesses.get("hybrid-orchestrator")![0]!.definition;
+    const policy = policyFor(policies, lead.name);
+    const lookup = (name: string) => {
+      const found = harnesses.get(name)?.[0];
+      return found ? { definition: found.definition, policy: policyFor(policies, name) } : undefined;
+    };
+    const deployment = (workerContainers: boolean) =>
+      hostingDeployment({ executor: "on-demand", sharedWorker: true, sessionContainers: true, workerContainers });
+    expect(evaluateHosting({ definition: lead, policy, profiles, deployment: deployment(true), lookup }))
+      .toMatchObject({ mode: "orchestrator", placement: "shared", status: "ready", problems: [] });
+    expect(evaluateHosting({ definition: lead, policy, profiles, deployment: deployment(false), lookup }).problems)
+      .toEqual([expect.objectContaining({ code: "hosting_unavailable", prerequisite: { kind: "host", name: "worker-containers" } })]);
+
+    const plan = (request: Record<string, unknown>) =>
+      planWorker(shipped, { definition: lead, policy }, WorkerCreation.parse(request), { features: WORKER_CONTAINER_FEATURES });
+    expect(plan({ name: "build", harness: "hybrid-builder", task: "Build it." })).toMatchObject({
+      source: "listed", size: "small", sharedVolume: "read-write", approvalMode: "manual", inheritHumanAuthority: false,
+      model: "grok-4.6", tokenBudget: 100_000, capacity: { maxConcurrent: 2, maxPerSession: 8, maxPerPrincipal: 4 },
+    });
+    expect(plan({ name: "review", harness: "hybrid-reviewer", size: "medium", sharedVolume: "read-only", task: "Review it." })).toMatchObject({
+      source: "listed", size: "medium", resources: { cpus: 1, memoryMiB: 2048 }, sharedVolume: "read-only", approvalMode: "assisted",
+      inheritHumanAuthority: true,
+    });
+    expect(plan({ name: "notes", craft: { instructions: "Keep notes.", builtinTools: ["files"] }, task: "Take notes." }))
+      .toMatchObject({ source: "crafted", template: "notes", size: "small", approvalMode: "manual", tokenBudget: 50_000 });
+    expect(failure(() => plan({ name: "runner", craft: { instructions: "Run things.", builtinTools: ["shell"] }, task: "x" })).message)
+      .toMatch(/'shell' built-in tools are not in crafting template 'notes'/);
+    expect(path(failure(() => plan({ name: "big", harness: "hybrid-builder", size: "large", task: "x" })))).toBe("size");
   });
 });

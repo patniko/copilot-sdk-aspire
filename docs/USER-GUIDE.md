@@ -93,6 +93,12 @@ Approvals and questions appear in the CLI. The harness's approval mode decides w
 CLI can switch only among the modes the operator's policy allows. While nobody is attached, a request that needs a
 person does not run. See [shared conversation approvals](SECURITY.md#shared-conversation-approvals).
 
+An orchestrator harness, such as the `hybrid-orchestrator` example, connects the same way when the deployment
+enables [orchestrator workers](DEPLOYMENT.md#orchestrator-workers). Its coordinator starts workers in their own
+containers and reports their results to you. Requests from those workers do not appear in the CLI: the coordinator
+tells you what a worker is waiting for, and you answer it through the session's
+[input requests](API.md#orchestrator-workers). The coordinator cannot approve them for you.
+
 Shared sessions have finite turn, job and aggregate budgets. Close a session through the session API
 when finished; add `cancelChildren: true` only when you intend to cancel its admitted jobs as well.
 Closing or eviction does not delete retained history/artifacts. If completion delivery needs review,

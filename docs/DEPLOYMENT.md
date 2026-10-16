@@ -254,6 +254,18 @@ worker through the policy's `hosting.sizes` and `hosting.workers` ceilings and t
 `hosting.workers` block; crafted workers also need a `hosting.crafting.templates` entry. Workers count against the
 same `executionContainers` and `containersPerPrincipal` limits as jobs and session containers.
 
+The examples include the coordinator `hybrid-orchestrator`, whose policy override allows orchestrator hosting,
+inherited human authority, and a `notes` crafting template, and its two worker harnesses: `hybrid-builder`
+(`manual` approvals) and `hybrid-reviewer` (`assisted`, judged by `grok-4.6`). Copy them into an existing workspace
+as described [above](#experimental-local-hybrid-deployment), then connect like a shared harness:
+
+```powershell
+pnpm host:connect --harness hybrid-orchestrator --target local --transport direct --cli C:\path\to\matching\dist-cli\index.js
+```
+
+Worker approvals and questions do not appear in the CLI. Answer them through the session's
+[input requests](API.md#orchestrator-workers) while the coordinator tells you what each worker is waiting for.
+
 A worker's private volume and a conversation's shared volume are retained like session volumes: released when
 the worker stops or the coordinator closes, never deleted. File-service helper containers carry the
 `copilot.hybrid.managed=files` label and are removed after each operation. Workers are reachable only through
