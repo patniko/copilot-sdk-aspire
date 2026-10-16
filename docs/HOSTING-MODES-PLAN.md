@@ -1350,7 +1350,106 @@ gate drives the CLI directly); synthetic inference only, with one real account.
 
 ### Stage 3: per-harness owner hosts and relay
 
-Pending.
+Recorded 2026-10-16 on branch `patniko-per-harness-owner-hosts-and-relay`: commits `9ca93ec` (keyed hosts, AppHost,
+local runtime stage), `0d6b80c` (real-CLI gate), `e8e915e` (AHP session attribution), `bcdbb95` (direct resumes
+kept off the relay), `3829552` (broker host route), `5bc2d65` (launcher routing by hosting view) and `dd9e1cf`
+(runtime-fix gate leg), merged with stage-1 contracts `b1695a3` and the integration branch at `78db20c`, `9c6b918`,
+`f30bccb` (connection broker `6a62235`) and `3ad0c7d` (session containers). Local only: Windows ARM64 host,
+Docker Desktop with linux/arm64 containers, disposable PostgreSQL 17, synthetic inference, one real GitHub account.
+
+Delivered:
+
+- Keyed ownership (migration `010_owner_hosts.sql`): `owner_hosts` keyed by harness with its pinned owner, numeric
+  GitHub user, compute identity, epoch, lease, execution, environment and server key; hosted sessions carry their
+  host's harness and the client-visible AHP session ID; connection tickets carry the harness. The singleton
+  `demo_host` row is kept and adopted, with its sessions, as the host of the configured `demo-host-harness` when the
+  dispatcher or API starts. Each host authenticates to the dispatcher with its own key; acquiring a lease runs hosted
+  admission and refuses transports the effective policy disallows (`transport_not_allowed`).
+- Owner hosts in the AppHost: `Parameters:owner-hosts` (at most eight `{ harness, transport: direct|github|both,
+  principal, size }`), each with its own container resource `host-<harness>` sized from the policy catalog, host key,
+  connection token, retained volume `host-<harness>-<checkout>`, and, for the relay, its own Mission Control
+  environment `Aspire <harness> (<owner>)`; the `demo-host-*` parameters remain the one-harness case. `GET /v1/hosts`
+  reports each host's resource and size as cost inputs, and `hostingDeployment` reports managed hosts as
+  `isolatedHosts` owned by their principal. Publishing with owner hosts fails.
+- Local runtime (plan §7.1): the `demo-runtime` image stage verifies the bundle's `SHA256SUMS` and installs its
+  `sdk.tgz`; `agent-host-runtime` installs the runtime and replaces every `@github/copilot-sdk` with that SDK. The
+  AppHost builds for the bundle's platform from `provenance.json` (native arm64 locally; publishing requires amd64).
+  The host records its harness, numeric owner and compute identity on its volume (`/data/host.json`), so its catalog
+  and environment survive a reset database and another harness or owner cannot reuse the volume, and it reports its
+  runtime revision.
+- Managed relay: qualified without runtime changes. `host.createSession` serves relay clients as it serves direct
+  ones, so a managed host on `both` or `github` serves app-harness sessions with gateway inference over its own
+  environment. The runtime mints its own session IDs; the host records the client's AHP session ID from its catalog
+  when exactly one new entry appears for a created session, and clients resume with it on either transport. One CLI
+  gap was found and fixed by the runtime session: `copilot --ahp <url> --resume <id>` also dialed the relay for a
+  session previously attached over it and crashed (runtime `c8c5839` skips relay-resume inference when `--ahp` is
+  given). The launcher still turns the relay client off for direct launches, for older CLIs.
+- Connection provisioning: `POST /v1/hosts/{harness}/connection { transport?, sessionId? }`, a host route rather than
+  `/v1/sessions/{id}/connection`, because clients create an owner host's sessions on the host. It returns direct
+  material or the host's environment ID plus the attributed `ahpSessionId`; other principals receive
+  `403 relay_owner_only` for the relay and `409 hosting_unavailable` (prerequisite `session-containers`) for direct
+  WSS, also when session containers serve the harness; the GitHub-native demo host, which ignores the harness, is
+  refused. With hybrid mode's broker, direct material points at `/hosts/{harness}`: the broker's `host` route family
+  consumes the client's ticket through the dispatcher's `/internal/broker/host-connection`, which issues, in the same
+  transaction, a 30-second one-use upstream ticket for the same host epoch that the host checks as its own.
+- Launcher: `pnpm host:connect --harness <name> --transport direct|github --target local [--resume <id>]` routes by
+  the caller's hosting view (`configurator/server/connect-route.ts`): shared harnesses open a shared conversation;
+  isolated harnesses use the caller's own owner host when it offers the transport, unless `--resume` names one of the
+  caller's application sessions, otherwise a session container. A named harness never falls back to the single demo
+  host, which may serve another harness (reported by the configurator session); its transport problem is reported
+  with the view's reason.
+- Docs: [architecture](ARCHITECTURE.md#optional-demo-agent-host) and its diagram,
+  [deployment](DEPLOYMENT.md#per-harness-owner-hosts), [API](API.md#experimental-demo-host-control),
+  [security](SECURITY.md#experimental-host-boundaries), [user guide](USER-GUIDE.md#per-harness-owner-hosts),
+  [configurator](CONFIGURATOR.md#experimental-demo-host), the developer guide, and REST examples.
+
+Runtime artifacts: final gates and the AppHost run used runtime `d89cfe45b2994fb3e955362f7e2f2c9d63879069` (branch
+`patniko-runtime-capabilities-for-hosting-modes` @ `62a6b07a10a`), hosting `006b0304155f26732b724de0a085ab81bc37e5a2`,
+mxc `622d4f197739692686f94ed6cd78ef4e5e03c82f`: Linux arm64 bundle `hybrid-linux-arm64-d89cfe45b29-host-006b030`
+(SHA-256 `copilot-runtime` `207690e4…`, `runtime.node` `21aebad9…`, `sdk.tgz` `1f056620…`) in host image
+`copilot-owner-host:per-harness-relay` `sha256:4e37e30b…` (3.0 GB, built from `5bc2d65`; host sources unchanged
+since), the matching Windows pair (`copilot-runtime.exe` `be1213d6…`, `runtime.node` `2dd77fc0…`) and
+`dist-cli/index.js`. The GitHub-native gate used `copilot-owner-host:native-per-harness` `sha256:70d80b85…` (1.6 GB,
+from `84a1521`). Earlier runs used runtime `0a32c39595f` (bundle `copilot-runtime` `4e34c560…`, `runtime.node`
+`abe1e751…`, `sdk.tgz` `3707195d…`) with the workspace-fix Windows pair.
+
+Exit evidence ("an isolated harness host registers its own environment and the CLI attaches over relay and direct
+WSS"), each command passing on the final tree:
+
+- Baseline: `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`, `pnpm typecheck`,
+  `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint`, `pnpm test:unit`
+  (597 passed, 1 opt-in skipped) and `pnpm test:integration` (87 passed, 12 opt-in skipped). These include keyed
+  leases, tickets and grants; the migration of a singleton row on a fresh database; `relay_owner_only` and privacy
+  when session containers serve the harness; the broker exchange (broker key, harness binding, single use, upstream
+  ticket accepted once, epoch fencing); broker host routes with a synthetic host in ticket mode; and launcher routing,
+  including the reported demo-host fallback.
+- `DEMO_HOST_RUNTIME_TESTS=1 HYBRID_USE_GH_ACCOUNT=1 OWNER_HOST_EXPECT_RUNTIME=d89cfe45b2994fb3e955362f7e2f2c9d63879069`
+  with `DEMO_HOST_TEST_IMAGE` and `COPILOT_CLI_PATH`: `tests\integration\host-runtime.test.ts` passed (64 s). Two
+  hosts for different harnesses on `both` each registered their own environment, served direct sessions through the
+  gateway, refused each other's tickets, recorded the client's AHP session ID, reported the runtime revision, and kept
+  environment, workspace and history across container replacement; the environments were deleted.
+- `DEMO_GITHUB_HOST_TESTS=1`: `tests\integration\github-native-host.test.ts` passed (47 s).
+- `OWNER_HOST_CLI_TESTS=1` with `HYBRID_CLI_PATH`: `tests\integration\owner-host-cli.test.ts` passed (42 s). The real
+  CLI created a session over the harness host's own relay environment, resumed it over direct WSS through an
+  in-process connection broker (`/hosts/interactive-demo`, one brokered connection), resumed it over the relay again,
+  and resumed it directly once more with its relay client on, each replaying the conversation; the model requests
+  contained the earlier turns. On runtime `0a32c39595f`, one of six runs after the broker route landed exited
+  during CLI startup, in a run without a saved transcript; the other five passed.
+- AppHost: `aspire run --isolated --apphost apphost.mts` with `owner-hosts=[{"harness":"interactive-demo","transport":"both"}]`,
+  `hybrid-hosting`, synthetic Foundry parameters, and the bundle above started every resource healthy. `GET /v1/hosts`
+  showed the host online with its environment and size `small` (0.5 CPU, 1 GiB); the host reported runtime
+  `d89cfe45b29`; direct material pointed at the AppHost's broker `/hosts/interactive-demo`; the real CLI created a
+  session through the broker (no prompt sent), resumed it over the host's relay environment and then directly, and
+  the host listed one session with its AHP session ID. The run's environment and volume were deleted afterwards; the
+  same run on runtime `0a32c39595f` had passed earlier.
+
+Remaining: Azure (owner hosts are local only; Azure keeps the single demo host); one GitHub owner and owner
+credential per deployment for all owner hosts, since relay registration uses the runtime's GitHub identity (plan
+[GitHub relay identity](#github-relay-identity)); AHP session attribution records nothing when several sessions are
+created at once; brokered host routes are not rechecked, so a replaced host's connections close with its process;
+`DEMO_HOST_FEATURES` is still empty; interactive `pnpm host:connect --harness` was not driven in a terminal (the
+gates and the AppHost run use the same provisioning and argument functions); the GitHub-native relay still ignores
+the harness; synthetic inference only, with one real account.
 
 ### Stage 4: orchestrator workers
 

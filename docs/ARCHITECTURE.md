@@ -246,34 +246,56 @@ outbound tunnel from the container (plan D14), is not implemented.
 
 ## Optional demo agent host
 
-This is a separate, disabled-by-default integration, not attachment to a batch attempt. `github` selects
-GitHub-native sessions through Mission Control, using the released CLI server and Copilot inference.
-`direct` and `both` select managed hosting and require an `interaction: "conversation"` harness plus the
-[runtime prerequisites](DEPLOYMENT.md#demo-host-compatibility-gate). Managed hosting reuses the shared
-tool/skill/prompt mapping without `submit_result`. Python batch behavior is unchanged.
+Agent hosts are separate, disabled-by-default integrations for `interaction: "conversation"` harnesses, not
+attachment to a batch attempt. Each is an always-on container serving one harness for one owner. The deployment-wide
+demo host (`demo-host-*` parameters, resource `agent-host`) is the one-harness case and the only shape that
+publishes to Azure. Local runs can add a **per-harness owner host** for each listed `isolated` harness
+(`owner-hosts`, resource `host-<harness>`), each with its own lease, host key, retained volume, size, and, when the
+relay is enabled, its own Mission Control environment.
+
+On the demo host, `github` selects GitHub-native sessions through Mission Control, using the released CLI server
+and Copilot inference. `direct` and `both` select managed hosting, which requires the
+[runtime prerequisites](DEPLOYMENT.md#demo-host-compatibility-gate). Owner hosts are always managed; their transport
+is `direct`, `github` (the relay only), or `both`. Managed hosting reuses the shared tool/skill/prompt mapping without
+`submit_result`, on the locally built runtime and its matching SDK. Python batch behavior is unchanged.
 
 ```mermaid
 flowchart LR
     CLI["Eligible Copilot CLI"]
-    Provision["agent-api<br/>Caller-authenticated provisioning"]
-    Direct["Direct WSS ingress<br/>One-time ticket"]
-    MC["GitHub Mission Control / WPS"]
-    Host["agent-host<br/>Azure: one replica per revision<br/>Supervisor + isolated SDK owner"]
-    State[("Named volume / Azure Files<br/>Runtime history and workspace")]
-    Dispatch["job-dispatcher<br/>Host lease and session grants"]
-    Ledger[("PostgreSQL<br/>Owner; managed snapshots/usage")]
+    Provision["agent-api<br/>/v1/hosts/{harness}/connection<br/>owner only"]
+    Broker["connection-broker<br/>/hosts/{harness}, hybrid mode"]
+    Direct["Host direct WSS ingress<br/>One-use ticket"]
+    MC["GitHub Mission Control / WPS<br/>One environment per relay host"]
+    Host["Agent host per harness<br/>Supervisor + isolated SDK owner"]
+    State[("Volume per host / Azure Files<br/>Runtime history, workspace, identity")]
+    Dispatch["job-dispatcher<br/>Lease, grants, ticket exchange per harness"]
+    Ledger[("PostgreSQL<br/>Owner hosts, sessions, tickets, usage")]
     Gateway["inference-gateway"]
     Foundry["Existing Foundry deployment"]
     Copilot["GitHub Copilot inference"]
-    CLI --> Provision
-    CLI --> Direct --> Host
-    CLI --> MC --> Host
+    CLI --> Provision --> Ledger
+    CLI -->|direct, hybrid mode| Broker -->|upstream ticket| Direct
+    CLI -->|direct, no broker| Direct --> Host
+    CLI -->|relay| MC --> Host
+    Broker -->|consume client ticket| Dispatch
     Host --> State
     Host --> Dispatch --> Ledger
-    Provision --> Ledger
     Host -->|managed: session capability| Gateway --> Foundry
     Host -->|native: GitHub identity| Copilot
 ```
+
+Ownership, leases, connection tickets, and session grants are keyed by harness (`owner_hosts`, migration 010). Each
+host authenticates to the dispatcher with its own service key, and its lease binds the durable host to one immutable
+GitHub user ID and the compute identity recorded on its volume, so a volume never serves another owner or harness.
+Migration 010 keeps the previous singleton `demo_host` row, and the dispatcher adopts it as the host of the configured
+`demo-host-harness`. Only the host's owner principal receives connection material: a 60-second, single-use ticket
+bound to the harness's host and its current epoch, the host's public key, and the endpoint, or the host's
+environment ID for the relay. With hybrid mode's connection broker, the direct endpoint is the broker's
+`/hosts/{harness}`: the broker consumes the client's ticket through the dispatcher, which issues, in the same
+transaction, a one-use upstream ticket for the same epoch, and forwards to the host's own ticket-checked ingress. A
+relay-enabled host registers its own environment, `Aspire <harness> (<owner>)`, under the owner's GitHub account.
+The runtime mints its own session IDs; the host records the client-visible AHP session ID from its session catalog so
+clients resume with it over either transport.
 
 The supervisor keeps its service credential outside the execution uid and passes bounded control messages
 to an unprivileged SDK owner process. The owner keeps one runtime alive, exposes its in-process AHP server,
@@ -287,7 +309,7 @@ operators must still stop the old revision before starting a replacement because
 replicas during rollout and can reactivate a previously stopped revision. Inspect/deactivate old revisions after
 deployment as well. The Azure Files mount is owned by execution uid 10001 with private file/directory modes
 and byte-range locking enabled; see [storage qualification](DEPLOYMENT.md#storage-and-revision-requirements).
-Managed hosting permits at most ten open retained conversations and
+Each managed host permits at most ten open retained conversations and
 one active inference session; additional sessions must wait or the active turn must be aborted. Usage survives
 grant renewal and host restart. These are operational bounds, not exact billing reservations.
 

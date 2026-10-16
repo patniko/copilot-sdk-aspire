@@ -96,8 +96,8 @@ without replaying unknown model effects. See [shared conversation API](API.md#ex
 
 The experimental host is separate from the job console. It lets an eligible Copilot CLI use an
 agent with a retained remote workspace. GitHub-native hosting uses the released CLI server and Copilot's
-own model access. Managed direct hosting remains pending the
-[runtime engineering work](DEPLOYMENT.md#demo-host-compatibility-gate).
+own model access. Managed hosting runs locally on a locally built runtime bundle; deployed managed hosting remains
+pending the [runtime engineering work](DEPLOYMENT.md#demo-host-compatibility-gate).
 
 In the configurator, choose **Demo agent host** in Local run or in an Azure deployment target:
 
@@ -139,6 +139,25 @@ pnpm host:connect --target azure --transport github --resume <remote-session-id>
 After the managed path is qualified, `--transport direct` provisions a fresh, 60-second single-use ticket and
 the exact endpoint's public-key pin. A direct reconnect needs a new ticket. The token-bearing URL exists in
 the CLI's process arguments; do not record it. Neither profile makes interrupted side effects safe to repeat.
+
+### Per-harness owner hosts
+
+Local runs can serve several `isolated` conversation harnesses, each on its own always-on host for one owner
+([setup](DEPLOYMENT.md#per-harness-owner-hosts)). Name the harness when connecting:
+
+```powershell
+pnpm host:connect --harness interactive-demo --transport direct --target local
+pnpm host:connect --harness interactive-demo --transport github --target local --resume <session-id>
+```
+
+The launcher asks the service's [hosting view](API.md#hosting-views) whether the transport can reach that harness for
+you and prints its reason when it cannot; a named harness never connects to a host that serves another harness.
+Shared harnesses open a shared conversation. An isolated harness uses your own owner host when that host offers the
+transport, otherwise a session container. `--resume` follows the session: an application session UUID from
+`/v1/sessions`, or an owner-host session's `ahpSessionId` from `GET /v1/hosts/<harness>/sessions`.
+`--transport github` attaches through that harness host's own Mission Control environment and is available only to
+the host's owner; direct WSS goes through the connection broker in hybrid mode. Direct launches turn the CLI's relay
+client off, so resuming a session that you also attached over the relay never attaches it twice.
 
 All tools operate in the remote host's workspace, not your workstation directory. Retained conversations
 belong to one owner and share that workspace; they are not per-customer sandboxes. No automatic checkout,

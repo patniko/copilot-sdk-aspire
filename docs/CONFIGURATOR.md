@@ -190,6 +190,13 @@ The password field (with **Show**/**Hide**) remains as a manual fallback. Settin
 credential. Deployment forwards it only for a target that explicitly enables GitHub hosting. Connection buttons copy
 non-secret `pnpm host:connect` launcher commands, not live tickets.
 
+Local per-harness owner hosts are configured with the `owner-hosts` Aspire parameter, for example
+`aspire secret set "Parameters:owner-hosts" '[{"harness":"interactive-demo","transport":"both"}]'`, not on this page; they
+reuse the demo host's GitHub owner, credential, and runtime directory ([deployment](DEPLOYMENT.md#per-harness-owner-hosts)).
+`pnpm host:connect --harness <name>` routes by the service's hosting view and refuses, with the view's reason, a
+transport that cannot reach that harness; it never falls back to a host serving another harness. Only
+`--destination container` reaches the single demo host ([user guide](USER-GUIDE.md#per-harness-owner-hosts)).
+
 Customer-workspace changes do not hot-reconfigure retained sessions. Restarting only the job API does not
 reload the demo host. Existing conversations keep their admitted snapshot; tighter current policy can prevent
 them from resuming or acquiring another inference grant.

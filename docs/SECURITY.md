@@ -81,16 +81,24 @@ tests, image packaging and deployment remain necessary.
 
 ## Experimental host boundaries
 
-The optional `agent-host` is a single-trusted-owner demo integration. The table above primarily describes
-batch execution; its guarantees must not be transferred automatically to AHP or retained workspaces.
+Agent hosts, the optional `agent-host` and the local per-harness owner hosts, are single-trusted-owner demo
+integrations: each host serves one harness for one GitHub owner and one API principal. Several owner hosts in one
+deployment share that GitHub owner, so they separate harnesses, leases, volumes, keys, and environments, not tenants.
+The table above primarily describes batch execution; its guarantees must not be transferred automatically to AHP or
+retained workspaces.
 Managed profiles require the [runtime compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate).
 GitHub-native mode uses the released CLI server, host-owned sessions, and existing Mission Control owner binding;
 it does not disable a managed-path check to run an unqualified managed session.
 
-Direct connections use an application-API-issued, 60-second, single-use ticket at the public proxy. The
-dispatcher atomically checks its digest, owner, host epoch, expiry, and unused state. The separate private
-listener credential never leaves the host. This protects discovery too: the underlying AHP host can expose
-catalog metadata before GitHub resource authentication. A reconnect needs a new ticket.
+Direct connections use an application-API-issued, 60-second, single-use ticket at the public proxy. Only the
+host's owner principal can obtain one. The dispatcher atomically checks its digest, harness, owner, host epoch,
+expiry, and unused state, and each host authenticates to the dispatcher with its own service key, so a ticket or a
+key for one harness's host opens no other host. Through the connection broker (hybrid mode), the broker consumes the
+client's ticket by harness through the dispatcher, which in the same transaction issues a one-use upstream ticket
+for the same host epoch; the client's ticket never reaches the host, and the broker key authorizes only that
+exchange. A ticket issued before a host was replaced opens nothing. The separate private listener credential never
+leaves the host. This protects discovery too: the underlying AHP host can expose catalog metadata before GitHub
+resource authentication. A reconnect needs a new ticket.
 
 The CLI must obtain the server's authentication public key through trusted provisioning and pin the exact
 endpoint. Public-key integrity, required sealed authentication, and runtime enforcement of the expected GitHub
@@ -98,7 +106,11 @@ account are independent requirements. A token in a URL is not sufficient account
 as secrets despite their short lifetime; do not capture them in command recordings or logs.
 
 Mission Control registers an environment using the configured owner's GitHub credential, after the app verifies
-that the credential's numeric GitHub identity matches its pinned owner. Registration and
+that the credential's numeric GitHub identity matches its pinned owner. Each relay-enabled host registers its own
+environment, and GitHub identity, not the application's principals, decides who can attach through it, so the API
+gives the environment ID only to the host's owner principal and answers others with `relay_owner_only`. A host's
+volume records its harness, numeric GitHub owner, and compute identity: a host for another harness or owner refuses
+the volume, and the ledger refuses a volume whose compute identity differs from the harness's durable host. Registration and
 traffic use GitHub/WPS infrastructure outside the customer Azure deployment. It is a deliberate GitHub-centric
 path, not a claim that every byte remains inside an Azure subscription. Native inference goes to GitHub Copilot,
 not the Foundry gateway, and uses Copilot permissions and billing. Environment registration alone is not

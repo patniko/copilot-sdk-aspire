@@ -57,8 +57,9 @@ or improved latency/cost without measurement.
 
 The experimental demo host offers a GitHub-native Mission Control profile using Copilot's own inference,
 permissions, and billing. It requires a normally enabled relay client and suitable persistent storage.
-Managed direct/both profiles have separate runtime prerequisites and remain deferred to the engineering
-handoff. The [deployment guide](DEPLOYMENT.md#demo-host-compatibility-gate) distinguishes these paths; the
+Managed direct/both profiles have separate runtime prerequisites: locally they run on a locally built runtime,
+including one experimental owner host per isolated harness with its own relay environment, while deployed managed
+hosting remains deferred to the engineering handoff. The [deployment guide](DEPLOYMENT.md#demo-host-compatibility-gate) distinguishes these paths; the
 table below describes the established batch product.
 
 | Capability | Current scope | Evidence / detail |
