@@ -189,6 +189,13 @@ The exact defaults and ranges live in [`shared.ts`](../contracts/src/shared.ts) 
 Controller CPU/memory/startup settings live in [`artifacts.ts`](../contracts/src/artifacts.ts) and can be
 supplied through `EXECUTION_CONTAINER_SETTINGS` when hosting that service directly.
 
+By default a shared conversation may use 500,000 tokens, and each turn up to 100,000 tokens and 300 seconds. Every
+model request in a turn resends the conversation: about 4,200 tokens of base prompt plus the turn's tool results so
+far. Real turns of a few tool calls with a real model used 21,000 to 38,000 tokens. Lower these for tighter cost
+control, or raise the turn budget for turns with many large tool results; a harness's own limits and its policy still
+apply. An orchestrator's workers are funded from the same conversation budget, which always holds back one coordinator
+turn, so a larger turn budget leaves less for workers.
+
 ### Session containers
 
 A session created with an `isolated` conversation harness runs in its own resumable container

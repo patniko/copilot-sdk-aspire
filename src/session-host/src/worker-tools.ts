@@ -10,6 +10,7 @@ import { canonicalJson, HttpError, planWorker, sha256Hex, type WorkerRegistry } 
 import type { SharedActivationPlan } from "./admission.js";
 import type { SharedActivationContext } from "./runtime.js";
 import type { SharedTool } from "./tools.js";
+import { fileChunk, listPage, utf8Length, utf8Prefix } from "./tool-output.js";
 
 /** Bounded access to a coordinator session's shared worker volume through the controller-side file service (decision D10). */
 export interface SharedFileService {
@@ -34,8 +35,11 @@ export interface WorkerToolDependencies {
 }
 
 const READ_LIMIT = 32 * 1024;
+/** A worker's result preview in listings, and the most of one result a tool returns, in bytes of UTF-8. */
 const LIST_RESULT_PREVIEW = 1000;
+const FULL_RESULT_BYTES = 12 * 1024;
 const Worker = z.object({ worker: WorkerReference }).strict();
+const Page = z.object({ offset: z.number().int().min(0).max(10_000).default(0) }).strict();
 const Wait = z.object({ workers: z.array(WorkerReference).max(32).optional() }).strict();
 const Answer = z.object({ requestId: z.string().uuid(), answer: z.string().min(1).max(8000) }).strict();
 
@@ -58,10 +62,12 @@ const sharedPath = (description: string, root = false) => z.string().min(1)
   .refine((path) => (root && path === "") || ArtifactPath.safeParse(path).success, SHARED_PATH_RULE);
 const ListFiles = z.object({
   path: sharedPath(`A directory, such as reports or ${WORKER_SHARED_MOUNT}/reports. Omit it for the top level.`, true).optional(),
+  offset: z.number().int().min(0).max(100_000).default(0),
 }).strict();
 const ReadFile = z.object({
   path: sharedPath(`A file, such as plan.txt or ${WORKER_SHARED_MOUNT}/plan.txt.`),
-  offset: z.number().int().min(0).max(1024 * 1024).default(0), length: z.number().int().min(1).max(READ_LIMIT).default(8192),
+  // No maximum offset: each part's nextOffset must stay valid for files up to the shared file service's 4 MiB.
+  offset: z.number().int().min(0).default(0), length: z.number().int().min(1).max(READ_LIMIT).default(8192),
 }).strict();
 const WriteFile = z.object({
   path: sharedPath(`The file to create or replace, such as plan.txt or ${WORKER_SHARED_MOUNT}/plan.txt.`),
@@ -99,10 +105,17 @@ function refusal(error: unknown): ToolResultObject | undefined {
   return text === undefined ? undefined : { resultType: "failure", textResultForLlm: text };
 }
 
-/** A worker as the coordinator's tools report it; `full` keeps the whole latest result. */
+/**
+ * A worker as the coordinator's tools report it: a preview of its latest result, or with `full` as much of it as one tool
+ * result holds. A longer result says that it was shortened.
+ */
 function summary(view: WorkerView, full = false): Record<string, unknown> {
-  const result = view.result && !full && view.result.text.length > LIST_RESULT_PREVIEW
-    ? { ...view.result, text: view.result.text.slice(0, LIST_RESULT_PREVIEW), truncated: true }
+  const limit = full ? FULL_RESULT_BYTES : LIST_RESULT_PREVIEW;
+  const result = view.result && utf8Length(view.result.text) > limit
+    ? {
+        ...view.result, text: utf8Prefix(view.result.text, limit), truncated: true,
+        ...(full ? { note: "The result is longer than shown. Ask the worker for a shorter summary, or to save the details in a file." } : {}),
+      }
     : view.result;
   return {
     id: view.id, name: view.name, state: view.state, ...(view.stopReason ? { stopReason: view.stopReason } : {}),
@@ -113,14 +126,6 @@ function summary(view: WorkerView, full = false): Record<string, unknown> {
   };
 }
 
-function preview(content: Buffer, offset: number, length: number): Record<string, unknown> {
-  const part = content.subarray(offset, offset + length);
-  let data: string;
-  let encoding = "utf-8";
-  try { data = new TextDecoder("utf-8", { fatal: true }).decode(part); }
-  catch { data = part.toString("base64"); encoding = "base64"; }
-  return { size: content.length, offset, data, encoding, truncated: offset + part.length < content.length };
-}
 
 /**
  * An orchestrator coordinator's worker tools (docs/HOSTING-MODES-PLAN.md, section 7.4). Only the coordinator's root agent
@@ -216,10 +221,14 @@ export function workerTools(
           return summary(view, true);
         });
       }),
-    tool(WORKER_TOOLS.list, "List this conversation's workers with their states and result previews.", z.object({}).strict(),
-      async (_value, invocation) => {
+    tool(WORKER_TOOLS.list, "List this conversation's workers with their states and result previews. A long list is returned in pages; continue with the returned nextOffset.", Page,
+      async (value, invocation) => {
         rootOnly(invocation);
-        return run(async () => ({ workers: (await deps.workers.list(session.principal, session.id)).map((view) => summary(view)) }));
+        const args = parse(Page, value);
+        return run(async () => {
+          const { entries, ...page } = listPage((await deps.workers.list(session.principal, session.id)).map((view) => summary(view)), args.offset, WORKER_TOOLS.list);
+          return { workers: entries, ...page };
+        });
       }),
     tool(WORKER_TOOLS.interrupt, "Abort a worker's current turn. The worker stays available for new messages.", Worker,
       async (value, invocation) => {
@@ -281,23 +290,25 @@ export function workerTools(
     tools.push(
       tool(WORKER_TOOLS.listFiles,
         `List a directory of this conversation's shared worker volume, which workers see at ${WORKER_SHARED_MOUNT}. Give the path relative to `
-          + `the volume (reports) or as workers see it (${WORKER_SHARED_MOUNT}/reports); omit it for the top level.`,
+          + `the volume (reports) or as workers see it (${WORKER_SHARED_MOUNT}/reports); omit it for the top level. A long listing is `
+          + "returned in pages; continue with the returned nextOffset.",
         ListFiles,
         async (value, invocation) => {
           rootOnly(invocation);
           const args = parse(ListFiles, value);
-          return run(async () => ({ entries: await shared(files.list(session.id, args.path || undefined, signal())) }));
+          return run(async () => listPage(await shared(files.list(session.id, args.path || undefined, signal())), args.offset, WORKER_TOOLS.listFiles));
         }, { kind: "read", quietUnderAsk: true, target: sharedPathOf }),
       tool(WORKER_TOOLS.readFile,
-        `Read a bounded portion of a file in this conversation's shared worker volume (untrusted worker output). Workers see the volume at `
-          + `${WORKER_SHARED_MOUNT}; give the path relative to it (plan.txt) or as workers see it (${WORKER_SHARED_MOUNT}/plan.txt).`,
+        `Read part of a file in this conversation's shared worker volume (untrusted worker output), up to about 15 KiB per call; when more `
+          + `remains, call again with the returned nextOffset. Workers see the volume at ${WORKER_SHARED_MOUNT}; give the path relative to it `
+          + `(plan.txt) or as workers see it (${WORKER_SHARED_MOUNT}/plan.txt).`,
         ReadFile,
         async (value, invocation) => {
           rootOnly(invocation);
           const args = parse(ReadFile, value);
           return run(async () => {
             const content = await shared(files.read(session.id, args.path, signal()));
-            return { ...preview(content, args.offset, args.length), etag: createHash("sha256").update(content).digest("base64url") };
+            return { ...fileChunk(content, args.offset, args.length, WORKER_TOOLS.readFile), etag: createHash("sha256").update(content).digest("base64url") };
           });
         }, { kind: "read", quietUnderAsk: true, target: sharedPathOf }),
       tool(WORKER_TOOLS.writeFile,

@@ -1597,6 +1597,74 @@ Commands and results, with every `COPILOT_*` variable except `COPILOT_CLI_PATH` 
 
 This also resolves the stage-4 record's note that a packaged shared worker without the flag refuses assisted sessions.
 
+#### Follow-up: bounded tool results and real-model limits
+
+Recorded 2026-10-16 on the same branch, starting from the real-model demo branch at `8a7bc62` and the integration
+branch at `087e0f9`: commit `26f260a`, merges with the integration branch at `c82c6d4` and `032c9df` and with the
+workers' `/shared/` fix at `94ecdaf`, and the commit that adds this entry. The real-model demo (`grok-4.6`) found two
+problems in this slice:
+
+- With a client attached, runtime `d89cfe45b29` lets the client replace a session's large-output setting, so the
+  `largeOutput: { enabled: false }` the demo set for shared sessions does not hold. A tool result whose text exceeds
+  20 KiB of UTF-8 becomes a pointer to a temporary file that no shared tool can read, naming a path on the worker.
+  The demo bounded remote MCP results to 16 KiB, but file reads allowed 32 KiB, `web_fetch` allowed 20,000
+  characters of up to three bytes each, and searches, listings, delegated job results and worker results were bounded
+  only in characters or entries, if at all.
+- The default turn budget of 20,000 tokens was too small for real multi-tool turns. Every model request carries about
+  4,200 tokens of base prompt, real turns used 21,000 to 38,000 tokens, and the demo had to set
+  `hybrid-session-limits` to `{"turnTokenBudget":100000,"maxTurnSeconds":300}`.
+
+Fixed:
+
+- Every shared tool keeps its result within 16 KiB of UTF-8, measured as the text the model receives, and says how to
+  get the rest, using the helpers in [`tool-output.ts`](../src/session-host/src/tool-output.ts):
+  - File reads (`read_workspace_file`, the `shared:read-job-artifact` binding, and the coordinator's
+    `read_shared_file`) return one part with a `nextOffset` and a note. Parts start and end on character boundaries,
+    so text re-encodes to exactly the bytes read, and every read makes progress; content that is not UTF-8 is returned
+    as base64 within the same bound. `read_shared_file` now accepts any offset, because the shared file service reads
+    files up to 4 MiB but the tool refused offsets above 1 MiB, so its continuation would have been refused.
+  - Listings (`list_workspace_files`, `list_shared_files`, `list_workers`) return pages with `offset`, `total` and
+    `nextOffset` when the whole listing does not fit.
+  - Searches stop at the size limit and say which limit stopped them.
+  - `web_fetch` bounds bytes rather than characters and gives the `start_index` to continue.
+  - The `shared:get-job` binding returns a 4 KiB preview of a result above 8 KiB and names the harness's
+    artifact-reading tool; `get_worker` shortens a result above 12 KiB and `list_workers` shows 1,000 bytes of each;
+    an update that would make a task list larger than 12 KiB fails with a message the model can act on.
+- The toolkit cuts any result still above 18 KiB, with a note, so a tool added later cannot reintroduce the problem.
+- `SharedSessionLimits` defaults are now a 100,000-token turn budget (was 20,000) and a 300-second turn deadline (was
+  180), the values the demo used; the conversation budget stays at 500,000 tokens. A turn reserves the smaller of its
+  budget and what remains, so a larger turn budget does not block a conversation's last turns. An orchestrator funds
+  workers from the same budget after holding back one coordinator turn, so with the defaults its workers can hold up
+  to 300,000 tokens at a time rather than 460,000.
+
+Evidence: [`shared-tool-output.test.ts`](../tests/unit/shared-tool-output.test.ts) (cuts that respect UTF-8 and JSON
+escaping, file parts, pages, and the 18 KiB cut) and bounds cases in `shared-tools`, `web-fetch-tool`,
+`shared-contracts` and `worker-tools`. The opt-in
+[`shared-large-output-cli.test.ts`](../tests/integration/shared-large-output-cli.test.ts) attaches the real CLI and,
+in one turn, writes and reads a 29 KB file, searches it, fetches a page of CJK text through the egress filter, and
+calls a remote MCP tool that returns 100,000 bytes; each result reaches the model inline, within 18 KiB, with its
+note. With the bounds raised to 64 KiB, the same test fails: the model receives the runtime's "Output too large to
+read at once (29.2 KB)" pointer instead of the file. With `read_shared_file`'s old offset limit, the new
+`worker-tools` case fails with "Invalid arguments at offset: Too big: expected number to be <=1048576".
+
+Commands and results, with the same environment as the previous entry (every `COPILOT_*` variable except
+`COPILOT_CLI_PATH` and `COPILOT_AHP_FACTORY_PROFILE`, and `AUTO_APPROVAL`, removed from the test process for the
+opt-in suites), runtime checkout `62a6b07a10a` (artifacts `d89cfe45b29`, hosting `006b030`):
+
+| Command | Result |
+| --- | --- |
+| `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`, `pnpm typecheck`, `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint` | Passed |
+| `pnpm test:unit` | 753 passed, 1 skipped |
+| `pnpm test:integration` | 149 passed, 32 opt-in skipped |
+| `HYBRID_SESSION_RUNTIME_TESTS=1 HYBRID_CLI_TESTS=1 HYBRID_USE_GH_ACCOUNT=1`: `shared-large-output-cli`, `shared-approvals`, `shared-approval-cli`, `shared-gate`, `shared-egress-runtime`, `shared-service`, `shared-session-runtime`, `shared-cli`, `connection-broker` | 9 files, 18 tests passed |
+| `HYBRID_CONTAINER_TESTS=1 HYBRID_DEPLOYMENT_TESTS=1 HYBRID_WORKER_TESTS=1`, images rebuilt from this tree with bundle `hybrid-linux-arm64-d89cfe45b29-host-006b030` (session host `sha256:2d945e82…`, executor `sha256:3c002c4d…`, session container `sha256:0f40f921…`): `shared-image`, `artifact-safety`, `hybrid-deployment`, `worker-runtime` | 4 passed; the worker gate's coordinator listed `/shared` and read both workers' files through the bounded tools |
+| `HYBRID_PROMOTION_TESTS=1 HYBRID_HANDOFF_TESTS=1` with the same images: `handoff-runtime`, `handoff-cli`, `promotion-transplant`, `promotion-cli`, `handoff-container-cli` | 5 files, 9 tests passed |
+
+Not covered: results of the runtime's own tools, such as a sub-agent's reply, and a client that configures a
+large-output threshold below 18 KiB. Unchanged: the base workspace and delegation tools still report an invalid
+argument or a refused edit by throwing, which the runtime passes to the model only as "Tool execution failed",
+without the reason; the worker and egress tools already return such refusals as failure results.
+
 ### Stage 3: session containers
 
 Recorded 2026-10-15 on branch `patniko-session-containers` (implementation commit `a7d44b7`; merged with the broker

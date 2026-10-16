@@ -15,6 +15,7 @@ import { SharedPermissionPolicy } from "../../src/session-host/src/permissions.j
 import type { SharedActivationContext } from "../../src/session-host/src/runtime.js";
 import { sharedToolset } from "../../src/session-host/src/toolkit.js";
 import { workerTools, type SharedFileService } from "../../src/session-host/src/worker-tools.js";
+import { SHARED_TOOL_OUTPUT_BYTES } from "../../src/session-host/src/tool-output.js";
 import { conversation, coordinator, snapshot, workerRegistry } from "../fixtures/workers.js";
 import { sharedAdmission } from "./fixtures/shared-harness.js";
 
@@ -205,6 +206,35 @@ describe("coordinator worker tools", () => {
     expect(await c.call(WORKER_TOOLS.readFile, { path: "../etc/passwd" })).toEqual(refusedWith(/Invalid arguments/));
     expect(await c.call(WORKER_TOOLS.readFile, { path: "missing.md" })).toEqual(refusedWith(/not found/));
     expect(await c.call(WORKER_TOOLS.writeFile, { path: "big.txt", content: "x".repeat(33 * 1024) })).toEqual(refusedWith(/Invalid arguments/));
+  });
+
+  // The runtime moves a result above 20 KiB to a file no shared tool can read once a client attaches.
+  it("keep long results, files, and listings inline, saying how to get the rest", async () => {
+    const json = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
+    const service = new FakeFiles();
+    const c = await setup(lead, { files: service });
+    const created = await c.call(WORKER_TOOLS.create, { name: "analysis", harness: "repo-analyst", task: "Map it." }) as Record<string, any>;
+    await workers.turnStarted(created.worker.id, "turn-1");
+    await workers.turnFinished(created.worker.id, "turn-1", { result: "中".repeat(20_000) });
+    const full = await c.call(WORKER_TOOLS.get, { worker: "analysis" }) as { result: { text: string; truncated: boolean; note: string } };
+    expect(json(full)).toBeLessThanOrEqual(SHARED_TOOL_OUTPUT_BYTES);
+    expect(full.result).toMatchObject({ truncated: true, note: expect.stringMatching(/longer than shown/) });
+    const listed = await c.call(WORKER_TOOLS.list, {}) as { workers: Array<{ result: { text: string } }> };
+    expect(Buffer.byteLength(listed.workers[0]!.result.text, "utf8")).toBeLessThanOrEqual(1000);
+
+    service.contents.set("report.md", Buffer.from("line \"quoted\" é\n".repeat(3000), "utf8"));
+    const first = await c.call(WORKER_TOOLS.readFile, { path: "report.md", length: 32 * 1024 }) as Record<string, any>;
+    expect(json(first)).toBeLessThanOrEqual(SHARED_TOOL_OUTPUT_BYTES);
+    expect(first).toMatchObject({ truncated: true, note: expect.stringContaining(`call ${WORKER_TOOLS.readFile} with offset ${first.nextOffset}`) });
+    expect(await c.call(WORKER_TOOLS.readFile, { path: "report.md", offset: first.nextOffset })).toMatchObject({ offset: first.nextOffset });
+    for (let index = 0; index < 200; index++) service.contents.set(`notes/${String(index).padStart(3, "0")}-${"n".repeat(100)}.md`, Buffer.from("x"));
+    const page = await c.call(WORKER_TOOLS.listFiles, {}) as Record<string, any>;
+    expect(json(page)).toBeLessThanOrEqual(SHARED_TOOL_OUTPUT_BYTES);
+    expect(page).toMatchObject({ total: 201, truncated: true });
+    expect(await c.call(WORKER_TOOLS.listFiles, { offset: page.nextOffset })).toMatchObject({ offset: page.nextOffset });
+    // Files up to the service's 4 MiB read limit can be read to the end.
+    service.contents.set("huge.txt", Buffer.alloc(3 * 1024 * 1024, "x"));
+    expect(await c.call(WORKER_TOOLS.readFile, { path: "huge.txt", offset: 3 * 1024 * 1024 - 10 })).toMatchObject({ data: "x".repeat(10), truncated: false });
   });
 
   it("accept paths as workers see them under /shared, as the volume-relative path, and nothing outside the volume", async () => {
