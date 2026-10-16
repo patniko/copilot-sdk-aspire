@@ -122,8 +122,9 @@ describe.skipIf(!enabled)("shared approval modes on the in-process runtime", () 
     judge = "approve";
     const approved = await unattendedWrite("assisted-notes", "approved.md");
     expect(approved.judged).toBeGreaterThan(0);
-    // Unattended, an assisted request needs the judge's approval and an active host participant to run.
-    console.info(JSON.stringify({ assistedApprovedUnattendedWritten: approved.written, ms: approved.ms }));
+    // The judge's verdict goes to the AHP host participant, not the application's handler, so with nobody attached even
+    // an approved request stays pending until the turn deadline: an unattended assisted request does not run.
+    expect(approved.written).toBe(false);
     const usage = await stack.store.get(principal, approved.session);
     expect(usage?.view.budget.usedTokens).toBeGreaterThan(0);
     expect(model.errors).toEqual([]);
