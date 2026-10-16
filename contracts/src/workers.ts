@@ -73,6 +73,25 @@ export const CRAFTED_WORKER_VERSION = "1.0.0-crafted";
 /** A worker, by id or by its name within the coordinator session. */
 export const WorkerReference = z.string().min(1).max(64);
 
+/**
+ * Model-facing names of an orchestrator coordinator's worker tools (docs/HOSTING-MODES-PLAN.md, section 7.4). The shared
+ * file tools exist only when the coordinator gives its workers a shared volume, and `answer_worker_question` only when
+ * its policy lets the coordinator answer worker questions.
+ */
+export const WORKER_TOOLS = {
+  create: "create_worker",
+  send: "send_to_worker",
+  get: "get_worker",
+  list: "list_workers",
+  interrupt: "interrupt_worker",
+  archive: "archive_worker",
+  wait: "wait_for_workers",
+  answer: "answer_worker_question",
+  listFiles: "list_shared_files",
+  readFile: "read_shared_file",
+  writeFile: "write_shared_file",
+} as const;
+
 /** Per-kind rules a crafted worker may set: `ask` (its approval mode decides) or `deny`. `allow` would widen the template. */
 const CraftedRule = z.enum(["ask", "deny"]);
 

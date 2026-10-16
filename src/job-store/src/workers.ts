@@ -267,6 +267,18 @@ export class WorkerStore {
     });
   }
 
+  /** The worker a creating tool call already admitted, so a replay returns it even if policy changed since. */
+  async find(lease: SessionFileLease, operationKey: string, argumentsHash: string): Promise<WorkerView | undefined> {
+    return this.shared.transaction(async (db) => {
+      await this.shared.authorize(db, lease);
+      const row = (await db.query<{ id: string; arguments_hash: string }>(
+        "SELECT id,arguments_hash FROM session_workers WHERE session_id=$1 AND operation_key=$2", [lease.id, operationKey])).rows[0];
+      if (!row) return undefined;
+      if (row.arguments_hash !== argumentsHash) throw new StoreError("idempotency_conflict", "The worker creation was reused with different arguments.");
+      return this.#view(db, row.id);
+    });
+  }
+
   /** The session's workers, oldest first. Unknown sessions and other principals' sessions are not found. */
   async list(principal: string, sessionId: string): Promise<WorkerView[]> {
     await this.#owned(principal, sessionId);

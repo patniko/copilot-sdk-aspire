@@ -60,6 +60,15 @@ describe("listed workers", () => {
     expect(failure(() => plan({ name: "wk", harness: "chat", task: "x" })).message).toMatch(/run isolated harnesses/);
   });
 
+  it("are refused once the coordinator's current policy no longer allows its hosting request", async () => {
+    const withoutMode = await workerRegistry([runner, analyst, lead], {}, { lead: { hosting: { modes: ["isolated"] } } });
+    expect(failure(() => plan({ name: "wk", harness: "repo-analyst", task: "x" }, { registry: withoutMode })).message)
+      .toMatch(/^The coordinator can no longer start workers: .*orchestrator hosting/);
+    const withoutInheritance = await workerRegistry([runner, analyst, lead], {}, { lead: { hosting: { modes: ["orchestrator"] } } });
+    const error = failure(() => plan({ name: "wk", harness: "repo-analyst", task: "x" }, { registry: withoutInheritance }));
+    expect(error.details).toMatchObject({ path: "harness", field: "hosting.workers.humanAuthority" });
+  });
+
   it("are unavailable when worker containers lack a feature the worker needs", () => {
     const error = failure(() => plan({ name: "tests", harness: "test-runner", task: "x" }, { features: [] }));
     expect(error).toMatchObject({ statusCode: 409, code: "hosting_unavailable" });
@@ -108,7 +117,7 @@ describe("crafted workers", () => {
 
   it("are checked against the coordinator's effective policy, with the template standing in for isolated hosting", async () => {
     const narrowed = await workerRegistry([runner, analyst, lead], {}, {
-      lead: { builtinTools: ["files"], hosting: { modes: ["orchestrator"], crafting: { templates: { general: TEMPLATE } } } },
+      lead: { builtinTools: ["files"], hosting: { modes: ["orchestrator"], workers: { allowInheritedAuthority: true }, crafting: { templates: { general: TEMPLATE } } } },
     });
     expect(craftedWorkerPolicy(policyFor(narrowed.policies, "lead")).hosting?.modes).toEqual(["isolated"]);
     expect(plan({ name: "notes", craft: { instructions: "x", builtinTools: ["files"] }, task: "x" }, { registry: narrowed }).source).toBe("crafted");

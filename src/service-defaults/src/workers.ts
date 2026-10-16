@@ -9,6 +9,7 @@ import {
   type HarnessDefinition,
   type HarnessSnapshot,
   type HostingFeature,
+  hostingPolicyViolations,
   type PolicySet,
   policyFor,
   workerCeilings,
@@ -90,6 +91,9 @@ export function planWorker(
 ): WorkerPlan {
   const ceilings = workerCeilings(coordinator.definition, coordinator.policy);
   if (!ceilings) throw rejected("harness", "Only an orchestrator coordinator can start workers, and workers cannot start workers.");
+  // New workers recheck the coordinator's current effective policy; a narrowed policy blocks them.
+  const narrowed = hostingPolicyViolations(coordinator.definition, coordinator.policy)[0];
+  if (narrowed) throw rejected("harness", `The coordinator can no longer start workers: ${narrowed.message}`, { field: narrowed.path });
   let snapshot: HarnessSnapshot;
   let policy: ExecutionPolicy;
   let template: string | undefined;
