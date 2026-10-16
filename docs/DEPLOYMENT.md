@@ -74,7 +74,8 @@ ${env:Parameters__foundry-endpoint} = "https://<resource>.openai.azure.com/opena
 
 This opt-in path keeps conversational work on one shared in-process runtime and starts Linux execution
 containers only for admitted jobs. The shared worker serves every published conversation harness whose
-`hosting.mode` is `shared` and whose effective policy allows that mode; each session runs the harness's own
+`hosting.mode` is `shared` and whose effective policy allows that mode, and `promotable` harnesses when
+[session containers](#session-containers) are enabled; each session runs the harness's own
 instructions, model options, tools, skills, sub-agents, limits, and permissions. The existing direct-container agent
 is independent. It requires the locally patched runtime/SDK/hosting sources and a matching CLI; see the
 [build and qualification instructions](DEVELOPER-GUIDE.md#hybrid-runtime-qualification).
@@ -202,12 +203,19 @@ aspire secret set "Parameters:session-container-settings" '{"idleSeconds":900}'
 ```
 
 Add `--build-arg NPM_REGISTRY=<approved proxy>` if required. The AppHost passes the settings to the API,
-dispatcher and controller, and the principal binding, container limits and `hybrid-session-limits` to the API,
+dispatcher, controller and shared worker, and the principal binding, container limits and `hybrid-session-limits` to the API,
 which applies that parameter's token-budget and turn-deadline ceilings to container sessions as the shared worker
 does; the container's idle stop comes from `session-container-settings`. The container size
 comes from the effective policy's hosting size catalog (`hosting.sizes`, `hosting.defaultSize`, default the
 smallest size) and maps to Docker `--cpus` and `--memory`. Allow the harness's built-in tools and permission
 modes in policy as usual.
+
+With session containers enabled the shared worker can also [promote](ARCHITECTURE.md#promotion) conversations of
+`promotable` harnesses into these containers, one way. Allow `promotable` in the policy's `hosting.modes` and the
+harness's promotion approval in `hosting.promotion.approval`; the promoted container uses the harness's
+`hosting.promotion.size`. Promotable harnesses connect like shared ones (`pnpm host:connect --harness <name>`), and the
+launcher stays attached so the terminal follows the move. Promoted sessions keep their volumes like other container
+sessions.
 
 Connect with the launcher. When the harness's hosting mode is `isolated` and session containers offer the
 transport, it creates the session through `/v1/sessions` and attaches to its container; otherwise it keeps using
@@ -289,7 +297,8 @@ examples. Use `--build-context customer-config=examples/customer-config` only fo
 image. Do not put credentials in that context. Alternatively mount an operator-managed `/config`
 read-only and set `CONFIG_ROOT` at runtime. `PLATFORM_ROOT` remains `/platform`.
 Configure the same database, dispatcher/gateway URLs, worker key, broker key (`CONNECTION_BROKER_KEY`),
-principal, delegation-harness, limit, and `MCP_SECRET_*` settings as the Node service, and retain `/data`. Set `SHARED_WORKER_URL` to the
+principal, delegation-harness, limit, and `MCP_SECRET_*` settings as the Node service, plus
+`SESSION_CONTAINER_SETTINGS` when it should promote into session containers, and retain `/data`. Set `SHARED_WORKER_URL` to the
 container's own URL and `CONNECTION_BROKER_URL` to the broker's, as the AppHost does, so shared web and MCP egress
 refuses both listeners. Clients reach the container
 only through a connection broker configured with the same broker key and the container's URL as its

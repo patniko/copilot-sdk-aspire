@@ -23,6 +23,8 @@ class FakeBroker {
   readonly refused: number[] = [];
   generation = 1;
   failProvisioning?: Error;
+  /** Delays for the next provisioning calls, which capture the placement when called, as the API reads the allocation. */
+  delays: number[] = [];
 
   constructor() {
     this.server = new WebSocketServer({
@@ -46,13 +48,16 @@ class FakeBroker {
 
   provision = async (): Promise<SessionConnection> => {
     if (this.failProvisioning) throw this.failProvisioning;
+    const generation = this.generation;
+    const wait = this.delays.shift();
+    if (wait) await delay(wait);
     const token = randomBytes(32).toString("base64url");
-    this.tickets.set(token, { generation: this.generation, used: false });
+    this.tickets.set(token, { generation, used: false });
     return {
       sessionId: this.sessionId, ahpSessionId: this.sessionId, token,
       url: `ws://127.0.0.1:${(this.server.address() as AddressInfo).port}/sessions/${this.sessionId}`,
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
-      serverKey: { keyId: `placement-${this.generation}`, algorithm: "x25519-sealedbox", publicKey: `public-${this.generation}` },
+      serverKey: { keyId: `placement-${generation}`, algorithm: "x25519-sealedbox", publicKey: `public-${generation}` },
     };
   };
 
@@ -81,13 +86,13 @@ async function eventually<T>(read: () => Promise<T | undefined> | T | undefined,
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const step of cleanup.splice(0).reverse()) await step(); });
 
-async function supervised(broker: FakeBroker, extra: Partial<Parameters<typeof superviseSessionCli>[0]> = {}) {
+async function supervised(broker: FakeBroker, extra: Partial<Parameters<typeof superviseSessionCli>[0]> = {}, env: Record<string, string> = {}) {
   const directory = await mkdtemp(join(tmpdir(), "cli-supervisor-"));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   const logPath = join(directory, "cli.jsonl");
   const notices: string[] = [];
   const exit = superviseSessionCli({
-    command: process.execPath, args: [fakeCli, "--experimental"], env: { ...process.env, FAKE_CLI_LOG: logPath },
+    command: process.execPath, args: [fakeCli, "--experimental"], env: { ...process.env, FAKE_CLI_LOG: logPath, ...env },
     connection: await broker.provision(), provision: broker.provision, notify: (message) => notices.push(message), retryMs: 50, ...extra,
   });
   const log = async () => (await readFile(logPath, "utf8").catch(() => "")).split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -190,6 +195,29 @@ describe("launcher supervision of the CLI", () => {
     broker.move();
     expect(await exit).toBe(1);
     expect(Date.now() - started).toBeLessThan(30_000);
+  }, 60_000);
+
+  it("ignores a re-provisioning that began before the CLI was replaced, as after a container crash", async () => {
+    const broker = new FakeBroker();
+    await broker.listening();
+    cleanup.push(() => broker.close());
+    const { exit, log } = await supervised(broker, {}, { FAKE_CLI_HANDSHAKE_MS: "700", FAKE_CLI_RECONNECTS: "10" });
+    const first = await eventually(() => broker.attached[0], "the first attachment");
+    await first.hello;
+    // The placement behind the connection dies. The CLI's reconnection provisions slowly against the old placement,
+    // gives up on that attempt, and reconnects once the replacement (a new server key) is up.
+    broker.delays = [2_500];
+    first.socket.terminate();
+    await delay(150);
+    broker.generation++;
+    const replaced = await eventually(() => broker.attached.find((entry) => entry.generation === 2), "the reattachment at the replacement");
+    await replaced.hello;
+    // The slow provisioning returns the old placement's key after the restart; it must not restart the CLI again.
+    await delay(3_500);
+    const starts = (await log()).filter((entry) => entry.event === "start");
+    expect(starts.map((entry) => (entry.pin as { keyId: string }).keyId)).toEqual(["placement-1", "placement-2"]);
+    replaced.socket.send("quit");
+    expect(await exit).toBe(0);
   }, 60_000);
 
   it("returns the CLI's own exit code when the person ends it", async () => {

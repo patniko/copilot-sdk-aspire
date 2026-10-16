@@ -123,6 +123,11 @@ it.skipIf(!enabled)("promotes a shared conversation mid-task and continues with 
           if (results.length === 0) {
             call = { name: bash.name, arguments: JSON.stringify(shellArguments(bash.parameters, `printf '%s' BUILD_${marker} > Build.log && ls Notes && cat Build.log`)) };
           } else content = results.some((result) => result.includes(`BUILD_${marker}`) && result.includes("MixedCase.md")) ? `SHELL_OK_${marker}` : `SHELL_MISSING_${marker}`;
+        } else if (prompt.includes("AFTER_CRASH")) {
+          // A replacement container resumed from the session volume: the files written before the crash are there.
+          const bash = tool("bash");
+          if (results.length === 0) call = { name: bash.name, arguments: JSON.stringify(shellArguments(bash.parameters, "cat Notes/MixedCase.md Build.log")) };
+          else content = results.some((result) => result.includes(note) && result.includes(`BUILD_${marker}`)) ? `AFTER_CRASH_OK_${marker}` : `AFTER_CRASH_MISSING_${marker}`;
         } else content = "OK";
         const toolCall = call ? { id: `call_${randomUUID().replaceAll("-", "")}`, type: "function", function: call } : undefined;
         const base = { id: randomUUID(), model: "fixture", created: Math.floor(Date.now() / 1000) };
@@ -271,6 +276,7 @@ it.skipIf(!enabled)("promotes a shared conversation mid-task and continues with 
     expect(cli.running).toBe(true);
     expect(cli.launcher.filter((line) => line.includes("moved to a new placement"))).toHaveLength(1);
     expect(cli.launcher.filter((line) => line.includes("Resuming session"))).toHaveLength(1);
+    expect((await pool.query("SELECT 1 FROM execution_allocations WHERE session_id=$1", [session.id])).rowCount).toBe(1);
 
     // Same application session, now container-placed at the next generation, with a recorded promotion segment.
     const view = SharedSessionView.parse((await api.inject({ method: "GET", url: `/v1/sessions/${session.id}`, headers })).json());
@@ -293,6 +299,22 @@ it.skipIf(!enabled)("promotes a shared conversation mid-task and continues with 
     expect(docker("exec", containerId!, "ls", "/data/execution/workspace/Notes")).toBe("MixedCase.md");
     expect(docker("exec", containerId!, "cat", "/data/execution/workspace/Notes/MixedCase.md")).toBe(note);
     expect(docker("exec", containerId!, "cat", "/data/execution/workspace/Build.log")).toBe(`BUILD_${marker}`);
+
+    // A crash after cutover: the container is authoritative, so the next connection starts a replacement from the
+    // session volume; the launcher notices the replacement's new server key and restarts the CLI in the same terminal.
+    docker("kill", containerId!);
+    await wait(() => { const ids = containers(); return ids.length === 1 && ids[0] !== containerId; }, "a replacement container from the session volume", 300_000);
+    await cli.resumed(2, 300_000);
+    await cli.send(`AFTER_CRASH ${marker}`);
+    await cli.waitFor(`AFTER_CRASH_OK_${marker}`, 180_000);
+    expect(cli.running).toBe(true);
+    expect(cli.launcher.filter((line) => line.includes("Resuming session"))).toHaveLength(2);
+    const afterCrash = JSON.stringify(requests.findLast((entry) => entry.placement === "container" && JSON.stringify(entry.payload.messages).includes("AFTER_CRASH"))?.payload.messages);
+    expect(afterCrash).toContain(`SHELL_OK_${marker}`);
+    expect(SharedSessionView.parse((await api.inject({ method: "GET", url: `/v1/sessions/${session.id}`, headers })).json()))
+      .toMatchObject({ placement: "container", segment: { generation: 2 }, promotion: { state: "committed" } });
+    expect((await pool.query("SELECT state FROM execution_allocations WHERE session_id=$1 ORDER BY created_at", [session.id])).rows.map((row) => row.state))
+      .toEqual(["retired", "running"]);
     // One way: no demotion route, and the ledger refuses a return to shared placement.
     expect((await api.inject({ method: "POST", url: `/v1/sessions/${session.id}/demote`, headers, payload: {} })).statusCode).toBe(404);
     await expect(pool.query("UPDATE shared_sessions SET placement='shared' WHERE id=$1", [session.id])).rejects.toThrow(/cannot return to shared/);
@@ -300,7 +322,7 @@ it.skipIf(!enabled)("promotes a shared conversation mid-task and continues with 
   } catch (error) {
     const allocations = await pool.query("SELECT id,state,last_error FROM execution_allocations WHERE namespace=$1 OR namespace IS NULL", [namespace]).catch(() => ({ rows: [] }));
     const promotion = await pool.query("SELECT state,error_code,error_message FROM session_promotions WHERE principal=$1", [principal]).catch(() => ({ rows: [] }));
-    throw new Error(`Promotion gate failed. ${JSON.stringify({ errors, allocations: allocations.rows, promotion: promotion.rows })}\n${logs.join("").slice(-8000)}\n${cli?.output.slice(-6000) ?? ""}`, { cause: error });
+    throw new Error(`Promotion gate failed. ${JSON.stringify({ errors, allocations: allocations.rows, promotion: promotion.rows, launcher: cli?.launcher })}\n${logs.join("").slice(-8000)}\n${cli?.output.slice(-6000) ?? ""}`, { cause: error });
   } finally {
     clearInterval(follower);
     for (const child of followed.values()) child.kill();

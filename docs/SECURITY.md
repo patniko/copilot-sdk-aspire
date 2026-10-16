@@ -313,3 +313,26 @@ The integration suites verify the worker credential scoping above. The local rea
 sizes, both mounts, person-only approvals, a request covered by the person's inherited words running without a
 prompt while one only the coordinator asked for reached a person, and capacity returning to zero, with synthetic
 inference. Clients cannot attach to workers.
+
+### Promotion boundaries
+
+[Promotion](ARCHITECTURE.md#promotion) moves a conversation from the shared worker into its own session container;
+from the cutover on, the [session container boundaries](#session-container-boundaries) apply. It adds no isolation
+beyond them, and egress stays unenforced in both placements.
+
+| Concern | Control |
+| --- | --- |
+| Who can promote | Only `promotable` harnesses get `promote_session`, and the API route promotes only the caller's own session. Each request re-checks the harness's current effective policy (mode, promotion size and approval) and the deployment's container capacity, and is recorded once per tool call or idempotency key |
+| Approval | With `approval: "ask"` the tool call is a request for a person in the session's approval flow: under `manual` the attached person decides, and with nobody attached it does not run. Under `assisted`, `allow-all`, or `custom` the runtime or handler decides it like any other request, which can approve the move without a person; that combination is not separately verified. Pair `ask` with `manual` when a person must approve every move. `allow` runs without a prompt |
+| Snapshot integrity | The snapshot is read in one transaction that holds the session's storage namespace lock under a fresh lease, and is stored with per-file SHA-256 digests and a manifest digest bound to the session. The container verifies the manifest digest before writing, then each file's size and digest; it refuses paths outside its two areas and creates every entry exclusively in fresh directories (an existing link or a non-empty target fails the restore), owned by uid 10001 |
+| Snapshot access | Only the allocation the ledger started for the promotion can fetch its snapshot, through that allocation's credential, and only while the promotion is starting. A failed promotion retires the allocation, whose credential then stops working |
+| Consent | The runtime's provider-scoped consent files (`permissions.json`, `settings.json`, `config.json`) are not carried, so approvals given while the session had no shell or real filesystem do not apply in the container. Spilled tool output (`temp/`) is not carried either |
+| Fencing and direction | The cutover replaces and pins the shared storage lease epoch in the same transaction as the placement change, so the shared worker can no longer write the session or issue tickets for it, and a commit whose snapshot is stale is refused. A ledger trigger refuses any return to `shared` placement and any generation decrease; there is no demotion route |
+| Client continuity | A move closes attached clients with `4301 moved`. The launcher's supervisor re-provisions through the API with the person's API key and restarts the CLI pinned to the container's server key, which the API returns with the one-use ticket; the CLI still authenticates as the session's bound GitHub account. The relay is loopback-only with a per-run secret. No per-session host key moves with the session (plan decision N5), so seamless continuity depends on the launcher |
+| Data at rest | After the cutover the shared namespace stays read-only in PostgreSQL, next to the stored snapshot; nothing deletes either automatically. Retain and protect them like runtime history |
+
+The local gates verified the history transplant from the Windows-hosted worker and from the Linux shared-worker image
+into Linux containers, digest and path refusals, fencing and the one-way trigger, every failure before cutover
+leaving the session shared, and a real CLI promoting mid-task and continuing with shell and files in the same
+terminal, through a crash of the promoted container, all with synthetic inference
+([record](HOSTING-MODES-PLAN.md#stage-5-promotion)). Azure, paid models, and GitHub relay continuity were not exercised.
