@@ -3,6 +3,7 @@ import { APPROVAL_MODES, HarnessDefinition, HOSTING_MODES, SEMVER, SLUG } from "
 import type { HostingFeature } from "./hosting.js";
 import { PlacementGeneration, PlacementKind } from "./placement.js";
 import { ContainerSize, HOSTING_TRANSPORTS } from "./profile.js";
+import { PromotionView } from "./promotion.js";
 
 const DIGEST = /^sha256:[a-f0-9]{64}$/;
 
@@ -170,6 +171,8 @@ export const SharedSessionView = z.object({
   jobs: z.number().int().nonnegative(), continuations: z.number().int().nonnegative(),
   /** Present for `container` placement. */
   container: SessionContainerStatus.optional(),
+  /** The session's latest promotion, when it was ever asked to promote. */
+  promotion: PromotionView.optional(),
 }).strict();
 export type SharedSessionView = z.infer<typeof SharedSessionView>;
 

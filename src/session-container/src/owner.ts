@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CopilotClient, RuntimeConnection, type AhpHost, type CopilotSession, type SessionConfig } from "@github/copilot-sdk";
-import { renderSkillMarkdown } from "@copilot-agent/contracts";
+import { promotionContinuation, renderSkillMarkdown } from "@copilot-agent/contracts";
 import { bindTools, buildSessionOptions, hostPermissionHandler, hostToolGuard } from "@copilot-agent/harness-hosting";
 import { SupervisorMessage, type OwnerConfiguration } from "./protocol.js";
 
@@ -20,9 +20,25 @@ let stopping = false;
 let started = false;
 let activeTurn = false;
 let turnTimer: NodeJS.Timeout | undefined;
+/** Where the promoted conversation's workspace lived before, and where it is now; set when started for a promotion. */
+let promotedWorkspace: { previous?: string; current: string } | undefined;
 
 function send(message: object): void {
   if (process.connected) process.send!(message);
+}
+
+/**
+ * After a promotion's cutover, tells the agent once where it now runs. The runtime keeps history as written, so earlier
+ * messages still name the shared worker's workspace path; the note maps it to this container's.
+ */
+async function continuePromoted(promotionId: string): Promise<void> {
+  const current = session;
+  if (!current || !promotedWorkspace || stopping) return;
+  const marker = `[promotion:${promotionId}]`;
+  const delivered = (await current.getEvents()).some((event) =>
+    event.type === "user.message" && event.data.source === "system" && event.data.content.includes(marker));
+  if (delivered) return;
+  await current.send({ prompt: promotionContinuation(promotionId, promotedWorkspace.current, promotedWorkspace.previous), source: "system" });
 }
 
 function token(): Promise<string> {
@@ -49,6 +65,7 @@ async function start(config: OwnerConfiguration): Promise<void> {
   await chmod(config.dataDirectory, 0o700);
   await mkdir(join(config.dataDirectory, "workspace"), { recursive: true, mode: 0o700 });
   const workspace = await realpath(join(config.dataDirectory, "workspace"));
+  if (spec.promotion) promotedWorkspace = { current: workspace, ...(spec.promotion.previousWorkspace ? { previous: spec.promotion.previousWorkspace } : {}) };
   const skills = join(config.dataDirectory, "skills");
   await rm(skills, { recursive: true, force: true });
   for (const skill of definition.skills ?? []) {
@@ -206,6 +223,8 @@ process.on("message", (value: unknown) => {
     if (started) return fail("The session container owner was started twice.");
     started = true;
     void start(message.config).catch((error: unknown) => fail("The session could not start.", error));
+  } else if (message.kind === "promoted") {
+    void continuePromoted(message.id).catch(() => send({ kind: "diagnostic", message: "The promotion continuation could not be sent." }));
   } else {
     void stop().catch(() => fail("Session container shutdown failed."));
   }

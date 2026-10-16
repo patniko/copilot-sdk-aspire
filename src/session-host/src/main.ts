@@ -1,12 +1,12 @@
 import { join } from "node:path";
 import { z } from "zod";
-import { SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits } from "@copilot-agent/contracts";
-import { DelegationStore, JobStore, migrate, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
+import { SessionContainerSettings, SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits } from "@copilot-agent/contracts";
+import { DelegationStore, JobStore, migrate, PromotionStore, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
 import {
   Admission, assertOverridesMatchHarnesses, createLogger, createPostgresPool, listen, listenPort, loadHarnesses, loadProfiles,
   loadPolicySet, optionalEnv, readPostgresConnection, requireEnv, serviceUrl,
 } from "@copilot-agent/service-defaults";
-import { SharedAdmission } from "./admission.js";
+import { SharedAdmission, sharedWorkerDeployment } from "./admission.js";
 import { CompletionPump } from "./completions.js";
 import { SharedConfiguration, type SharedRegistry } from "./configuration.js";
 import { PERMISSION_HANDLERS } from "./permission-handlers.js";
@@ -30,11 +30,15 @@ for (const name of delegationHarnesses) {
   const harness = initial.harnesses.get(name)?.[0];
   if (!harness || harness.definition.interaction === "conversation") throw new Error("SHARED_JOB_HARNESSES must identify published batch harnesses.");
 }
+// With session containers deployed, `promotable` conversations can move into them one way.
+const sessionSettings = optionalEnv("SESSION_CONTAINER_SETTINGS", "");
+const sessionContainers = sessionSettings ? SessionContainerSettings.parse(JSON.parse(sessionSettings)) : undefined;
 const admission = new SharedAdmission({
   configuration,
   sessionLimits: SharedSessionLimits.parse(JSON.parse(optionalEnv("SHARED_SESSION_LIMITS", "{}"))),
   delegationHarnesses,
   permissionHandlers: new Set(PERMISSION_HANDLERS.keys()),
+  deployment: sharedWorkerDeployment({ promotion: !!sessionContainers }),
 });
 const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);
@@ -82,6 +86,7 @@ const service = new SharedSessionService({
     },
   },
   permissionHandlers: PERMISSION_HANDLERS,
+  ...(sessionContainers ? { promotion: { store: new PromotionStore(pool, store), settings: sessionContainers } } : {}),
 });
 const app = buildSharedHost(service, key, brokerKey);
 const completions = new CompletionPump(service, delegations, jobs, logger);

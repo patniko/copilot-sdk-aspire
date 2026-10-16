@@ -129,16 +129,22 @@ export class SessionContainerStore {
 
 
   async spec(allocationId: string, heartbeatSeconds: number): Promise<SessionContainerSpec> {
-    const row = (await this.pool.query<RecordRow & { allocation_id: string }>(
-      `SELECT s.*,c.harness,c.size,c.resources,c.activations,e.id AS allocation_id
+    // An allocation started to promote a shared session runs before its cutover, while the session is still shared.
+    const row = (await this.pool.query<RecordRow & { allocation_id: string; promotion_id: string | null; snapshot_digest: string | null; previous_workspace: string | null }>(
+      `SELECT s.*,c.harness,c.size,c.resources,c.activations,e.id AS allocation_id,p.id AS promotion_id,p.snapshot_digest,p.previous_workspace
        FROM execution_allocations e JOIN shared_sessions s ON s.id=e.session_id JOIN session_containers c ON c.session_id=s.id
-       WHERE e.id=$1 AND e.kind='session' AND e.state IN ('starting','running') AND NOT s.closed AND s.placement='container'`,
+       LEFT JOIN session_promotions p ON p.session_id=s.id AND p.allocation_id=e.id AND p.state='starting'
+       WHERE e.id=$1 AND e.kind='session' AND e.state IN ('starting','running') AND NOT s.closed
+         AND (s.placement='container' OR (s.placement='shared' AND p.id IS NOT NULL))`,
       [allocationId])).rows[0];
     if (!row) throw new StoreError("not_found", "The session allocation is not active.");
     const definition = SharedSessionDefinition.parse(row.definition);
     return {
       sessionId: row.id, allocationId: row.allocation_id, githubUserId: Number(row.github_user_id), harness: row.harness,
       model: definition.model, maxTurnSeconds: definition.limits.maxTurnSeconds, heartbeatSeconds,
+      ...(row.promotion_id && row.snapshot_digest ? { promotion: {
+        id: row.promotion_id, digest: row.snapshot_digest, ...(row.previous_workspace ? { previousWorkspace: row.previous_workspace } : {}),
+      } } : {}),
     };
   }
 

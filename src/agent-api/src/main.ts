@@ -42,6 +42,8 @@ const deployment = hostingDeployment({
   } : {}),
   sharedWorker: !!process.env.SHARED_WORKER_KEY,
   sessionContainers: !!sessionContainers,
+  // The AppHost gives the shared worker the same session-container settings, so it can promote into them.
+  promotion: !!sessionContainers && !!process.env.SHARED_WORKER_KEY,
 });
 const listener = new JobEventListener(pool);
 await listener.start();

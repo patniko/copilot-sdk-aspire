@@ -35,6 +35,9 @@ CREATE TABLE session_promotions (
   -- The storage lease epoch the snapshot was read under; the cutover commit requires it to be current.
   snapshot_epoch uuid,
   snapshot_digest text CONSTRAINT session_promotion_snapshot_digest CHECK (snapshot_digest IS NULL OR snapshot_digest ~ '^sha256:[a-f0-9]{64}$'),
+  -- The workspace path the conversation's history names (the shared worker's anchor, original spelling), so the
+  -- container can map it to its own.
+  previous_workspace text CONSTRAINT session_promotion_previous_workspace CHECK (previous_workspace IS NULL OR length(previous_workspace) BETWEEN 1 AND 4096),
   allocation_id uuid REFERENCES execution_allocations(id) ON DELETE SET NULL,
   error_code text,
   error_message text CONSTRAINT session_promotion_error_message CHECK (error_message IS NULL OR length(error_message) <= 500),

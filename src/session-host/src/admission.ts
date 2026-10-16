@@ -1,9 +1,9 @@
 import {
   type ApprovalMode, approvalModeOf, connectionProblem, effectiveApprovalModes, evaluateHosting, type ExecutionPolicy,
   type ExecutionProfile, type HarnessDefinition, type HarnessSnapshot, type HostingDeployment, type HostingEvaluation,
-  type HostingTarget, type HostingTransport, policyFor, RUNTIME_APPROVAL_MODES, type RuntimeApprovalMode,
-  SHARED_TOOLS, SHARED_WORKER_BINDINGS, SHARED_WORKER_FEATURES, SHARED_WORKER_TRANSPORTS, type SharedHarnessRef, type SharedSessionCreation,
-  SharedSessionDefinition, SharedSessionLimits, CONVERSATION_PROFILE,
+  type HostingTarget, type HostingTransport, policyFor, PROMOTE_SESSION_TOOL, RUNTIME_APPROVAL_MODES, type RuntimeApprovalMode,
+  SESSION_CONTAINER_FEATURES, SHARED_TOOLS, SHARED_WORKER_BINDINGS, SHARED_WORKER_FEATURES, SHARED_WORKER_TRANSPORTS, type SharedHarnessRef,
+  type SharedSessionCreation, SharedSessionDefinition, SharedSessionLimits, CONVERSATION_PROFILE,
 } from "@copilot-agent/contracts";
 import { canonicalJson, hostingError, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
 import type { SharedConfiguration, SharedRegistry } from "./configuration.js";
@@ -13,6 +13,19 @@ export const SHARED_WORKER_DEPLOYMENT: HostingDeployment = Object.freeze({
   isolatedHosts: [],
   sharedWorker: { transports: [...SHARED_WORKER_TRANSPORTS], features: [...SHARED_WORKER_FEATURES] },
 });
+
+/**
+ * This worker's hosting offer. With `promotion` it can move `promotable` conversations into session containers, so it
+ * adds the `promotion` feature and the session-container host they move to.
+ */
+export function sharedWorkerDeployment(options: { promotion: boolean }): HostingDeployment {
+  if (!options.promotion) return SHARED_WORKER_DEPLOYMENT;
+  return {
+    isolatedHosts: [],
+    sharedWorker: { transports: [...SHARED_WORKER_TRANSPORTS], features: [...SHARED_WORKER_FEATURES, "promotion"] },
+    sessionContainers: { transports: ["direct"], features: [...SESSION_CONTAINER_FEATURES] },
+  };
+}
 
 /** The approval settings an activation applies (docs/HOSTING-MODES-PLAN.md, section 3, "Approval modes"). */
 export interface SharedApprovalPlan {
@@ -50,7 +63,7 @@ export interface SharedAdmissionOptions {
 }
 
 const DELEGATION_BINDINGS = new Set<string>(SHARED_WORKER_BINDINGS);
-const RESERVED_TOOL_NAMES = new Set<string>(Object.values(SHARED_TOOLS));
+const RESERVED_TOOL_NAMES = new Set<string>([...Object.values(SHARED_TOOLS), PROMOTE_SESSION_TOOL]);
 
 /**
  * Admits shared-placement sessions from published conversation harnesses and re-checks them against the current
@@ -72,7 +85,7 @@ export class SharedAdmission {
     if (!snapshot) throw new HttpError(404, "harness_not_found", "The requested harness version is not published.");
     const { definition } = snapshot;
     const policy = policyFor(registry.policies, definition.name);
-    this.#evaluate(registry, definition, policy, principal);
+    const evaluation = this.#evaluate(registry, definition, policy, principal);
     const model = admittedModel(definition, policy);
     const ceilings = this.options.sessionLimits;
     const tokenBudget = Math.min(definition.limits.maxInferenceTokens, policy.maxInferenceTokensPerJob, ceilings.tokenBudget);
@@ -88,7 +101,7 @@ export class SharedAdmission {
       limits,
       harness: {
         name: definition.name, version: definition.version, digest: snapshot.digest,
-        mode: "shared" as const, definition, policyDigest: policyDigest(policy),
+        mode: evaluation.mode, definition, policyDigest: policyDigest(policy),
       },
       ...(delegates ? { delegation: { harnesses: this.#delegationTargets(registry) } } : {}),
     });
@@ -144,7 +157,7 @@ export class SharedAdmission {
     });
   }
 
-  #evaluate(registry: SharedRegistry, definition: HarnessDefinition, policy: ExecutionPolicy, principal?: string): void {
+  #evaluate(registry: SharedRegistry, definition: HarnessDefinition, policy: ExecutionPolicy, principal?: string): HostingEvaluation {
     const evaluation = this.#evaluation(registry, definition, policy, principal);
     if (evaluation.interaction !== "conversation") {
       throw new HttpError(422, "policy_rejected", "Batch harnesses run as jobs; create conversations from conversation harnesses.");
@@ -167,6 +180,7 @@ export class SharedAdmission {
     if (handler !== undefined && !this.options.permissionHandlers.has(handler)) {
       throw new HttpError(422, "policy_rejected", `The shared worker does not implement permission handler '${handler}'.`, { path: "permissions.handler" });
     }
+    return evaluation;
   }
 
   #delegationTargets(registry: SharedRegistry): SharedHarnessRef[] {

@@ -55,8 +55,11 @@ export class ContainerSessionService {
     return identity;
   }
 
-  /** Admits the harness's hosting under its current effective policy and this deployment, or throws its first problem. */
-  private evaluate(snapshot: HarnessSnapshot, principal: string) {
+  /**
+   * Admits the harness's hosting under its current effective policy and this deployment, or throws its first problem.
+   * A `promotable` harness starts shared, so only a session promoted into its container (`promoted`) runs it here.
+   */
+  private evaluate(snapshot: HarnessSnapshot, principal: string, promoted = false) {
     const { catalog } = this.deps;
     const policy = policyFor(catalog.policies, snapshot.definition.name);
     const lookup = (harness: string): HostingTarget | undefined => {
@@ -69,7 +72,7 @@ export class ContainerSessionService {
     }
     const problem = connectionProblem(evaluation, "direct");
     if (problem) throw hostingError(problem);
-    if (evaluation.placement !== "container") {
+    if (evaluation.placement !== "container" && !(promoted && evaluation.mode === "promotable")) {
       throw hostingError({ code: "hosting_unavailable", message: `${evaluation.mode} sessions are not served by session containers.`,
         prerequisite: { kind: "host", name: "shared-worker" } });
     }
@@ -106,6 +109,12 @@ export class ContainerSessionService {
 
   async owns(principal: string, id: string): Promise<boolean> {
     return (await this.deps.store.get(principal, id)) !== undefined;
+  }
+
+  /** The committed promotion that moved a shared conversation into this container, if it was promoted. */
+  async promotion(principal: string, id: string): Promise<SharedSessionView["promotion"]> {
+    const promotion = (await this.view(principal, id))?.promotion;
+    return promotion?.state === "committed" ? promotion : undefined;
   }
 
   async view(principal: string, id: string): Promise<SharedSessionView | undefined> {

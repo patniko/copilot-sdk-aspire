@@ -14,6 +14,11 @@ export interface HostingConfiguration {
   sharedWorker: boolean;
   /** Whether per-session containers are enabled (`SESSION_CONTAINER_SETTINGS`). */
   sessionContainers?: boolean;
+  /**
+   * Whether the shared worker promotes `promotable` conversations into session containers; it does when both run
+   * with the same session-container settings.
+   */
+  promotion?: boolean;
 }
 
 /**
@@ -33,6 +38,8 @@ export function hostingDeployment(configuration: HostingConfiguration): HostingD
         ? [{ harness: demo.harness, owner: demo.principal, transports: [...transports], features: [...DEMO_HOST_FEATURES] }]
         : [],
     ...(configuration.sessionContainers ? { sessionContainers: { transports: ["direct"], features: [...SESSION_CONTAINER_FEATURES] } } : {}),
-    ...(configuration.sharedWorker ? { sharedWorker: { transports: ["direct"], features: [...SHARED_WORKER_FEATURES] } } : {}),
+    ...(configuration.sharedWorker ? { sharedWorker: { transports: ["direct"], features: [
+      ...SHARED_WORKER_FEATURES, ...(configuration.promotion && configuration.sessionContainers ? ["promotion" as const] : []),
+    ] } } : {}),
   };
 }

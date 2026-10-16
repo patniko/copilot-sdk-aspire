@@ -2,10 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { posix } from "node:path";
 import type pg from "pg";
 import {
-  ContainerSize, PROMOTION_EXCLUDED_STATE_FILES, PROMOTION_SNAPSHOT_LIMITS, PromotionErrorCode, PromotionSnapshotManifest,
-  PromotionSnapshotPath, PromotionView, promotionSnapshotDigestInput,
-  type PromotionSnapshotEntry, type PromotionSource, type PromotionState,
+  ContainerSize, HarnessDefinition, PROMOTION_EXCLUDED_STATE_DIRECTORIES, PROMOTION_EXCLUDED_STATE_FILES, PROMOTION_SNAPSHOT_LIMITS, PromotionErrorCode,
+  PromotionSnapshotManifest, PromotionSnapshotPath, PromotionView, promotionSnapshotDigestInput, SharedSessionDefinition,
+  type PromotionSnapshotEntry, type PromotionSource, type PromotionState, type SharedWorkerLimits,
 } from "@copilot-agent/contracts";
+import { AllocationStore } from "./allocations.js";
+import { promotionView } from "./promotion-views.js";
 import type { SessionFileLease } from "./session-files.js";
 import type { SharedStore } from "./shared-store.js";
 import { StoreError } from "./store.js";
@@ -39,12 +41,20 @@ export interface PromotionRequest {
   resources: ContainerSize;
 }
 
+/** How long and how long idle the session container started for a promotion may run (the session-container settings). */
+export interface PromotionContainerSettings { idleSeconds: number; startupSeconds: number; maxLifetimeSeconds: number }
+
+/** The volume a promoted session's container keeps: its retained session volume, as for mode-1 sessions. */
+export const PROMOTION_VOLUME_TARGET = "/data";
+
 /** Provider keys of the two snapshot areas in the session's storage namespace. */
 export interface PromotionStorageAreas {
   /** The runtime's session-state directory (`sessionStatePath`), stored flat per session. */
   state: string;
   /** The session's workspace anchor. */
   workspace: string;
+  /** The anchor's provider path in its original spelling, as the conversation's history names it. */
+  workspacePath?: string;
 }
 
 export interface PromotionSnapshotPage {
@@ -61,7 +71,7 @@ export interface PromotionSnapshotPage {
 interface PromotionRow {
   id: string; session_id: string; principal: string; source: PromotionSource; request_key: string; reason: string;
   state: PromotionState; size: string; resources: ContainerSize; from_generation: number;
-  snapshot_epoch: string | null; snapshot_digest: string | null; allocation_id: string | null;
+  snapshot_epoch: string | null; snapshot_digest: string | null; allocation_id: string | null; previous_workspace: string | null;
   error_code: string | null; error_message: string | null; notified_at: Date | null;
   created_at: Date; committed_at: Date | null; failed_at: Date | null;
 }
@@ -81,7 +91,11 @@ class CutoverRefused extends Error {
  * one-way cutover commit. Nothing here demotes a session; the ledger's trigger refuses any return to shared placement.
  */
 export class PromotionStore {
-  constructor(private readonly pool: pg.Pool, private readonly shared: SharedStore) {}
+  readonly #allocations: AllocationStore;
+
+  constructor(private readonly pool: pg.Pool, private readonly shared: SharedStore, allocations?: AllocationStore) {
+    this.#allocations = allocations ?? new AllocationStore(pool, shared);
+  }
 
   /**
    * Records a promotion for a shared session, or returns the promotion that already answers it: the same request,
@@ -137,6 +151,20 @@ export class PromotionStore {
     return row ? record(row) : undefined;
   }
 
+  /** Every open promotion, oldest first, for a worker resuming the ones it was driving. */
+  async unfinished(): Promise<PromotionRecord[]> {
+    return (await this.pool.query<PromotionRow>(
+      "SELECT * FROM session_promotions WHERE state = ANY($1::text[]) ORDER BY created_at", [OPEN])).rows.map(record);
+  }
+
+  /** Whether the deployment's container limits leave room for one more container for `principal` now. */
+  async hasCapacity(principal: string, limits: SharedWorkerLimits): Promise<boolean> {
+    const counts = (await this.pool.query<{ total: number; own: number }>(
+      `SELECT count(*)::int AS total,count(*) FILTER (WHERE principal=$1)::int AS own
+       FROM execution_allocations WHERE state<>'retired'`, [principal])).rows[0]!;
+    return counts.total < limits.executionContainers && counts.own < limits.containersPerPrincipal;
+  }
+
   /** `requested` → `moving`: the turn that asked has ended and the shared activation is closing. */
   async begin(id: string): Promise<PromotionRecord> {
     const row = (await this.pool.query<PromotionRow>(
@@ -188,8 +216,8 @@ export class PromotionStore {
           [id, files.map((file) => file.key), files.map((file) => file.ordinal), lease.id]);
         if (copied.rowCount !== files.length) throw new StoreError("invalid_state", "The session storage changed while its snapshot was read.");
         const updated = await db.query<PromotionRow>(
-          `UPDATE session_promotions SET state='starting',snapshot_epoch=$2,snapshot_digest=$3,updated_at=clock_timestamp()
-           WHERE id=$1 RETURNING *`, [id, lease.epoch, digest]);
+          `UPDATE session_promotions SET state='starting',snapshot_epoch=$2,snapshot_digest=$3,previous_workspace=$4,updated_at=clock_timestamp()
+           WHERE id=$1 RETURNING *`, [id, lease.epoch, digest, areas.workspacePath?.slice(0, 4096) || null]);
         await db.query("COMMIT");
         return record(updated.rows[0]!);
       } catch (error) {
@@ -207,10 +235,52 @@ export class PromotionStore {
     if (!result.rowCount) throw new StoreError("invalid_state", "The promotion cannot take this allocation.");
   }
 
-  /** The open promotion an allocation was started for, if any. */
-  async forAllocation(allocationId: string): Promise<PromotionRecord | undefined> {
+  /**
+   * Reserves the session container for a captured promotion, in one admission transaction: the container placement
+   * record (the session's admitted harness snapshot at the promotion's size) and a session allocation with the
+   * session's retained volume, counted against the deployment's container limits. The controller starts it with an
+   * allocation-scoped credential; the container then fetches the snapshot. Refuses when the session still has a
+   * container from an earlier attempt, or capacity is exhausted (`quota_exceeded`).
+   */
+  async allocate(id: string, settings: PromotionContainerSettings, limits: SharedWorkerLimits): Promise<string> {
+    return this.shared.transaction(async (db) => {
+      const promotion = (await db.query<PromotionRow>("SELECT * FROM session_promotions WHERE id=$1 FOR UPDATE", [id])).rows[0];
+      if (!promotion || promotion.state !== "starting" || promotion.allocation_id) throw new StoreError("invalid_state", "The promotion is not ready for a container.");
+      const session = (await db.query<{ definition: unknown }>(
+        "SELECT definition FROM shared_sessions WHERE id=$1 AND principal=$2 AND NOT closed AND placement='shared' FOR UPDATE",
+        [promotion.session_id, promotion.principal])).rows[0];
+      if (!session) throw new StoreError("invalid_state", "The conversation closed or changed placement during the move.");
+      const harness = SharedSessionDefinition.parse(session.definition).harness;
+      if (!harness?.definition) throw new StoreError("invalid_state", "The conversation has no admitted harness snapshot to run in a container.");
+      const earlier = await db.query("SELECT 1 FROM execution_allocations WHERE session_id=$1 AND state<>'retired'", [promotion.session_id]);
+      if (earlier.rowCount) throw new StoreError("quota_exceeded", "A container from an earlier attempt is still stopping for this conversation.");
+      await db.query(
+        `INSERT INTO session_containers(session_id,harness,size,resources) VALUES($1,$2,$3,$4)
+         ON CONFLICT(session_id) DO UPDATE SET harness=EXCLUDED.harness,size=EXCLUDED.size,resources=EXCLUDED.resources`,
+        [promotion.session_id, JSON.stringify({ definition: HarnessDefinition.parse(harness.definition), digest: harness.digest }),
+          promotion.size, JSON.stringify(ContainerSize.parse(promotion.resources))]);
+      const allocation = await this.#allocations.request({
+        sessionId: promotion.session_id, principal: promotion.principal, purpose: "session", size: promotion.size,
+        resources: ContainerSize.parse(promotion.resources),
+        volumes: [{ purpose: "session", sessionId: promotion.session_id, target: PROMOTION_VOLUME_TARGET, readOnly: false }],
+        idleSeconds: settings.idleSeconds, startupSeconds: settings.startupSeconds, maxLifetimeSeconds: settings.maxLifetimeSeconds,
+      }, limits, db);
+      await db.query("UPDATE session_promotions SET allocation_id=$2,updated_at=clock_timestamp() WHERE id=$1", [id, allocation.id]);
+      return allocation.id;
+    });
+  }
+
+  /** The state of the allocation started for a promotion, so its driver notices a container that stopped before cutover. */
+  async allocationState(id: string): Promise<{ state: string; error?: string } | undefined> {
+    const row = (await this.pool.query<{ state: string; last_error: string | null }>(
+      "SELECT e.state,e.last_error FROM session_promotions p JOIN execution_allocations e ON e.id=p.allocation_id WHERE p.id=$1", [id])).rows[0];
+    return row ? { state: row.state, ...(row.last_error ? { error: row.last_error } : {}) } : undefined;
+  }
+
+  /** The promotion an allocation was started for, in any state. */
+  async byAllocation(allocationId: string): Promise<PromotionRecord | undefined> {
     const row = (await this.pool.query<PromotionRow>(
-      "SELECT * FROM session_promotions WHERE allocation_id=$1 AND state='starting'", [allocationId])).rows[0];
+      "SELECT * FROM session_promotions WHERE allocation_id=$1 ORDER BY created_at DESC LIMIT 1", [allocationId])).rows[0];
     return row ? record(row) : undefined;
   }
 
@@ -263,6 +333,12 @@ export class PromotionStore {
         if (allocationId !== undefined && promotion.allocation_id !== allocationId) {
           throw new StoreError("invalid_state", "Only the allocation started for the promotion can complete it.");
         }
+        if (promotion.allocation_id) {
+          const running = await db.query(
+            "SELECT 1 FROM execution_allocations WHERE id=$1 AND state IN ('starting','running') AND expires_at>clock_timestamp()",
+            [promotion.allocation_id]);
+          if (!running.rowCount) throw new CutoverRefused("startup_failed", "The promotion's container stopped before the cutover.");
+        }
         const session = (await db.query<{ definition: { harness?: { name: string; version: string; digest: string } } }>(
           `UPDATE shared_sessions SET placement='container',placement_generation=placement_generation+1,last_activity_at=clock_timestamp()
            WHERE id=$1 AND principal=$2 AND NOT closed AND placement='shared' AND placement_generation=$3 RETURNING definition`,
@@ -301,9 +377,18 @@ export class PromotionStore {
    */
   async fail(id: string, code: PromotionErrorCode, message: string): Promise<PromotionRecord> {
     PromotionErrorCode.parse(code);
-    const row = (await this.pool.query<PromotionRow>(
-      `UPDATE session_promotions SET state='failed',failed_at=clock_timestamp(),updated_at=clock_timestamp(),error_code=$2,error_message=$3
-       WHERE id=$1 AND state = ANY($4::text[]) RETURNING *`, [id, code, message.slice(0, 500), OPEN])).rows[0];
+    const row = await this.shared.transaction(async (db) => {
+      const failed = (await db.query<PromotionRow>(
+        `UPDATE session_promotions SET state='failed',failed_at=clock_timestamp(),updated_at=clock_timestamp(),error_code=$2,error_message=$3
+         WHERE id=$1 AND state = ANY($4::text[]) RETURNING *`, [id, code, message.slice(0, 500), OPEN])).rows[0];
+      if (failed?.allocation_id) {
+        // Before cutover the container is not authoritative: the controller stops it and keeps its volume.
+        await db.query(
+          "UPDATE execution_allocations SET state='retiring',last_error=$2 WHERE id=$1 AND state IN ('starting','running')",
+          [failed.allocation_id, `The promotion failed: ${message}`.slice(0, 500)]);
+      }
+      return failed;
+    });
     if (row) return record(row);
     const current = await this.byId(id);
     if (!current) throw new StoreError("not_found", "The promotion was not found.");
@@ -332,7 +417,7 @@ function snapshotManifest(sessionId: string, stored: StoredEntry[], areas: Promo
     const parts = entry.path.slice(root.length + 1).split("/");
     const path = parts.map((part, index) => names.get(`${root}/${parts.slice(0, index + 1).join("/")}`) ?? part).join("/");
     if (area === "state" && parts.length === 1 && PROMOTION_EXCLUDED_STATE_FILES.includes(path.toLowerCase())) continue;
-    if (area === "state" && parts.length > 1 && PROMOTION_EXCLUDED_STATE_FILES.includes(parts[0]!)) continue;
+    if (area === "state" && PROMOTION_EXCLUDED_STATE_DIRECTORIES.includes(path.split("/")[0]!.toLowerCase())) continue;
     if (!PromotionSnapshotPath.safeParse(path).success) {
       throw new StoreError("invalid_state", "A session file name cannot be restored in a container.");
     }
@@ -350,7 +435,6 @@ function snapshotManifest(sessionId: string, stored: StoredEntry[], areas: Promo
 }
 
 function record(row: PromotionRow): PromotionRecord {
-  const error = row.error_code ? { code: PromotionErrorCode.parse(row.error_code), message: row.error_message ?? "" } : undefined;
   return {
     id: row.id, sessionId: row.session_id, principal: row.principal, source: row.source, requestKey: row.request_key,
     state: row.state, size: row.size, resources: ContainerSize.parse(row.resources), fromGeneration: row.from_generation,
@@ -358,11 +442,6 @@ function record(row: PromotionRow): PromotionRecord {
     ...(row.snapshot_digest ? { snapshotDigest: row.snapshot_digest } : {}),
     ...(row.allocation_id ? { allocationId: row.allocation_id } : {}),
     notified: row.notified_at !== null,
-    view: PromotionView.parse({
-      id: row.id, state: row.state, source: row.source, reason: row.reason, size: row.size, requestedAt: row.created_at.toISOString(),
-      ...(row.committed_at ? { committedAt: row.committed_at.toISOString() } : {}),
-      ...(row.failed_at ? { failedAt: row.failed_at.toISOString() } : {}),
-      ...(error ? { error } : {}),
-    }),
+    view: promotionView(row),
   };
 }

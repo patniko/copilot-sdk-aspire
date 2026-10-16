@@ -1,5 +1,6 @@
 import type pg from "pg";
 import { ContainerSize, type SessionContainerState, type SharedSessionView } from "@copilot-agent/contracts";
+import { PROMOTION_VIEW_COLUMNS } from "./promotion-views.js";
 import { sharedSessionRecord, type SharedSessionRow } from "./shared-store.js";
 import { StoreError } from "./store.js";
 
@@ -10,6 +11,7 @@ interface DirectoryRow extends SharedSessionRow {
 const SELECT = `SELECT s.*,
     EXISTS (SELECT 1 FROM shared_activations a JOIN session_file_namespaces n ON n.id=a.session_id AND n.epoch=a.epoch
       WHERE a.session_id=s.id AND n.principal=s.principal AND n.lease_until>clock_timestamp()) AS online,
+    ${PROMOTION_VIEW_COLUMNS},
     c.size,c.resources,c.activations,e.state AS allocation_state,e.ready_at,e.ingress
   FROM shared_sessions s LEFT JOIN session_containers c ON c.session_id=s.id
   LEFT JOIN execution_allocations e ON e.session_id=s.id AND e.state<>'retired'`;

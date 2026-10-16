@@ -1,14 +1,19 @@
 import {
-  SharedPrincipalBindings, SharedWorkerLimits, sharedHarnessLimits,
-  type ConnectionTicket, type HostingTransport, type SharedSessionCreation,
+  effectiveHarnessHosting, PromotionResponse, SessionContainerSettings, SharedPrincipalBindings, SharedWorkerLimits, sharedHarnessLimits,
+  type ConnectionTicket, type HostingTransport, type PromotionRequestBody, type SharedSessionCreation,
 } from "@copilot-agent/contracts";
 import type { ManagedSettings } from "@github/copilot-sdk";
-import { SessionFileStore, SharedStore, StoreError, type SessionFileLease, type SharedSessionRecord, type SharedTurn } from "@copilot-agent/job-store";
-import { readServerKey, type AhpProxyTarget } from "@copilot-agent/service-defaults";
+import { randomUUID } from "node:crypto";
+import {
+  SessionFileStore, SharedStore, StoreError, type PromotionStore, type SessionFileLease, type SharedSessionRecord, type SharedTurn,
+} from "@copilot-agent/job-store";
+import { HttpError, readServerKey, type AhpProxyTarget } from "@copilot-agent/service-defaults";
 import type { SharedActivationPlan, SharedAdmission, SharedApprovalPlan } from "./admission.js";
 import { sharedSessionSettings } from "./harness-session.js";
 import type { CustomPermissionHandler } from "./permission-handlers.js";
 import { SharedPermissionPolicy, type ToolRule } from "./permissions.js";
+import { PromotionRefused, SharedPromotions } from "./promotion/coordinator.js";
+import { promotionTool } from "./promotion/tool.js";
 import { SharedSessionRuntime, type SharedActivationContext } from "./runtime.js";
 import { SharedTurnScheduler } from "./scheduler.js";
 import { sharedToolset, type SharedToolkitOptions } from "./toolkit.js";
@@ -39,6 +44,11 @@ export interface SharedServiceOptions {
   /** Handlers for the `custom` approval mode, by name. */
   permissionHandlers?: ReadonlyMap<string, CustomPermissionHandler>;
   permissionHandlerTimeoutMs?: number;
+  /**
+   * One-way promotion of `promotable` conversations into session containers, when this deployment runs them: the
+   * ledger, and the settings the started containers run under.
+   */
+  promotion?: { store: PromotionStore; settings: SessionContainerSettings; pollMs?: number };
 }
 
 /** Managed settings that keep the runtime from entering an approval mode the harness's policy does not allow. */
@@ -66,6 +76,7 @@ export class SharedSessionService {
   #maintenance?: Promise<void>;
   #stopping = false;
   #healthy = false;
+  readonly #promotions?: SharedPromotions;
 
   constructor(private readonly options: SharedServiceOptions) {
     options.principals = SharedPrincipalBindings.parse(options.principals);
@@ -79,6 +90,17 @@ export class SharedSessionService {
     this.#scheduler = new SharedTurnScheduler(options.store, options.limits, async (lease) => {
       if (this.#residents.get(lease.id)?.context.lease.epoch === lease.epoch) await this.deactivate(lease.id);
     }, options.report);
+    if (options.promotion) {
+      const settings = SessionContainerSettings.parse(options.promotion.settings);
+      this.#promotions = new SharedPromotions({
+        store: options.promotion.store, files: options.files, settings, limits: options.limits,
+        deactivate: (id) => this.deactivate(id),
+        storageAreas: (id) => this.#runtime.storageAreas(id),
+        notify: (principal, id, notificationId, prompt) => this.continueConversation(principal, id, notificationId, prompt),
+        report: options.report,
+        ...(options.promotion.pollMs ? { pollMs: options.promotion.pollMs } : {}),
+      });
+    }
   }
 
   get healthy(): boolean { return this.#healthy && !this.#stopping; }
@@ -101,6 +123,8 @@ export class SharedSessionService {
   async start(): Promise<void> {
     await this.#runtime.start();
     await this.maintain();
+    // Promotions a previous run of this worker left open continue from their last recorded step.
+    await this.#promotions?.recover();
     this.#timer = setInterval(() => {
       if (this.#maintenance || this.#stopping) return;
       this.#maintenance = this.maintain().catch(() => {
@@ -166,6 +190,37 @@ export class SharedSessionService {
     await this.deactivate(id);
   }
 
+  /**
+   * Caller-initiated promotion of a `promotable` conversation (`POST /v1/sessions/{id}/promote`). Idempotent: an open
+   * or committed promotion is returned, and `key` deduplicates retries of one request. A promotion asked for while a
+   * turn runs moves when the turn ends; otherwise it moves now. After cutover the conversation no longer belongs to
+   * this worker, so only its committed promotion is returned.
+   */
+  async promote(principal: string, id: string, request: PromotionRequestBody, key?: string): Promise<PromotionResponse> {
+    const row = await this.get(principal, id);
+    if (!this.#promotions || !this.options.promotion) {
+      throw new HttpError(409, "promotion_unavailable", "This deployment cannot start session containers for promotion.",
+        { prerequisite: { kind: "host", name: "session-containers" } });
+    }
+    const latest = await this.options.promotion.store.latest(principal, id);
+    if (latest && (latest.state === "committed" || row.placement !== "shared")) {
+      return PromotionResponse.parse({ sessionId: id, created: false, promotion: latest.view });
+    }
+    if (row.view.closed) throw new StoreError("not_found", "The shared conversation is closed.");
+    let result: Awaited<ReturnType<SharedPromotions["request"]>>;
+    try {
+      const plan = await this.options.admission.activation(row.definition, principal);
+      result = await this.#promotions.request({
+        principal, sessionId: id, plan, source: "api", requestKey: `api:${key ?? randomUUID()}`, reason: request.reason,
+      });
+    } catch (error) {
+      if (error instanceof PromotionRefused) throw new HttpError(error.code === "promotion_capacity" ? 429 : 409, error.code, error.message);
+      throw error;
+    }
+    if (result.promotion.state === "requested" && !this.busy(id)) this.#promotions.begin(result.promotion.id);
+    return PromotionResponse.parse({ sessionId: id, ...result });
+  }
+
   async continueConversation(principal: string, id: string, notificationId: string, prompt: string): Promise<"delivered" | "already-delivered"> {
     await this.ensure(principal, id);
     const resident = this.#residents.get(id);
@@ -189,6 +244,10 @@ export class SharedSessionService {
     const row = await this.get(principal, id);
     if (row.view.closed) throw new StoreError("not_found", "The shared conversation is closed.");
     if (row.placement !== "shared") throw new StoreError("not_found", "The conversation runs in a session container; connect through the application API.");
+    const moving = await this.options.promotion?.store.open(id);
+    if (moving && moving.state !== "requested") {
+      throw new HttpError(409, "promotion_in_progress", "The conversation is moving to a dedicated container; request a connection again shortly.");
+    }
     const opening = this.#opening.get(id);
     if (opening) return opening;
     const resident = this.#residents.get(id);
@@ -248,7 +307,7 @@ export class SharedSessionService {
         approval: { initial: plan.approval.initial, available: plan.approval.available, ...(plan.approval.judgeModel ? { judgeModel: plan.approval.judgeModel } : {}) },
         tools: async (context) => {
           const resident = bind(context);
-          const toolset = await sharedToolset(plan, row, context, () => this.#scheduler.current(context.lease), this.options.toolkit ?? {});
+          const toolset = await sharedToolset(plan, row, context, () => this.#scheduler.current(context.lease), this.#toolkit());
           resident.policy = this.#policy(plan, row, toolset.rules, new Set(settings.builtinTools));
           return toolset.tools;
         },
@@ -296,7 +355,7 @@ export class SharedSessionService {
           }
           if (event.type === "session.idle" && !event.agentId) {
             resident.lastActivity = Date.now();
-            void this.#scheduler.finish(context.lease).catch(() => {
+            void this.#scheduler.finish(context.lease).then(() => this.#promotions?.turnEnded(row.id)).catch(() => {
               this.options.report("session.turn_settlement_failed", row.id);
               void this.deactivate(row.id).catch(() => this.options.report("session.deactivation_failed", row.id));
             });
@@ -316,6 +375,21 @@ export class SharedSessionService {
       }
       throw error;
     }
+  }
+
+  /** The base tool set's dependencies, with `promote_session` when this worker can promote. */
+  #toolkit(): SharedToolkitOptions {
+    const promotions = this.#promotions;
+    if (!promotions) return this.options.toolkit ?? {};
+    return {
+      ...this.options.toolkit,
+      promotion: (plan, session) => promotionTool(effectiveHarnessHosting(plan.definition, plan.policy).promotion?.approval ?? "ask",
+        async (requestKey, reason) => {
+          // The current policy decides, as at activation; a refusal fails the call and the conversation stays shared.
+          const current = await this.options.admission.activation(session.definition, session.principal);
+          return promotions.request({ principal: session.principal, sessionId: session.id, plan: current, source: "tool", requestKey, reason });
+        }),
+    };
   }
 
   #policy(plan: SharedActivationPlan, row: SharedSessionRecord, rules: Map<string, ToolRule>, builtins: Set<string>): SharedPermissionPolicy {
@@ -376,6 +450,8 @@ export class SharedSessionService {
     for (const resident of this.#residents.values()) resident.controller.abort(new Error("The shared service is stopping."));
     await Promise.allSettled([...this.#opening.values()]);
     await this.#maintenance;
+    // Open promotions stay recorded; the next run of this worker resumes them from their last step.
+    await this.#promotions?.stop();
     try { await Promise.all([...this.#residents.keys()].map((id) => this.deactivate(id))); }
     finally { await this.#runtime.stop(); }
   }

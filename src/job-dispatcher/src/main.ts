@@ -1,5 +1,5 @@
 import { policyFor, SessionContainerSettings } from "@copilot-agent/contracts";
-import { AllocationStore, DelegationStore, HostStore, JobStore, PlacementStore, SessionContainerStore, SharedStore, migrate } from "@copilot-agent/job-store";
+import { AllocationStore, DelegationStore, HostStore, JobStore, PlacementStore, PromotionStore, SessionContainerStore, SharedStore, migrate } from "@copilot-agent/job-store";
 import {
   createPostgresPool,
   listen,
@@ -44,6 +44,7 @@ const app = buildDispatcher({
   ...(process.env.SHARED_WORKER_KEY && sessionContainers ? {
     sessionContainers: {
       allocations, store: new SessionContainerStore(pool, sharedStore), policies, heartbeatSeconds: sessionContainers.heartbeatSeconds,
+      promotions: new PromotionStore(pool, sharedStore, allocations),
     },
   } : {}),
   ...(process.env.CONNECTION_BROKER_KEY ? {
