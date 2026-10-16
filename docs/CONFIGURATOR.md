@@ -168,8 +168,9 @@ The preview does not deploy resources or modify settings, and planned nodes are 
 Native container-host inference is shown separately from the managed Foundry route.
 
 The connection card preserves existing container CLI launchers and shows the shared launcher when the
-local `session-host` resource is observed. Use the matching qualified CLI; service observation alone is
-not account/client readiness. The backend enforces local scheduling, budgets and one-shot container
+local `session-host` resource is observed. That launcher opens the `hybrid-coordinator` harness
+(`--destination shared`); run `pnpm host:connect --harness <name> --target local --transport direct` for another
+shared harness. Use the matching qualified CLI; service observation alone is not account/client readiness. The backend enforces local scheduling, budgets and one-shot container
 limits configured through [Aspire hybrid parameters](DEPLOYMENT.md#hybrid-controls).
 This page does not edit those settings or display live allocations yet. First-token measurements and
 cost estimates remain unavailable rather than fabricated; Azure and two-real-account qualification
@@ -214,7 +215,7 @@ The editor has one section per part of the harness contract:
 | Overview | Version, description, a summary, and what the platform does with the harness |
 | Prompt | Prompt mode (replace, append, or customize the Copilot foundation prompt section by section) and the instructions |
 | Model | Preferred model (from the policy-approved list), allowed models as an ordered fallback list, reasoning effort and context tier (options above the policy ceilings are disabled) |
-| Tools | Custom harness tool bindings from the execution profiles (**Delegated only** hides one from the coordinator), and **Built-in Copilot tools** in groups: files, shell, web, built-in agents |
+| Tools | Custom harness tool bindings from the execution profiles (**Delegated only** hides one from the coordinator), and **Built-in Copilot tools** in groups: files, shell, web, built-in agents. `shared:*` bindings run only in `shared` harnesses on the local hybrid worker; job submission and the demo host reject them |
 | Permissions | What happens when the agent asks to read or write a file, run a command or fetch a URL: deny, ask you (Copilot CLI defaults, where workspace reads and read-only commands run without a prompt), or allow (yolo), per kind with a default; whether the agent can ask you questions; how long a request waits |
 | Hosting | Batch jobs or conversations; for conversations the hosting mode and its settings, handoffs, the approval mode, and remote MCP servers from the operator's catalog, plus the running service's view of this version (see [Hosting, approvals and remote MCP](#hosting-approvals-and-remote-mcp)) |
 | Sub-agents | Read-only built-in agent status (controlled by the Tools tab), plus custom specialists: instructions, a subset of the tools, preloaded skills, model |

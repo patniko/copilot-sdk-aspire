@@ -48,9 +48,10 @@ and approver currently share one API-key principal.
 
 ## Supported today
 
-The experimental **local hybrid** path additionally provides a shared in-process coordinator with
-PostgreSQL session files, account-bound CLI provisioning, scheduling/budgets/idle eviction, and
-model-directed one-shot container jobs with retained outputs and completion delivery. The same
+The experimental **local hybrid** path additionally provides a shared in-process worker that runs many
+harnesses in `shared` mode, with PostgreSQL session files, account-bound CLI provisioning through a connection
+broker, scheduling/budgets/idle eviction with per-harness limits, filtered web access, approved remote MCP tools,
+approval modes, and model-directed one-shot container jobs with retained outputs and completion delivery. The same
 TypeScript/Python execution profiles are preserved. See [local scope and evidence](DEPLOYMENT.md#experimental-local-hybrid-deployment).
 This does not claim Azure hybrid support, two-real-account qualification, exact spend enforcement,
 or improved latency/cost without measurement.
@@ -65,7 +66,7 @@ table below describes the established batch product.
 | --- | --- | --- |
 | Separate customer workspace | Harnesses and policy live in a gitignored customer workspace; profiles, examples, and implementation remain platform source | [Configurator](CONFIGURATOR.md) |
 | Per-harness policy | Operator overrides replace selected policy ceilings and required controls for one harness; jobs record the effective policy and are matched to executors per job | [Configurator](CONFIGURATOR.md), [Security](SECURITY.md) |
-| Hosting contract and view | Conversation harnesses can declare a hosting mode, remote MCP tools, and an approval mode within policy ceilings; validation, admission, and a read-only [hosting view](API.md#hosting-views) report disallowed or unavailable combinations with field paths and prerequisites. Harness-driven conversations still run only in isolated mode on the demo host, and no host serves remote MCP tools or approval modes other than manual yet | [Hosting modes plan](HOSTING-MODES-PLAN.md#17-qualification-record), [developer checklist](DEVELOPER-GUIDE.md#hosting-approval-mode-and-remote-mcp-fields) |
+| Hosting contract and view | Conversation harnesses can declare a hosting mode, remote MCP tools, and an approval mode within policy ceilings; validation, admission, and a read-only [hosting view](API.md#hosting-views) report disallowed or unavailable combinations with field paths and prerequisites. Harness-driven conversations run in isolated mode on the demo host and in shared mode on the local hybrid worker, which serves remote MCP tools and the approval modes its policy allows ([current limits](SECURITY.md#shared-conversation-approvals)); promotable and orchestrator modes are not served yet | [Hosting modes plan](HOSTING-MODES-PLAN.md#17-qualification-record), [developer checklist](DEVELOPER-GUIDE.md#hosting-approval-mode-and-remote-mcp-fields) |
 | Structured agent jobs | Input validation, durable state, schema-validated results, JSON result artifact | [API](API.md) |
 | Two runner implementations | TypeScript SDK reference runner and Python SDK sample on one protocol | [Runner protocol](RUNNER-PROTOCOL.md) |
 | Rich harnesses | Prompt sections, reasoning/context options, sub-agents, delegated tools, packaged skills | [Harness contract](../contracts/src/harness.ts) |
@@ -103,7 +104,7 @@ isolation or compliance claims. Historical live-run evidence is recorded in
 | --- | --- |
 | Enforced gateway-only network egress or per-job outer sandbox | This is not safe cross-customer execution isolation; approved shell/web actions can reach the network |
 | Entra ID caller auth and a separate approver role | API-key principals govern caller access and approvals |
-| MCP integrations | Conversation harnesses can request tools from an operator's remote MCP catalog, and the request is validated, but no host connects to MCP servers yet; there is no local MCP connector |
+| MCP integrations | Only shared harnesses on the local hybrid worker use remote MCP tools, from the operator's catalog over Streamable HTTP; batch jobs and isolated hosts do not, and there is no local (stdio) MCP connector |
 | Copilot-authenticated inference route | The implemented production route is Foundry with gateway-owned Entra identity |
 | General artifact/file persistence or repository automation | Local on-demand jobs retain bounded `outputs/` files; other attempt files remain temporary. No automatic checkout, commit, push, or general blob store |
 | Resuming batch jobs as chat | Retrying a job starts a fresh attempt; the separate experimental demo host has its own retained-session lifecycle and qualification gates |
