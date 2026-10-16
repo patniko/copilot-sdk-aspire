@@ -182,7 +182,7 @@ describe("promotion protocol", () => {
     const spec = SessionContainerSpec.parse((await call("spec")).json());
     expect(spec).toMatchObject({
       sessionId: id, harness: { digest: promotable.digest },
-      promotion: { id: first.promotion.id, digest: starting.snapshotDigest, previousWorkspace: `/data/worker/anchors/${id}` },
+      promotion: { id: first.promotion.id, digest: starting.snapshotDigest, previousWorkspace: `/data/worker/anchors/${id}`, runtimeSessionId: id, history: true },
     });
     const page = PromotionSnapshotPage.parse((await call("promotion-snapshot", { from: 0 })).json());
     // Runtime history and the workspace move; spilled tool output and provider-scoped consent stay behind.
@@ -230,6 +230,56 @@ describe("promotion protocol", () => {
     const next = await container(again.id);
     expect(SessionContainerSpec.parse((await next("spec")).json()).promotion).toBeUndefined();
     expect(notices.filter((notice) => notice.id === id)).toEqual([]);
+  });
+
+  it("moves a handoff: target harness and definition, workspace only, and a fresh runtime session opened by its notice", async () => {
+    const promoter = coordinator();
+    const { id } = await conversation();
+    const target = sharedHarness("handoff-target", { hosting: { mode: "isolated" }, builtinTools: ["files", "shell"] });
+    const targetDefinition = SharedSessionDefinition.parse({
+      model: "fixture", limits: SharedSessionLimits.parse({ maxTurnSeconds: 120, maxJobs: 0, maxContinuations: 0 }),
+      harness: { name: target.definition.name, version: target.definition.version, digest: target.digest, mode: "isolated", definition: target.definition },
+    });
+    const handoffId = randomUUID();
+    const notice = `[handoff:${handoffId}]\nYou continue a conversation handed off to you. Its notes are in Notes/MixedCase.md.`;
+    const { promotion } = await promotions.request({
+      principal, sessionId: id, source: "tool", requestKey: `handoff:${handoffId}`, kind: "handoff", history: false,
+      runtimeSessionId: `handoff-${handoffId}`, notice, target: { harness: target, definition: targetDefinition }, size: "small", resources,
+    });
+    expect(promotion).toMatchObject({ kind: "handoff", history: false, runtimeSessionId: `handoff-${handoffId}`, notice });
+    promoter.begin(promotion.id);
+    const starting = await allocated(promotion.id);
+    const call = await container(starting.allocationId!);
+    const spec = SessionContainerSpec.parse((await call("spec")).json());
+    expect(spec).toMatchObject({
+      harness: { digest: target.digest }, maxTurnSeconds: 120,
+      promotion: { id: promotion.id, runtimeSessionId: `handoff-${handoffId}`, history: false, notice },
+    });
+    const page = PromotionSnapshotPage.parse((await call("promotion-snapshot", { from: 0 })).json());
+    expect(page.manifest.entries.map((entry) => `${entry.area}:${entry.path}`)).toEqual(["workspace:Notes", "workspace:Notes/MixedCase.md"]);
+    expect(SessionContainerReadyResult.parse((await call("ready", { serverKey })).json())).toEqual({ ready: true, promoted: promotion.id });
+    await reached(promotion.id, "committed");
+    // The cutover installed the target definition: the view names the target harness and the new runtime session.
+    const record = (await shared.get(principal, id))!;
+    expect(record.definition).toEqual(targetDefinition);
+    expect(record.view).toMatchObject({
+      placement: "container", mode: "isolated", harness: { name: "handoff-target", digest: target.digest },
+      segment: { generation: 2, placement: "container", ahpSessionId: `handoff-${handoffId}`, harness: { name: "handoff-target", digest: target.digest } },
+    });
+    expect(record.view.promotion).toBeUndefined();
+    expect(await promotions.latest(principal, id)).toBeUndefined();
+    expect((await pool.query("SELECT reason,ahp_session_id FROM session_segments WHERE session_id=$1", [id])).rows)
+      .toEqual([{ reason: "handoff", ahp_session_id: `handoff-${handoffId}` }]);
+
+    // A failed handoff is reported by the handoff ledger, not by a promotion notice to the source agent.
+    const held = await conversation();
+    const activation = await files.acquire(held.id, principal, "still-active");
+    const failing = await promotions.request({ principal, sessionId: held.id, source: "tool", requestKey: `handoff:${randomUUID()}`, kind: "handoff", size: "small", resources });
+    promoter.begin(failing.promotion.id);
+    expect((await reached(failing.promotion.id, "failed")).view.error?.code).toBe("snapshot_failed");
+    await files.release(activation);
+    await delay(200);
+    expect(notices.filter((entry) => entry.id === held.id || entry.id === id)).toEqual([]);
   });
 
   it("refuses promotion for other harnesses and without capacity, recording nothing", async () => {

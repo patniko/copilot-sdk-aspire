@@ -5,7 +5,7 @@ import {
   type CapabilityIntrospection, type SharedSessionView,
 } from "@copilot-agent/contracts";
 import type { SessionFileLease } from "./session-files.js";
-import { PROMOTION_VIEW_COLUMNS, promotionViewOf } from "./promotion-views.js";
+import { PROMOTION_VIEW_COLUMNS, promotionViewOf, segmentOf } from "./promotion-views.js";
 import { StoreError } from "./store.js";
 
 export interface SharedSessionRecord {
@@ -30,8 +30,8 @@ interface SessionRow {
   tokens_used: string; tokens_reserved: string; jobs: number; continuations: number;
   placement: string; placement_generation: number;
   created_at: Date; last_activity_at: Date;
-  /** Selected with PROMOTION_VIEW_COLUMNS: the latest promotion and the current segment's start. */
-  promotion?: unknown; segment_started_at?: Date | null;
+  /** Selected with PROMOTION_VIEW_COLUMNS: the latest promotion and the current recorded segment. */
+  promotion?: unknown; segment?: unknown;
 }
 interface TurnRow {
   id: string; session_id: string; principal: string; epoch: string; state: SharedTurn["state"];
@@ -341,6 +341,8 @@ function record(row: SessionRow): SharedSessionRecord {
     : undefined;
   const createdAt = row.created_at.toISOString();
   const promotion = promotionViewOf(row.promotion);
+  const segment = segmentOf(row.segment);
+  const segmentHarness = segment?.harness ?? harness;
   return {
     id: row.id, principal: row.principal, githubUserId: Number(row.github_user_id), placement, definition,
     view: { id: row.id, label: row.label, model: definition.model, closed: row.closed, online: row.online ?? false,
@@ -348,11 +350,11 @@ function record(row: SessionRow): SharedSessionRecord {
       ...(harness ? { harness } : {}),
       mode: definition.harness?.mode ?? (placement === "shared" ? "shared" : "isolated"),
       placement,
-      // A session starts with one implicit segment; promotion and handoffs record the segments they start. The runtime
-      // session keeps the application session's ID across them.
+      // A session starts with one implicit segment that runs the application session's ID as its runtime session;
+      // promotion and handoffs record the segments they start, with the runtime session each runs.
       segment: {
-        generation: row.placement_generation, placement, ...(harness ? { harness } : {}), ahpSessionId: row.id,
-        startedAt: row.segment_started_at ? row.segment_started_at.toISOString() : createdAt,
+        generation: row.placement_generation, placement, ...(segmentHarness ? { harness: segmentHarness } : {}),
+        ahpSessionId: segment?.ahpSessionId ?? row.id, startedAt: segment?.startedAt ?? createdAt,
       },
       limits: definition.limits,
       budget: { usedTokens, reservedTokens, remainingTokens: Math.max(0, definition.limits.tokenBudget - usedTokens - reservedTokens) },

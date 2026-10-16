@@ -155,8 +155,10 @@ export class ContainerSessionService {
       const active = allocation && allocation.state !== "retired" ? allocation : undefined;
       if (active?.ready) {
         const ticket = await store(() => this.deps.store.issueTicket(principal, id, active.id));
+        // The runtime session of the current segment, which a handoff may have replaced; the broker path stays the session's.
+        const ahpSessionId = (await this.view(principal, id))?.segment.ahpSessionId ?? id;
         return {
-          sessionId: id, destination: "container", transport: "direct", ahpSessionId: id,
+          sessionId: id, destination: "container", transport: "direct", ahpSessionId,
           url: new URL(`/sessions/${id}`, this.#broker).href,
           token: ticket.token, expiresAt: ticket.expiresAt, serverKey: ticket.serverKey,
         };

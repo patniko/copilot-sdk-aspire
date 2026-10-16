@@ -1,4 +1,4 @@
-import { PromotionErrorCode, PromotionView } from "@copilot-agent/contracts";
+import { PromotionErrorCode, PromotionView, SharedHarnessRef } from "@copilot-agent/contracts";
 
 /** The promotion columns a view needs, as stored or as `to_jsonb` returns them. */
 export interface PromotionViewRow {
@@ -8,11 +8,22 @@ export interface PromotionViewRow {
 }
 
 /**
- * View columns for a session row aliased `s`: its latest promotion (`promotion`, a JSON row) and when its current
- * segment started (`segment_started_at`, absent for the implicit first segment).
+ * View columns for a session row aliased `s`: its latest promotion (`promotion`, a JSON row; handoffs are reported by
+ * their own ledger) and its current segment as recorded (`segment`, absent for the implicit first segment).
  */
-export const PROMOTION_VIEW_COLUMNS = `(SELECT to_jsonb(p) FROM session_promotions p WHERE p.session_id=s.id ORDER BY p.created_at DESC LIMIT 1) AS promotion,
-  (SELECT g.started_at FROM session_segments g WHERE g.session_id=s.id AND g.generation=s.placement_generation) AS segment_started_at`;
+export const PROMOTION_VIEW_COLUMNS = `(SELECT to_jsonb(p) FROM session_promotions p WHERE p.session_id=s.id AND p.kind='promotion' ORDER BY p.created_at DESC LIMIT 1) AS promotion,
+  (SELECT jsonb_build_object('started_at',g.started_at,'ahp_session_id',g.ahp_session_id,'harness',g.harness) FROM session_segments g
+     WHERE g.session_id=s.id AND g.generation<=s.placement_generation ORDER BY g.generation DESC LIMIT 1) AS segment`;
+
+/** The current segment selected with {@link PROMOTION_VIEW_COLUMNS}: its start, runtime session, and harness reference. */
+export function segmentOf(value: unknown): { startedAt: string; ahpSessionId: string; harness?: SharedHarnessRef } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as { started_at: string; ahp_session_id: string; harness: unknown };
+  return {
+    startedAt: new Date(row.started_at).toISOString(), ahpSessionId: row.ahp_session_id,
+    ...(row.harness ? { harness: SharedHarnessRef.parse(row.harness) } : {}),
+  };
+}
 
 const iso = (value: Date | string | null): string | undefined => (value === null ? undefined : new Date(value).toISOString());
 

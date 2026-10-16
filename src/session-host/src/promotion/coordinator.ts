@@ -68,7 +68,10 @@ export class SharedPromotions {
     return { promotion: promotion.view, created };
   }
 
-  /** The session's turn ended: a requested promotion starts moving. */
+  /**
+   * The session's turn ended: a requested move starts. This covers promotions and the handoffs that reuse them; a move
+   * whose snapshot carries no history (`history` on its record) captures only the workspace, here and on recovery.
+   */
   turnEnded(sessionId: string): void {
     void this.options.store.open(sessionId).then((promotion) => {
       if (promotion?.state === "requested") this.#start(promotion);
@@ -164,9 +167,12 @@ export class SharedPromotions {
     }
   }
 
-  /** Tells the agent that asked for a failed move why it did not happen; the conversation continues where it was. */
+  /**
+   * Tells the agent that asked for a failed promotion why it did not happen; the conversation continues where it was.
+   * Handoffs are reported to the source agent by the handoff ledger, in handoff terms.
+   */
   async #notify(promotion: PromotionRecord): Promise<void> {
-    if (promotion.state !== "failed" || promotion.source !== "tool" || !(await this.options.store.markNotified(promotion.id))) return;
+    if (promotion.state !== "failed" || promotion.source !== "tool" || promotion.kind !== "promotion" || !(await this.options.store.markNotified(promotion.id))) return;
     await this.options.notify(promotion.principal, promotion.sessionId, `promotion-${promotion.id}`, [
       `The move to a dedicated container that ${PROMOTE_SESSION_TOOL} requested did not happen (${promotion.view.error?.code}): ${promotion.view.error?.message}`,
       "The conversation continues in shared placement, without a shell or a real filesystem. Tell the person, and continue with what is possible here.",

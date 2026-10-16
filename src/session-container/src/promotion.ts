@@ -8,11 +8,13 @@ import { EXECUTION_UID } from "./protocol.js";
 type Post = <T>(operation: string, body: unknown, schema: z.ZodType<T>) => Promise<T>;
 
 /**
- * Seeds the session volume from a promotion snapshot (docs/HOSTING-MODES-PLAN.md, section 7.3) at the layout the owner
- * resumes from: the runtime's state under `copilot-home/session-state/<session>`, the workspace under `workspace`, and
- * the volume marker. Pages come from the dispatcher through this allocation's credential; the manifest is checked
- * against the digest the ledger recorded, and every file against its own. Before the cutover the volume is not
- * authoritative, so whatever an earlier, failed attempt left there is replaced.
+ * Seeds the session volume from a move's snapshot (docs/HOSTING-MODES-PLAN.md, section 7.3) at the layout the owner
+ * starts from: the runtime's state under `copilot-home/session-state/<runtime session>`, the workspace under
+ * `workspace`, and, when the history moved, the volume marker that makes the owner resume that runtime session.
+ * Without history only the workspace is restored and the owner creates the runtime session fresh. Pages come from the
+ * dispatcher through this allocation's credential; the manifest is checked against the digest the ledger recorded,
+ * and every file against its own. Before the cutover the volume is not authoritative, so whatever an earlier, failed
+ * attempt left there is replaced.
  */
 export async function restorePromotion(spec: SessionContainerSpec, execution: string, post: Post): Promise<PromotionRestoreResult> {
   const promotion = spec.promotion;
@@ -31,6 +33,9 @@ export async function restorePromotion(spec: SessionContainerSpec, execution: st
     return result;
   };
   const first = await page(0);
+  if (!promotion.history && first.manifest.entries.some((entry) => entry.area === "state")) {
+    throw new Error("A move without history carried runtime state.");
+  }
   async function* contents(): AsyncGenerator<{ ordinal: number; content: Buffer }> {
     let current: PromotionSnapshotPage | undefined = first;
     while (current) {
@@ -38,11 +43,17 @@ export async function restorePromotion(spec: SessionContainerSpec, execution: st
       current = current.next === undefined ? undefined : await page(current.next);
     }
   }
-  const restored = await restorePromotionSnapshot(first.manifest, contents(), { state: join(home, "session-state", spec.sessionId), workspace }, {
+  const state = join(home, "session-state", promotion.runtimeSessionId);
+  const restored = await restorePromotionSnapshot(first.manifest, contents(), { state, workspace }, {
     sessionId: spec.sessionId, digest: promotion.digest, owner: { uid: EXECUTION_UID, gid: EXECUTION_UID },
   });
-  // The owner resumes a volume whose marker names this session and harness snapshot.
-  await writeFile(marker, JSON.stringify({ sessionId: spec.sessionId, digest: spec.harness.digest }), { mode: 0o600 });
+  if (!promotion.history) {
+    // The owner creates the runtime session fresh; leave no state directory for it to collide with.
+    await rm(state, { recursive: true, force: true });
+    return restored;
+  }
+  // The owner resumes a volume whose marker names this session, its runtime session, and its harness snapshot.
+  await writeFile(marker, JSON.stringify({ sessionId: spec.sessionId, runtimeSessionId: promotion.runtimeSessionId, digest: spec.harness.digest }), { mode: 0o600 });
   await chown(marker, EXECUTION_UID, EXECUTION_UID);
   return restored;
 }

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CopilotClient, RuntimeConnection, type AhpHost, type CopilotSession, type SessionConfig } from "@github/copilot-sdk";
-import { promotionContinuation, renderSkillMarkdown } from "@copilot-agent/contracts";
+import { promotionContinuation, renderSkillMarkdown, RuntimeSessionId } from "@copilot-agent/contracts";
 import { bindTools, buildSessionOptions, hostPermissionHandler, hostToolGuard } from "@copilot-agent/harness-hosting";
 import { SupervisorMessage, type OwnerConfiguration } from "./protocol.js";
 
@@ -20,25 +20,28 @@ let stopping = false;
 let started = false;
 let activeTurn = false;
 let turnTimer: NodeJS.Timeout | undefined;
-/** Where the promoted conversation's workspace lived before, and where it is now; set when started for a promotion. */
-let promotedWorkspace: { previous?: string; current: string } | undefined;
+/**
+ * The note a session started for a move sends once after its cutover: the move's notice, or the standard continuation
+ * when its history moved. The first line deduplicates delivery.
+ */
+let moveNote: { id: string; text: string; marker: string } | undefined;
 
 function send(message: object): void {
   if (process.connected) process.send!(message);
 }
 
 /**
- * After a promotion's cutover, tells the agent once where it now runs. The runtime keeps history as written, so earlier
- * messages still name the shared worker's workspace path; the note maps it to this container's.
+ * After a move's cutover, tells the agent once what changed. The runtime keeps history as written, so earlier messages
+ * still name the shared worker's workspace path; the standard continuation maps it to this container's.
  */
 async function continuePromoted(promotionId: string): Promise<void> {
   const current = session;
-  if (!current || !promotedWorkspace || stopping) return;
-  const marker = `[promotion:${promotionId}]`;
+  const note = moveNote;
+  if (!current || !note || note.id !== promotionId || stopping) return;
   const delivered = (await current.getEvents()).some((event) =>
-    event.type === "user.message" && event.data.source === "system" && event.data.content.includes(marker));
+    event.type === "user.message" && event.data.source === "system" && event.data.content.includes(note.marker));
   if (delivered) return;
-  await current.send({ prompt: promotionContinuation(promotionId, promotedWorkspace.current, promotedWorkspace.previous), source: "system" });
+  await current.send({ prompt: note.text, source: "system" });
 }
 
 function token(): Promise<string> {
@@ -65,7 +68,11 @@ async function start(config: OwnerConfiguration): Promise<void> {
   await chmod(config.dataDirectory, 0o700);
   await mkdir(join(config.dataDirectory, "workspace"), { recursive: true, mode: 0o700 });
   const workspace = await realpath(join(config.dataDirectory, "workspace"));
-  if (spec.promotion) promotedWorkspace = { current: workspace, ...(spec.promotion.previousWorkspace ? { previous: spec.promotion.previousWorkspace } : {}) };
+  if (spec.promotion) {
+    const text = spec.promotion.notice
+      ?? (spec.promotion.history ? promotionContinuation(spec.promotion.id, workspace, spec.promotion.previousWorkspace) : undefined);
+    if (text) moveNote = { id: spec.promotion.id, text, marker: text.split("\n", 1)[0]! };
+  }
   const skills = join(config.dataDirectory, "skills");
   await rm(skills, { recursive: true, force: true });
   for (const skill of definition.skills ?? []) {
@@ -73,13 +80,18 @@ async function start(config: OwnerConfiguration): Promise<void> {
     await writeFile(join(skills, skill.name, "SKILL.md"), renderSkillMarkdown(skill), { mode: 0o600 });
   }
   const marker = join(config.dataDirectory, "session.json");
-  const retained = await readFile(marker, "utf8").then((text) => JSON.parse(text) as { sessionId?: unknown; digest?: unknown }, (error: unknown) => {
+  const retained = await readFile(marker, "utf8").then((text) => JSON.parse(text) as { sessionId?: unknown; runtimeSessionId?: unknown; digest?: unknown }, (error: unknown) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined;
     throw error;
   });
   if (retained && (retained.sessionId !== spec.sessionId || retained.digest !== spec.harness.digest)) {
     throw new Error("The volume holds a different session or harness snapshot.");
   }
+  // The runtime session this volume holds (recorded by the move that seeded it), the one a move starts fresh, or, for
+  // a session that never moved, the application session's own ID.
+  const runtimeSessionId = RuntimeSessionId.parse(retained
+    ? (retained.runtimeSessionId ?? spec.sessionId)
+    : (spec.promotion?.runtimeSessionId ?? spec.sessionId));
   const models = [...new Set([spec.model, ...(definition.agents ?? []).flatMap((agent) => agent.model ? [agent.model] : [])])];
   // The in-process runtime uses this process's working directory; it cannot take a client-level one.
   process.chdir(workspace);
@@ -103,7 +115,7 @@ async function start(config: OwnerConfiguration): Promise<void> {
   if (!Array.isArray(availableTools)) throw new Error("The session container requires an explicit tool allowlist.");
   const options: SessionConfig = {
     ...mapped,
-    sessionId: spec.sessionId,
+    sessionId: runtimeSessionId,
     workingDirectory: workspace,
     model: spec.model,
     tools,
@@ -140,9 +152,9 @@ async function start(config: OwnerConfiguration): Promise<void> {
     },
   };
   session = retained
-    ? await owner.resumeSession(spec.sessionId, { ...options, continuePendingWork: false })
+    ? await owner.resumeSession(runtimeSessionId, { ...options, continuePendingWork: false })
     : await owner.createSession(options);
-  if (!retained) await writeFile(marker, JSON.stringify({ sessionId: spec.sessionId, digest: spec.harness.digest }), { mode: 0o600 });
+  if (!retained) await writeFile(marker, JSON.stringify({ sessionId: spec.sessionId, runtimeSessionId, digest: spec.harness.digest }), { mode: 0o600 });
   const published = session;
   published.on((event) => {
     if (event.type === "session.idle" && !event.agentId) {
@@ -161,12 +173,12 @@ async function start(config: OwnerConfiguration): Promise<void> {
     createSession: async () => { throw new Error("Sessions are provisioned by the application; attach to the published session."); },
     resumeSession: async ({ sessionId, signal }) => {
       signal.throwIfAborted();
-      if (sessionId !== spec.sessionId || stopping) throw new Error("The requested session is not hosted by this container.");
+      if (sessionId !== runtimeSessionId || stopping) throw new Error("The requested session is not hosted by this container.");
       return published;
     },
     onExit: () => { if (!stopping) fail("The AHP hosting task stopped."); },
   });
-  await host.publishSession(spec.sessionId);
+  await host.publishSession(runtimeSessionId);
   send({ kind: "ready" });
 }
 

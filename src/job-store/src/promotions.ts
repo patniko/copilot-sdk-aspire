@@ -3,8 +3,8 @@ import { posix } from "node:path";
 import type pg from "pg";
 import {
   ContainerSize, HarnessDefinition, PROMOTION_EXCLUDED_STATE_DIRECTORIES, PROMOTION_EXCLUDED_STATE_FILES, PROMOTION_SNAPSHOT_LIMITS, PromotionErrorCode,
-  PromotionSnapshotManifest, PromotionSnapshotPath, PromotionView, promotionSnapshotDigestInput, SharedSessionDefinition,
-  type PromotionSnapshotEntry, type PromotionSource, type PromotionState, type SharedWorkerLimits,
+  PromotionKind, PromotionNotice, PromotionSnapshotManifest, PromotionSnapshotPath, PromotionView, promotionSnapshotDigestInput, RuntimeSessionId,
+  SharedSessionDefinition, type HarnessSnapshot, type PromotionSnapshotEntry, type PromotionSource, type PromotionState, type SharedWorkerLimits,
 } from "@copilot-agent/contracts";
 import { AllocationStore } from "./allocations.js";
 import { promotionView } from "./promotion-views.js";
@@ -12,12 +12,26 @@ import type { SessionFileLease } from "./session-files.js";
 import type { SharedStore } from "./shared-store.js";
 import { StoreError } from "./store.js";
 
+/** What a move changes besides placement: the harness snapshot the container runs and the definition the cutover installs. */
+export interface PromotionTarget {
+  harness: HarnessSnapshot;
+  /** Replaces `shared_sessions.definition` at cutover (model, limits, harness reference); unchanged when absent. */
+  definition?: SharedSessionDefinition;
+}
+
 export interface PromotionRecord {
   id: string;
   sessionId: string;
   principal: string;
   source: PromotionSource;
   requestKey: string;
+  kind: PromotionKind;
+  /** Whether the snapshot carries the runtime history; without it the container creates `runtimeSessionId` fresh. */
+  history: boolean;
+  /** The runtime (AHP) session the new segment runs. */
+  runtimeSessionId: string;
+  notice?: string;
+  target?: PromotionTarget;
   state: PromotionState;
   size: string;
   resources: ContainerSize;
@@ -33,12 +47,25 @@ export interface PromotionRequest {
   principal: string;
   sessionId: string;
   source: PromotionSource;
-  /** Idempotency: the tool call, or the API request, that asked. */
+  /** Idempotency: the tool call, the API request, or the handoff that asked. */
   requestKey: string;
   reason?: string;
   /** The container size the harness's effective hosting resolved, and its resources from the operator's catalog. */
   size: string;
   resources: ContainerSize;
+  /** `handoff` for stage-6 handoffs, which their own ledger reports; `promotion` by default. */
+  kind?: PromotionKind;
+  /** Whether the snapshot carries the runtime history; true by default. */
+  history?: boolean;
+  /**
+   * The runtime session the new segment runs. With history it must be the session's current one (the default);
+   * without, it must be new (default: a new UUID).
+   */
+  runtimeSessionId?: string;
+  /** Sent once by the container in place of the standard move continuation; see {@link PromotionNotice}. */
+  notice?: string;
+  /** A harness snapshot, and optionally a session definition, that differ from the session's admitted ones. */
+  target?: PromotionTarget;
 }
 
 /** How long and how long idle the session container started for a promotion may run (the session-container settings). */
@@ -70,6 +97,8 @@ export interface PromotionSnapshotPage {
 
 interface PromotionRow {
   id: string; session_id: string; principal: string; source: PromotionSource; request_key: string; reason: string;
+  kind: PromotionKind; history: boolean; runtime_session_id: string; notice: string | null;
+  target_harness: HarnessSnapshot | null; target_definition: unknown;
   state: PromotionState; size: string; resources: ContainerSize; from_generation: number;
   snapshot_epoch: string | null; snapshot_digest: string | null; allocation_id: string | null; previous_workspace: string | null;
   error_code: string | null; error_message: string | null; notified_at: Date | null;
@@ -98,15 +127,21 @@ export class PromotionStore {
   }
 
   /**
-   * Records a promotion for a shared session, or returns the promotion that already answers it: the same request,
-   * the session's open promotion, or its committed one. `created` is true only for a new record.
+   * Records a move for a shared session, or returns the one that already answers it: the same request, the session's
+   * open move of any kind, or, for a promotion, its committed promotion. `created` is true only for a new record.
    */
   async request(input: PromotionRequest): Promise<{ promotion: PromotionRecord; created: boolean }> {
     const resources = ContainerSize.parse(input.resources);
     const reason = (input.reason ?? "").trim();
-    if (!input.principal || !input.requestKey || input.requestKey.length > 200 || reason.length > 500 || !/^[a-z][a-z0-9-]{0,62}$/.test(input.size)) {
+    const kind = PromotionKind.safeParse(input.kind ?? "promotion");
+    if (!input.principal || !input.requestKey || input.requestKey.length > 200 || reason.length > 500 || !/^[a-z][a-z0-9-]{0,62}$/.test(input.size)
+      || !kind.success || (input.history !== undefined && typeof input.history !== "boolean")
+      || (input.notice !== undefined && !PromotionNotice.safeParse(input.notice).success)
+      || (input.runtimeSessionId !== undefined && !RuntimeSessionId.safeParse(input.runtimeSessionId).success)) {
       throw new StoreError("invalid_request", "Invalid promotion request.");
     }
+    const target = input.target === undefined ? undefined : promotionTarget(input.target);
+    const history = input.history ?? true;
     return this.shared.transaction(async (db) => {
       const repeated = (await db.query<PromotionRow>("SELECT * FROM session_promotions WHERE session_id=$1 AND request_key=$2",
         [input.sessionId, input.requestKey])).rows[0];
@@ -114,19 +149,30 @@ export class PromotionStore {
         if (repeated.principal !== input.principal) throw new StoreError("not_found", "The conversation was not found.");
         return { promotion: record(repeated), created: false };
       }
-      const session = (await db.query<{ principal: string; closed: boolean; placement: string; placement_generation: number }>(
-        "SELECT principal,closed,placement,placement_generation FROM shared_sessions WHERE id=$1 FOR UPDATE", [input.sessionId])).rows[0];
+      const session = (await db.query<{ id: string; principal: string; closed: boolean; placement: string; placement_generation: number }>(
+        "SELECT id,principal,closed,placement,placement_generation FROM shared_sessions WHERE id=$1 FOR UPDATE", [input.sessionId])).rows[0];
       if (!session || session.principal !== input.principal) throw new StoreError("not_found", "The conversation was not found.");
       const existing = (await db.query<PromotionRow>(
-        `SELECT * FROM session_promotions WHERE session_id=$1 AND state IN ('requested','moving','starting','committed')
-         ORDER BY created_at DESC LIMIT 1`, [input.sessionId])).rows[0];
+        `SELECT * FROM session_promotions WHERE session_id=$1
+           AND (state IN ('requested','moving','starting') OR (state='committed' AND kind='promotion' AND $2='promotion'))
+         ORDER BY created_at DESC LIMIT 1`, [input.sessionId, kind.data])).rows[0];
       if (existing) return { promotion: record(existing), created: false };
       if (session.closed) throw new StoreError("not_found", "The conversation is closed.");
       if (session.placement !== "shared") throw new StoreError("invalid_state", "Only a conversation in shared placement can be promoted.");
+      // The runtime session the conversation runs now: the latest recorded segment's, else the implicit first one's.
+      const current = (await db.query<{ ahp_session_id: string }>(
+        "SELECT ahp_session_id FROM session_segments WHERE session_id=$1 ORDER BY generation DESC LIMIT 1", [session.id])).rows[0]?.ahp_session_id ?? session.id;
+      const runtimeSessionId = input.runtimeSessionId ?? (history ? current : randomUUID());
+      if (history && runtimeSessionId !== current) {
+        throw new StoreError("invalid_request", "A move that carries the history continues the conversation's current runtime session.");
+      }
+      if (!history && runtimeSessionId === current) throw new StoreError("invalid_request", "A fresh runtime session needs a new identifier.");
       const inserted = await db.query<PromotionRow>(
-        `INSERT INTO session_promotions(id,session_id,principal,source,request_key,reason,state,size,resources,from_generation)
-         VALUES($1,$2,$3,$4,$5,$6,'requested',$7,$8,$9) RETURNING *`,
-        [randomUUID(), input.sessionId, input.principal, input.source, input.requestKey, reason, input.size,
+        `INSERT INTO session_promotions(id,session_id,principal,source,request_key,reason,kind,history,runtime_session_id,notice,target_harness,
+           target_definition,state,size,resources,from_generation)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'requested',$13,$14,$15) RETURNING *`,
+        [randomUUID(), session.id, input.principal, input.source, input.requestKey, reason, kind.data, history, runtimeSessionId, input.notice ?? null,
+          target ? JSON.stringify(target.harness) : null, target?.definition ? JSON.stringify(target.definition) : null, input.size,
           JSON.stringify(resources), session.placement_generation]);
       return { promotion: record(inserted.rows[0]!), created: true };
     });
@@ -144,10 +190,11 @@ export class PromotionStore {
     return row ? record(row) : undefined;
   }
 
-  /** The session's latest promotion, for its owner's views. */
+  /** The session's latest promotion, for its owner's views; handoffs are reported by their own ledger. */
   async latest(principal: string, sessionId: string): Promise<PromotionRecord | undefined> {
     const row = (await this.pool.query<PromotionRow>(
-      "SELECT * FROM session_promotions WHERE session_id=$1 AND principal=$2 ORDER BY created_at DESC LIMIT 1", [sessionId, principal])).rows[0];
+      "SELECT * FROM session_promotions WHERE session_id=$1 AND principal=$2 AND kind='promotion' ORDER BY created_at DESC LIMIT 1",
+      [sessionId, principal])).rows[0];
     return row ? record(row) : undefined;
   }
 
@@ -201,7 +248,9 @@ export class PromotionStore {
         const stored = (await db.query<StoredEntry>(
           `SELECT path,directory,display_name,octet_length(content) AS size,encode(sha256(content),'hex') AS sha256
            FROM session_files WHERE namespace_id=$1 AND (starts_with(path,$2) OR starts_with(path,$3)) ORDER BY path`,
-          [lease.id, `${areas.state}/`, `${areas.workspace}/`])).rows;
+          [lease.id, `${areas.state}/`, `${areas.workspace}/`])).rows
+          // A move without history carries only the workspace; the container starts a fresh runtime session.
+          .filter((entry) => promotion.history || entry.path.startsWith(`${areas.workspace}/`));
         const { manifest, keys } = snapshotManifest(lease.id, stored, areas);
         const digest = `sha256:${createHash("sha256").update(promotionSnapshotDigestInput(manifest)).digest("hex")}`;
         const files = manifest.entries.flatMap((entry, ordinal) => entry.kind === "file" ? [{ key: keys[ordinal]!, ordinal }] : []);
@@ -250,8 +299,10 @@ export class PromotionStore {
         "SELECT definition FROM shared_sessions WHERE id=$1 AND principal=$2 AND NOT closed AND placement='shared' FOR UPDATE",
         [promotion.session_id, promotion.principal])).rows[0];
       if (!session) throw new StoreError("invalid_state", "The conversation closed or changed placement during the move.");
-      const harness = SharedSessionDefinition.parse(session.definition).harness;
-      if (!harness?.definition) throw new StoreError("invalid_state", "The conversation has no admitted harness snapshot to run in a container.");
+      const admitted = SharedSessionDefinition.parse(session.definition).harness;
+      const harness = promotion.target_harness
+        ?? (admitted?.definition ? { definition: admitted.definition, digest: admitted.digest } : undefined);
+      if (!harness) throw new StoreError("invalid_state", "The conversation has no admitted harness snapshot to run in a container.");
       const earlier = await db.query("SELECT 1 FROM execution_allocations WHERE session_id=$1 AND state<>'retired'", [promotion.session_id]);
       if (earlier.rowCount) throw new StoreError("quota_exceeded", "A container from an earlier attempt is still stopping for this conversation.");
       await db.query(
@@ -339,10 +390,13 @@ export class PromotionStore {
             [promotion.allocation_id]);
           if (!running.rowCount) throw new CutoverRefused("startup_failed", "The promotion's container stopped before the cutover.");
         }
-        const session = (await db.query<{ definition: { harness?: { name: string; version: string; digest: string } } }>(
-          `UPDATE shared_sessions SET placement='container',placement_generation=placement_generation+1,last_activity_at=clock_timestamp()
+        // A target definition (a handoff's model, limits, and harness reference) replaces the session's in the same commit.
+        const session = (await db.query<{ definition: unknown }>(
+          `UPDATE shared_sessions SET placement='container',placement_generation=placement_generation+1,last_activity_at=clock_timestamp(),
+             definition=COALESCE($4::jsonb,definition)
            WHERE id=$1 AND principal=$2 AND NOT closed AND placement='shared' AND placement_generation=$3 RETURNING definition`,
-          [promotion.session_id, promotion.principal, promotion.from_generation])).rows[0];
+          [promotion.session_id, promotion.principal, promotion.from_generation,
+            promotion.target_definition ? JSON.stringify(promotion.target_definition) : null])).rows[0];
         if (!session) throw new CutoverRefused("session_changed", "The conversation closed or changed placement during the move.");
         const fenced = await db.query(
           `UPDATE session_file_namespaces SET epoch=$3,worker=$4,lease_until='infinity'
@@ -352,12 +406,14 @@ export class PromotionStore {
         await db.query("DELETE FROM shared_connection_tickets WHERE session_id=$1 AND used_at IS NULL", [promotion.session_id]);
         await db.query("DELETE FROM shared_activations WHERE session_id=$1", [promotion.session_id]);
         const generation = promotion.from_generation + 1;
-        const harness = session.definition.harness;
+        const admitted = SharedSessionDefinition.parse(session.definition).harness;
+        const harness = promotion.target_harness
+          ? { name: promotion.target_harness.definition.name, version: promotion.target_harness.definition.version, digest: promotion.target_harness.digest }
+          : admitted ? { name: admitted.name, version: admitted.version, digest: admitted.digest } : undefined;
         await db.query(
           `INSERT INTO session_segments(session_id,generation,placement,reason,harness,ahp_session_id,promotion_id)
-           VALUES($1,$2,'container','promotion',$3,$4,$5)`,
-          [promotion.session_id, generation, harness ? JSON.stringify({ name: harness.name, version: harness.version, digest: harness.digest }) : null,
-            promotion.session_id, id]);
+           VALUES($1,$2,'container',$3,$4,$5,$6)`,
+          [promotion.session_id, generation, promotion.kind, harness ? JSON.stringify(harness) : null, promotion.runtime_session_id, id]);
         await db.query(
           "UPDATE session_promotions SET state='committed',committed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1", [id]);
         return { generation };
@@ -434,9 +490,26 @@ function snapshotManifest(sessionId: string, stored: StoredEntry[], areas: Promo
   return { manifest: parsed.data, keys: candidates.map((item) => item.key) };
 }
 
+/** Validates a move's target: a well-formed harness snapshot, and a definition that names the same snapshot if it names one. */
+function promotionTarget(target: PromotionTarget): PromotionTarget {
+  const harness = HarnessDefinition.safeParse(target.harness?.definition);
+  const definition = target.definition === undefined ? undefined : SharedSessionDefinition.safeParse(target.definition);
+  if (!harness.success || !/^sha256:[a-f0-9]{64}$/.test(target.harness.digest ?? "") || (definition && !definition.success)
+    || (definition?.data?.harness && definition.data.harness.digest !== target.harness.digest)) {
+    throw new StoreError("invalid_request", "Invalid promotion target.");
+  }
+  return { harness: { definition: harness.data, digest: target.harness.digest }, ...(definition?.data ? { definition: definition.data } : {}) };
+}
+
 function record(row: PromotionRow): PromotionRecord {
   return {
     id: row.id, sessionId: row.session_id, principal: row.principal, source: row.source, requestKey: row.request_key,
+    kind: row.kind, history: row.history, runtimeSessionId: row.runtime_session_id,
+    ...(row.notice ? { notice: row.notice } : {}),
+    ...(row.target_harness ? { target: {
+      harness: { definition: HarnessDefinition.parse(row.target_harness.definition), digest: row.target_harness.digest },
+      ...(row.target_definition ? { definition: SharedSessionDefinition.parse(row.target_definition) } : {}),
+    } } : {}),
     state: row.state, size: row.size, resources: ContainerSize.parse(row.resources), fromGeneration: row.from_generation,
     ...(row.snapshot_epoch ? { snapshotEpoch: row.snapshot_epoch } : {}),
     ...(row.snapshot_digest ? { snapshotDigest: row.snapshot_digest } : {}),

@@ -66,6 +66,26 @@ export type PromotionView = z.infer<typeof PromotionView>;
 export const PromotionRequestBody = z.object({ reason: z.string().trim().max(500).default("") }).strict();
 export type PromotionRequestBody = z.infer<typeof PromotionRequestBody>;
 
+/**
+ * What a move into a session container starts: `promotion` continues the conversation under its admitted harness;
+ * `handoff` (stage 6) may run a target harness, start a fresh runtime session, or both. Either records a segment.
+ */
+export const PROMOTION_KINDS = ["promotion", "handoff"] as const;
+export const PromotionKind = z.enum(PROMOTION_KINDS);
+export type PromotionKind = z.infer<typeof PromotionKind>;
+
+/** A runtime (AHP) session identifier: a directory name in the runtime's session state and a `copilot --resume` argument. */
+export const RuntimeSessionId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/);
+
+/**
+ * A move's opening note, sent once by the container in place of the standard move continuation, such as a handoff
+ * summary. Its first line is a marker like `[handoff:<uuid>]`, which deduplicates delivery.
+ */
+export const PROMOTION_NOTICE_MAX = 20_000;
+export const PromotionNotice = z.string().max(PROMOTION_NOTICE_MAX)
+  .refine((value) => /^\[[a-z][a-z-]{0,31}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\]$/.test(value.split("\n", 1)[0]!),
+    "A notice's first line is a marker such as [handoff:<uuid>].");
+
 /** A promotion as returned by `POST /v1/sessions/{id}/promote`: the session's promotion and whether this request created it. */
 export const PromotionResponse = z.object({ sessionId: z.string().uuid(), created: z.boolean(), promotion: PromotionView }).strict();
 export type PromotionResponse = z.infer<typeof PromotionResponse>;

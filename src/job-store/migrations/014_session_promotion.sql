@@ -19,8 +19,9 @@ END $$;
 CREATE TRIGGER shared_sessions_one_way_placement BEFORE UPDATE OF placement, placement_generation ON shared_sessions
   FOR EACH ROW EXECUTE FUNCTION shared_sessions_one_way_placement();
 
--- Promotion requests. Each is idempotent per request key (a tool call or an API request), at most one is open per
--- session, and at most one ever commits. `failed` is terminal and leaves the session shared.
+-- Moves into a session container: promotions, and the handoffs (stage 6) that reuse them. Each is idempotent per
+-- request key (a tool call, an API request, or a handoff), at most one is open per session, and at most one promotion
+-- ever commits. `failed` is terminal and leaves the session shared.
 CREATE TABLE session_promotions (
   id uuid PRIMARY KEY,
   session_id uuid NOT NULL REFERENCES shared_sessions(id) ON DELETE CASCADE,
@@ -28,6 +29,17 @@ CREATE TABLE session_promotions (
   source text NOT NULL CONSTRAINT session_promotion_source CHECK (source IN ('tool','api')),
   request_key text NOT NULL CONSTRAINT session_promotion_request_key CHECK (length(request_key) BETWEEN 1 AND 200),
   reason text NOT NULL DEFAULT '' CONSTRAINT session_promotion_reason CHECK (length(reason) <= 500),
+  -- The segment the move starts: `promotion` keeps the admitted harness; `handoff` may name a target.
+  kind text NOT NULL DEFAULT 'promotion' CONSTRAINT session_promotion_kind CHECK (kind IN ('promotion','handoff')),
+  -- Whether the snapshot carries the runtime history. Without it the container creates a fresh runtime session.
+  history boolean NOT NULL DEFAULT true,
+  -- The runtime (AHP) session the new segment runs: the current one when history moves, a new one otherwise.
+  runtime_session_id text NOT NULL CONSTRAINT session_promotion_runtime_session CHECK (runtime_session_id ~ '^[A-Za-z0-9][A-Za-z0-9-]{0,127}$'),
+  -- Sent once by the container in place of the standard move continuation; its first line deduplicates delivery.
+  notice text CONSTRAINT session_promotion_notice CHECK (notice IS NULL OR length(notice) BETWEEN 1 AND 20000),
+  -- The harness snapshot the container runs, and the session definition the cutover installs, when they change.
+  target_harness jsonb,
+  target_definition jsonb,
   state text NOT NULL CONSTRAINT session_promotion_state CHECK (state IN ('requested','moving','starting','committed','failed')),
   size text NOT NULL,
   resources jsonb NOT NULL,
@@ -48,13 +60,14 @@ CREATE TABLE session_promotions (
   committed_at timestamptz,
   failed_at timestamptz,
   UNIQUE (session_id, request_key),
+  CONSTRAINT session_promotion_target CHECK (target_definition IS NULL OR target_harness IS NOT NULL),
   CONSTRAINT session_promotion_outcome CHECK (
     (state = 'committed') = (committed_at IS NOT NULL) AND (state = 'failed') = (failed_at IS NOT NULL)
     AND (state <> 'failed' OR error_code IS NOT NULL)
     AND (state NOT IN ('starting','committed') OR (snapshot_epoch IS NOT NULL AND snapshot_digest IS NOT NULL)))
 );
 CREATE UNIQUE INDEX session_promotion_one_open ON session_promotions(session_id) WHERE state NOT IN ('committed','failed');
-CREATE UNIQUE INDEX session_promotion_one_committed ON session_promotions(session_id) WHERE state = 'committed';
+CREATE UNIQUE INDEX session_promotion_one_committed ON session_promotions(session_id) WHERE state = 'committed' AND kind = 'promotion';
 CREATE INDEX session_promotion_allocation ON session_promotions(allocation_id) WHERE allocation_id IS NOT NULL;
 
 -- The snapshot a promotion moves: runtime history and workspace files read under a fenced storage lease. The manifest
