@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1590" viewBox="0 0 1280 1590" role="img" aria-labelledby="title description">
   <title id="title">Copilot SDK and Aspire service architecture</title>
-  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The default executor pool runs unprivileged SDK runners using the inference gateway. The optional direct container host remains separate. Experimental local hybrid mode adds protected CLI provisioning and a shared in-process coordinator with PostgreSQL session files; an operator-owned Docker controller starts one-shot execution containers and durable completion returns results to the coordinator. Separately, the local configurator can send a description and catalog through a request-owned SDK to GitHub Copilot using server-side GitHub authentication; configuration returns to the unsaved editor and code proposals are never installed. Azure hybrid and two-real-account qualification remain open. Outbound network isolation is not enforced.</desc>
+  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The default executor pool runs unprivileged SDK runners using the inference gateway. The optional direct container host remains separate. Experimental local hybrid mode adds protected CLI provisioning, a connection broker that verifies one-use tickets and forwards CLI connections to their session's placement, and a shared in-process coordinator with PostgreSQL session files; an operator-owned Docker controller starts one-shot execution containers and durable completion returns results to the coordinator. Separately, the local configurator can send a description and catalog through a request-owned SDK to GitHub Copilot using server-side GitHub authentication; configuration returns to the unsaved editor and code proposals are never installed. Azure hybrid and two-real-account qualification remain open. Outbound network isolation is not enforced.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#576574"/>
@@ -113,6 +113,11 @@
   <text x="164" y="1048" class="heading" text-anchor="middle">CLI + agent-api</text>
   <text x="164" y="1073" class="body" text-anchor="middle">Principal-bound provisioning</text>
   <text x="164" y="1097" class="body" text-anchor="middle">One-use ticket + pinned key</text>
+  <rect x="44" y="1138" width="240" height="60" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
+  <text x="164" y="1163" class="heading" text-anchor="middle">connection-broker</text>
+  <text x="164" y="1186" class="body" text-anchor="middle">Checks tickets; forwards bytes</text>
+  <path d="M 164 1116 V 1136" class="edge"/>
+  <path d="M 284 1168 H 400 V 1118" class="edge"/>
   <rect x="334" y="1020" width="260" height="96" rx="10" fill="#f0eaff" stroke="#8250df"/>
   <text x="464" y="1048" class="heading" text-anchor="middle">session-host</text>
   <text x="464" y="1073" class="body" text-anchor="middle">One shared in-process runtime</text>
