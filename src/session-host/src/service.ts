@@ -48,7 +48,7 @@ export interface SharedServiceOptions {
    * One-way promotion of `promotable` conversations into session containers, when this deployment runs them: the
    * ledger, and the settings the started containers run under.
    */
-  promotion?: { store: PromotionStore; settings: SessionContainerSettings; pollMs?: number };
+  promotion?: { store: PromotionStore; settings: SessionContainerSettings; pollMs?: number; readyTimeoutMs?: number };
 }
 
 /** Managed settings that keep the runtime from entering an approval mode the harness's policy does not allow. */
@@ -99,6 +99,7 @@ export class SharedSessionService {
         notify: (principal, id, notificationId, prompt) => this.continueConversation(principal, id, notificationId, prompt),
         report: options.report,
         ...(options.promotion.pollMs ? { pollMs: options.promotion.pollMs } : {}),
+        ...(options.promotion.readyTimeoutMs ? { readyTimeoutMs: options.promotion.readyTimeoutMs } : {}),
       });
     }
   }

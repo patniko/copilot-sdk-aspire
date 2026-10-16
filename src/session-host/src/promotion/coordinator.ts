@@ -23,6 +23,8 @@ export interface SharedPromotionsOptions {
   report: (event: string, id: string) => void;
   /** Interval between checks while the container starts; one second by default. */
   pollMs?: number;
+  /** How long the container may take to commit the cutover; the startup limit plus a minute by default. */
+  readyTimeoutMs?: number;
 }
 
 /** A refusal before anything moved: the agent's tool call fails, or the API answers with this code. */
@@ -130,7 +132,7 @@ export class SharedPromotions {
         }
         this.options.report("session.promotion_allocated", session);
       }
-      const deadline = Date.now() + (this.options.settings.startupSeconds + 60) * 1000;
+      const deadline = Date.now() + (this.options.readyTimeoutMs ?? (this.options.settings.startupSeconds + 60) * 1000);
       for (;;) {
         const latest = await store.byId(id);
         if (!latest || latest.state === "committed") {
