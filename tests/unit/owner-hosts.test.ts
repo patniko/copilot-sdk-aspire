@@ -9,6 +9,7 @@ import { readHostIdentity, writeHostIdentity } from "../../src/agent-host/src/id
 import { OwnerConfiguration } from "../../src/agent-host/src/protocol.js";
 import { managedHostOptions } from "../../src/agent-host/src/transports.js";
 import { websocketUrl } from "../../src/agent-api/src/host-routes.js";
+import { hostingDeployment } from "../../src/agent-api/src/hosting-deployment.js";
 import { ownerHostPolicyProblem } from "../../src/job-dispatcher/src/host-routes.js";
 
 const root = join(import.meta.dirname, "..", "..");
@@ -68,6 +69,25 @@ describe("owner host configuration", () => {
     expect(canonicalSessionId("199b2cbd-3701-4cd5-b757-e1075ef6fd5c")).toBe("199b2cbd-3701-4cd5-b757-e1075ef6fd5c");
     expect(canonicalSessionId("durable-attached")).toBeUndefined();
     expect(canonicalSessionId("199b2cbd37014cd5b757e1075ef6fd5")).toBeUndefined();
+  });
+});
+
+describe("owner hosts in the hosting deployment", () => {
+  it("adds each managed owner host as its harness's isolated host and leaves GitHub-native hosts out", () => {
+    const hosts = readOwnerHosts({
+      OWNER_HOSTS: JSON.stringify([{ harness: "review-agent", owner: "alice", principal: "alice", transport: "github", execution: "managed", resource: "host-review-agent" }]),
+      DEMO_HOST_OWNER: "alice", DEMO_HOST_TRANSPORT: "both", DEMO_HOST_HARNESS: "interactive-demo",
+    });
+    expect(hostingDeployment({ executor: "pool", ownerHosts: hosts, sharedWorker: false }).isolatedHosts).toEqual([
+      { harness: "review-agent", owner: "alice", transports: ["github"], features: [] },
+      { harness: "interactive-demo", owner: "dev", transports: ["direct", "github"], features: [] },
+    ]);
+    // The legacy input describes the same demo host; it is not added twice.
+    expect(hostingDeployment({
+      executor: "pool", ownerHosts: hosts, demoHost: { transport: "both", harness: "interactive-demo", principal: "dev" }, sharedWorker: false,
+    }).isolatedHosts).toHaveLength(2);
+    const native = readOwnerHosts({ DEMO_HOST_OWNER: "alice", DEMO_HOST_TRANSPORT: "github", DEMO_HOST_HARNESS: "interactive-demo" });
+    expect(hostingDeployment({ executor: "pool", ownerHosts: native, sharedWorker: false }).isolatedHosts).toEqual([]);
   });
 });
 
@@ -131,16 +151,12 @@ describe("owner host hosting policy", () => {
     expect(ownerHostPolicyProblem({ harness: harness.definition.name, transport: "both", snapshot: harness, policy })).toBeUndefined();
   });
 
-  it("refuses transports and modes the effective policy does not allow, and non-isolated harnesses", () => {
+  it("refuses transports the effective policy does not allow", () => {
     const directOnly = { ...policy, hosting: { transports: ["direct" as const] } };
     expect(ownerHostPolicyProblem({ harness: harness.definition.name, transport: "both", snapshot: harness, policy: directOnly }))
       .toMatchObject({ code: "transport_not_allowed" });
+    expect(ownerHostPolicyProblem({ harness: harness.definition.name, transport: "github", snapshot: harness, policy: directOnly }))
+      .toMatchObject({ code: "transport_not_allowed" });
     expect(ownerHostPolicyProblem({ harness: harness.definition.name, transport: "direct", snapshot: harness, policy: directOnly })).toBeUndefined();
-    const sharedOnly = { ...policy, hosting: { modes: ["shared" as const] } };
-    expect(ownerHostPolicyProblem({ harness: harness.definition.name, transport: "direct", snapshot: harness, policy: sharedOnly }))
-      .toMatchObject({ code: "hosting_mode_not_allowed" });
-    const shared = { ...harness, definition: { ...harness.definition, hosting: { mode: "shared" as const } } };
-    expect(ownerHostPolicyProblem({ harness: harness.definition.name, transport: "direct", snapshot: shared, policy }))
-      .toMatchObject({ code: "hosting_mode_mismatch" });
   });
 });

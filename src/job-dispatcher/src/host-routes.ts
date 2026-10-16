@@ -1,8 +1,7 @@
 import {
   AHP_SESSION_ID,
   effectiveHostingPolicy,
-  hostingModeOf,
-  hostingPolicyViolations,
+  HOSTING_ERROR_STATUS,
   ownerHostTransports,
   type ExecutionPolicy,
   type ExecutionProfile,
@@ -28,19 +27,12 @@ export interface OwnerHostRoute {
 }
 
 /**
- * A managed owner host runs its harness isolated, so the harness must use isolated hosting and its effective policy
- * must allow that mode and every transport the host would open. A relay environment is registered at startup, so a
- * disallowed transport stops the host rather than only failing later connection requests.
+ * Hosted admission (admitHostedHarness) already requires an isolated harness, an allowed mode, and only the features
+ * the host implements. A relay environment is registered at startup, so the effective policy must also allow every
+ * transport the host would open: a disallowed one stops the host rather than only failing later connection requests.
  */
-export function ownerHostPolicyProblem(host: Pick<OwnerHostRoute, "harness" | "transport" | "snapshot" | "policy">): { code: string; message: string } | undefined {
+export function ownerHostPolicyProblem(host: Pick<OwnerHostRoute, "harness" | "transport" | "snapshot" | "policy">): { code: "transport_not_allowed"; message: string } | undefined {
   if (!host.snapshot) return undefined;
-  const definition = host.snapshot.definition;
-  const mode = hostingModeOf(definition);
-  if (mode !== "isolated") {
-    return { code: "hosting_mode_mismatch", message: `Owner hosts serve isolated harnesses; '${host.harness}' uses ${mode} hosting.` };
-  }
-  const violation = hostingPolicyViolations(definition, host.policy)[0];
-  if (violation) return { code: violation.code, message: violation.message };
   const allowed = effectiveHostingPolicy(host.policy).transports;
   const blocked = ownerHostTransports(host.transport).find((transport) => !allowed.includes(transport));
   if (blocked) {
@@ -118,7 +110,7 @@ export function registerHostRoutes(app: FastifyInstance, deps: HostDependencies)
     if (host.execution === "managed") {
       managed(host);
       const problem = ownerHostPolicyProblem(host);
-      if (problem) throw new HttpError(problem.code === "hosting_mode_mismatch" ? 409 : 422, problem.code, problem.message);
+      if (problem) throw new HttpError(HOSTING_ERROR_STATUS[problem.code], problem.code, problem.message);
     }
     return perform(() => deps.store.acquire(host.id, leaseSeconds, body.ownerUserId, host.execution, body.computeId));
   });

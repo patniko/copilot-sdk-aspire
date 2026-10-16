@@ -1,16 +1,17 @@
 import { OwnerHostDescriptor, OwnerHostDescriptors, ownerHostEnvSuffix, ownerHostTransports, type HostingDeployment } from "@copilot-agent/contracts";
 import { ConfigError } from "./config.js";
+import { DEMO_HOST_FEATURES } from "./hosting.js";
 
 /** An owner host this process serves; `legacy` marks the single host configured through `DEMO_HOST_*`. */
 export type ConfiguredOwnerHost = OwnerHostDescriptor & { legacy: boolean };
 
 /**
- * Managed owner hosts as `HostingDeployment.isolatedHosts`, owned by their API principal. They implement no optional
- * hosting features yet. A GitHub-native host ignores its configured harness, so it serves no harness here.
+ * Managed owner hosts as `HostingDeployment.isolatedHosts`, owned by their API principal, with the features the
+ * agent-host implements (DEMO_HOST_FEATURES). A GitHub-native host ignores its configured harness and serves none here.
  */
 export function isolatedHostsOf(hosts: readonly ConfiguredOwnerHost[]): HostingDeployment["isolatedHosts"] {
   return hosts.filter((host) => host.execution === "managed").map((host) => ({
-    harness: host.harness, owner: host.principal, transports: ownerHostTransports(host.transport), features: [],
+    harness: host.harness, owner: host.principal, transports: ownerHostTransports(host.transport), features: [...DEMO_HOST_FEATURES],
   }));
 }
 

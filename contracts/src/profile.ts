@@ -210,6 +210,14 @@ export const McpServerPolicy = z
       .optional(),
     /** Tools harnesses may request from this server. */
     tools: z.array(z.string().regex(MCP_TOOL_NAME)).min(1).max(128).refine(distinct, DISTINCT),
+    /**
+     * Operator-only development allowance, omitted means false. Only this server's exact configured origin, never a
+     * redirect, may resolve to loopback, RFC 1918, CGNAT, or IPv6 unique-local addresses or use `localhost`, a
+     * single-label, or a container name; with it, a credential may also be sent over http. Link-local, cloud metadata,
+     * unspecified, multicast and reserved addresses, IPv4-mapped, -compatible, and NAT64 forms, and the deployment's own
+     * internal service endpoints stay refused. The shared-placement egress filter enforces this at runtime.
+     */
+    allowPrivateNetwork: z.boolean().optional(),
   })
   .strict()
   .superRefine((server, ctx) => {
@@ -222,7 +230,9 @@ export const McpServerPolicy = z
     }
     if (url.username || url.password) issue(["url"], "Put the credential in auth.secret, not in the URL.");
     if (url.hash) issue(["url"], "Remove the URL fragment.");
-    if (server.auth && url.protocol !== "https:") issue(["url"], "A server that receives a credential must use https.");
+    if (server.auth && url.protocol !== "https:" && server.allowPrivateNetwork !== true) {
+      issue(["url"], "A server that receives a credential must use https unless allowPrivateNetwork is set.");
+    }
     const header = server.auth?.header?.toLowerCase();
     if (header && RESERVED_MCP_HEADERS.has(header)) issue(["auth", "header"], `'${server.auth!.header}' is a protocol header.`);
   });
@@ -465,6 +475,7 @@ export function toolPolicyViolations(
   }
   const catalog = policy.mcpServers ?? {};
   (Array.isArray(definition.mcpServers) ? definition.mcpServers : []).forEach((entry, index) => {
+    if (!entry || typeof entry !== "object") return;
     const server = Object.hasOwn(catalog, entry.server) ? catalog[entry.server] : undefined;
     if (!server) {
       problems.push({ path: `mcpServers.${index}.server`, message: `The operator's MCP catalog has no server '${entry.server}'.` });
