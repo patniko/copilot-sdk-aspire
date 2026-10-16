@@ -475,7 +475,11 @@ describe("policy", () => {
     expect(other.policy.overridden).toEqual([]);
 
     const workspace = (await app.inject({ method: "GET", url: "/api/workspace", headers: headers() })).json();
-    expect(workspace.policyOverrides).toEqual([{ harness: "dataset-analyst", fields: ["allowedModels", "maxDurationSeconds"], errors: 0 }]);
+    expect(workspace.policyOverrides).toEqual([
+      { harness: "dataset-analyst", fields: ["allowedModels", "maxDurationSeconds"], errors: 0 },
+      { harness: "hybrid-coordinator", fields: ["hosting"], errors: 0 },
+      { harness: "shared-researcher", fields: ["approvalModes", "hosting"], errors: 0 },
+    ]);
     expect(workspace.changes.items).toContain("A policy/harnesses/dataset-analyst.json");
 
     const removed = await app.inject({ method: "DELETE", url: "/api/policy/overrides/dataset-analyst", headers: headers() });

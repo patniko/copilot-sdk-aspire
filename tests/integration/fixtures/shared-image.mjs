@@ -4,8 +4,11 @@ import { createServer } from "node:http";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import pg from "pg";
-import { SharedSessionDefinition, SharedSessionLimits, SharedWorkerLimits } from "@copilot-agent/contracts";
+import { HarnessDefinition, SharedSessionLimits, SharedWorkerLimits } from "@copilot-agent/contracts";
 import { migrate, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
+import { canonicalJson, loadProfiles, sha256Hex } from "@copilot-agent/service-defaults";
+import { SharedAdmission } from "./dist/admission.js";
+import { SharedConfiguration } from "./dist/configuration.js";
 import { SharedSessionService } from "./dist/service.js";
 
 assert.equal(process.platform, "linux");
@@ -35,11 +38,26 @@ try {
   await migrate(pool);
   const store = new SharedStore(pool);
   await new Promise((resolve, reject) => { upstream.once("error", reject); upstream.listen(0, "127.0.0.1", resolve); });
+  const definition = HarnessDefinition.parse({
+    schemaVersion: "1", name: "image-fixture", version: "1.0.0", description: "Synthetic Linux packaged worker.", interaction: "conversation",
+    hosting: { mode: "shared" }, instructions: "Synthetic Linux packaged worker.", model: { preferred: "fixture", allowed: ["fixture"] }, tools: [],
+    input: { schema: { type: "object" } }, output: { schema: { type: "object" } }, limits: { maxDurationSeconds: 120, maxInferenceTokens: 100000 },
+    retry: { safeToRetry: false, maxAttempts: 1 }, runners: { allowedProfiles: ["node-ts-agent"], defaultProfile: "node-ts-agent" },
+  });
+  const policy = {
+    schemaVersion: "1", allowedProfiles: ["node-ts-agent"], allowedModels: ["fixture"], maxDurationSeconds: 600, maxInferenceTokensPerJob: 100000,
+    maxConcurrentAttemptsPerPrincipal: 1, maxQueuedJobsPerPrincipal: 1, retry: { maxAttempts: 1, backoffSeconds: 1 }, leaseSeconds: 30,
+    requirements: { processIsolation: "uid", egress: "gateway-only" }, acknowledgedGaps: ["egress-not-enforced"], hosting: { modes: ["shared"] },
+  };
+  const registry = {
+    harnesses: new Map([[definition.name, [{ definition, digest: `sha256:${sha256Hex(canonicalJson(definition))}` }]]]),
+    profiles: await loadProfiles("/platform"), policies: { base: policy, overrides: new Map() },
+  };
   const options = {
     root, store, files: new SessionFileStore(pool), principals: { [principal]: 1 },
-    definition: SharedSessionDefinition.parse({
-      model: "fixture", instructions: "Synthetic Linux packaged worker.",
-      allowedHarnesses: [], limits: SharedSessionLimits.parse({ idleSeconds: 60 }),
+    admission: new SharedAdmission({
+      configuration: SharedConfiguration.fixed(registry), sessionLimits: SharedSessionLimits.parse({ idleSeconds: 60 }),
+      delegationHarnesses: [], permissionHandlers: new Set(),
     }),
     limits: SharedWorkerLimits.parse({}),
     gatewayUrl: `http://127.0.0.1:${upstream.address().port}`,
@@ -49,7 +67,7 @@ try {
   };
   service = new SharedSessionService(options);
   await service.start();
-  sessionId = (await service.create(principal, "image qualification")).id;
+  sessionId = (await service.create(principal, { harness: "image-fixture", label: "image qualification" })).id;
   const connection = await service.connection(principal, sessionId);
   assert.ok(connection.serverKey.publicKey);
   assert.ok(await service.resolveConnection(`/sessions/${sessionId}`, connection.token));
