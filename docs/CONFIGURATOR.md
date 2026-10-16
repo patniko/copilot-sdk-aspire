@@ -44,7 +44,11 @@ CONFIGURATOR_GITHUB_CLIENT_ID=your-oauth-app-client-id
    **Override for this harness** on a card to replace those settings for every version of that harness only; the
    other cards inherit the base policy. Lease timing and per-caller limits are always global. The harness overview
    and its decision list show when an override applies, and **Deploy** preflight fails if an override names a
-   harness that does not exist.
+   harness that does not exist. In harness scope each card is marked **overridden** or **inherited**, and an
+   overridden card lists the settings that differ from the base policy. Validation runs as you type; each issue is
+   shown on the card it affects, a summary sits under **Applies to**, and saving is blocked while there are errors.
+   As in the harness editor, the header offers undo, redo and Save (Ctrl/Cmd+S), and unsaved policy edits are kept
+   in this browser per scope and offered for restore when you return.
 4. **Local run**: set the Foundry endpoint and deployments (or discover them from your subscription), optional package
    proxies, then **Build & start** the stack. URL fields check their format as you type, and **Test** reports whether
    the address answers from this machine. After saving harness edits, **Reload harnesses** (or **Save & reload
@@ -227,7 +231,7 @@ attempt deadline. Only the job's caller (its API key) can answer. The REST endpo
 | Customer execution policy | `.copilot-agent-workspace/policy/execution-policy.json` (base) and `policy/harnesses/<harness>.json` (per-harness overrides) | No; use separate customer-owned version control if needed |
 | Shipped starter examples | `examples/customer-config/harnesses/` and `examples/customer-config/policy/` | Yes; platform-owned and not edited by the configurator |
 | Execution profiles and implementations | `execution-profiles/`, `src/`, and `tools/` | Yes; platform-owned |
-| Unsaved harness drafts | Browser local storage for the configurator origin | No |
+| Unsaved harness and policy drafts | Browser local storage for the configurator origin | No |
 | Local run parameters (Foundry endpoint and deployments, diagnostic event detail, package proxies) | The AppHost's Aspire user secrets | No (outside the repo) |
 | Deployment targets, NuGet override for the Aspire CLI | `.configurator/settings.json` | No (git-ignored; IDs and names only) |
 | Generated keys (dev API key, service keys, signing key) | Aspire user secrets and deployment state | Never shown, except on an explicit "Copy API key" |

@@ -3,7 +3,21 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import type { ExecutionPolicy, Issue, PolicyOverrideStatus } from "../../server/types";
 import { api, errorMessage } from "../api";
 import { Badge, Card, ChipsInput, Field, Flash, HelpButton, IssueList, NumberInput, PageHeader, SegmentedControl, Spinner, Toggle } from "../components/ui";
+import { clearDraft, readDraft, useDraftAutosave, useHistory, useRegisterEditorActions, type Draft } from "../history";
 import { useApp, useDebounced } from "../state";
+import {
+  countIssues,
+  differencesFromBase,
+  draftKey,
+  GROUPS,
+  isDirty,
+  issueGroup,
+  overriddenGroups,
+  overridesFrom,
+  withGroup,
+  type Group,
+  type PolicyDraft,
+} from "./policy/model";
 
 const GAPS: Array<{ id: ExecutionPolicy["acknowledgedGaps"][number]; label: string; description: string }> = [
   {
@@ -18,53 +32,45 @@ const GAPS: Array<{ id: ExecutionPolicy["acknowledgedGaps"][number]; label: stri
   },
 ];
 
-/** Policy cards and the fields a harness override replaces when that card is overridden. */
-const GROUPS = {
-  agents: ["allowedProfiles", "allowedModels"],
-  limits: ["maxDurationSeconds", "maxInferenceTokensPerJob", "retry"],
-  tools: ["builtinTools", "permissionModes"],
-  model: ["maxReasoningEffort", "allowLongContext"],
-  controls: ["requirements", "acknowledgedGaps"],
-} as const satisfies Record<string, ReadonlyArray<keyof ExecutionPolicy>>;
-type Group = keyof typeof GROUPS;
-type Overrides = Partial<ExecutionPolicy>;
-
 const BASE = "";
 
-function overriddenGroups(overrides: Overrides | undefined): Set<Group> {
-  const keys = new Set(Object.keys(overrides ?? {}));
-  return new Set((Object.keys(GROUPS) as Group[]).filter((group) => GROUPS[group].some((field) => keys.has(field))));
-}
-
-/** The override document for the overridden cards. Optional fields get explicit values so they do not inherit. */
-function overridesFrom(draft: ExecutionPolicy, groups: Set<Group>): Overrides {
-  const result: Record<string, unknown> = {};
-  for (const group of groups) {
-    for (const field of GROUPS[group]) result[field] = structuredClone(draft[field]);
-  }
-  if (groups.has("tools")) {
-    result.builtinTools ??= [];
-    result.permissionModes ??= [];
-  }
-  if (groups.has("model")) {
-    result.maxReasoningEffort ??= "xhigh";
-    result.allowLongContext ??= false;
-  }
-  return result as Overrides;
-}
-
-function stable(value: unknown): string {
-  return JSON.stringify(value, (_key, v) =>
-    v && typeof v === "object" && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a.localeCompare(b))) : v,
+/** Inherited settings are shown read-only in harness scope; a native disabled fieldset locks every nested control. */
+function Locked({ locked, children, className }: { locked: boolean; children: ReactNode; className?: string }) {
+  return (
+    <fieldset disabled={locked} className={[className, locked ? "opacity-70" : undefined].filter(Boolean).join(" ") || undefined}>
+      {children}
+    </fieldset>
   );
 }
 
-/** Inherited settings are shown read-only in harness scope; a native disabled fieldset locks every nested control. */
-function Locked({ locked, children }: { locked: boolean; children: ReactNode }) {
+/** Issues for one card, and in harness scope the settings that differ from the base policy. */
+function CardFooter({ issues, differences }: { issues: Issue[]; differences?: ReturnType<typeof differencesFromBase> }) {
+  if (issues.length === 0 && !differences?.length) return null;
   return (
-    <fieldset disabled={locked} className={locked ? "opacity-70" : undefined}>
-      {children}
-    </fieldset>
+    <div className="mt-5 space-y-3 border-t border-muted pt-4">
+      {differences && differences.length > 0 && (
+        <div className="text-xs">
+          <span className="font-semibold">Differs from the base policy</span>
+          <ul className="mt-1 space-y-0.5 fg-muted">
+            {differences.map((d) => (
+              <li key={d.field}>
+                {d.label}: <span className="line-through">{d.base}</span> → <span className="fg-default font-medium">{d.value}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {issues.length > 0 && <IssueList issues={issues} />}
+    </div>
+  );
+}
+
+function SubHeading({ children, hint }: { children: ReactNode; hint?: ReactNode }) {
+  return (
+    <div className="mb-3">
+      <h3 className="text-xs font-semibold uppercase tracking-wide fg-muted">{children}</h3>
+      {hint && <p className="text-xs fg-muted">{hint}</p>}
+    </div>
   );
 }
 
@@ -72,120 +78,124 @@ export function PolicyView() {
   const { workspace, refreshWorkspace, toast } = useApp();
   const [scope, setScope] = useState(BASE);
   const [base, setBase] = useState<ExecutionPolicy>();
-  const [saved, setSaved] = useState<ExecutionPolicy>();
-  const [savedOverrides, setSavedOverrides] = useState<Overrides>();
-  const [draft, setDraft] = useState<ExecutionPolicy>();
-  const [groups, setGroups] = useState<Set<Group>>(new Set());
+  const [saved, setSaved] = useState<PolicyDraft>();
+  const [loadedScope, setLoadedScope] = useState<string>();
+  const history = useHistory<PolicyDraft | undefined>(undefined);
+  const draft = history.value;
+  const [pendingDraft, setPendingDraft] = useState<Draft<PolicyDraft> & { stale: boolean }>();
   const [issues, setIssues] = useState<Issue[]>([]);
   const [busy, setBusy] = useState(false);
   const harnessScope = scope !== BASE;
+  const baseline = useMemo(() => (saved ? JSON.stringify(saved) : undefined), [saved]);
+
+  /** Shows a freshly loaded or saved document, and offers a browser draft that differs from it. */
+  const show = (next: PolicyDraft, nextIssues: Issue[], forScope: string, offerDraft: boolean) => {
+    setSaved(next);
+    history.reset(structuredClone(next));
+    setIssues(nextIssues);
+    setLoadedScope(forScope);
+    setPendingDraft(undefined);
+    if (!offerDraft) return;
+    const stored = readDraft<PolicyDraft>(draftKey(forScope));
+    if (!stored) return;
+    if (!isDirty(stored.value, next, forScope !== BASE)) clearDraft(draftKey(forScope));
+    else setPendingDraft({ ...stored, stale: stored.baseline !== JSON.stringify(next) });
+  };
 
   useEffect(() => {
-    api<{ policy?: ExecutionPolicy; issues: Issue[] }>("/api/policy")
-      .then((result) => {
-        setBase(result.policy);
-        if (scope === BASE) {
-          setSaved(result.policy);
-          setDraft(result.policy && structuredClone(result.policy));
-          setIssues(result.issues);
-        }
-      })
-      .catch((error) => toast(errorMessage(error), "error"));
-    if (scope === BASE) {
-      setGroups(new Set());
-      setSavedOverrides(undefined);
-      return;
-    }
-    api<PolicyOverrideStatus>(`/api/policy/overrides/${scope}`)
-      .then((result) => {
-        setSaved(result.effective);
-        setDraft(structuredClone(result.effective));
-        setSavedOverrides(result.override?.overrides ?? {});
-        setGroups(overriddenGroups(result.override?.overrides));
-        setIssues(result.issues);
-      })
-      .catch((error) => toast(errorMessage(error), "error"));
+    let cancelled = false;
+    setLoadedScope(undefined);
+    const basePolicy = api<{ policy?: ExecutionPolicy; issues: Issue[] }>("/api/policy");
+    const load =
+      scope === BASE
+        ? basePolicy.then((result) => {
+            if (cancelled) return;
+            setBase(result.policy);
+            if (result.policy) show({ policy: result.policy, groups: [] }, result.issues, BASE, true);
+            else setIssues(result.issues);
+          })
+        : Promise.all([basePolicy, api<PolicyOverrideStatus>(`/api/policy/overrides/${scope}`)]).then(([baseResult, result]) => {
+            if (cancelled) return;
+            setBase(baseResult.policy);
+            show({ policy: result.effective, groups: overriddenGroups(result.override?.overrides) }, result.issues, scope, true);
+          });
+    load.catch((error) => !cancelled && toast(errorMessage(error), "error"));
+    return () => {
+      cancelled = true;
+    };
+    // `show` only uses stable setters and the history object's stable callbacks.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scope, toast]);
 
-  const overrides = useMemo(() => (harnessScope && draft ? overridesFrom(draft, groups) : undefined), [harnessScope, draft, groups]);
-  const savedComputed = useMemo(
-    () => (harnessScope && saved ? overridesFrom(saved, overriddenGroups(savedOverrides)) : undefined),
-    [harnessScope, saved, savedOverrides],
-  );
-  const dirty = harnessScope ? stable(overrides) !== stable(savedComputed) : stable(saved) !== stable(draft);
-  const debounced = useDebounced(harnessScope ? overrides : draft, 400);
+  const ready = !!draft && !!saved && !!base && loadedScope === scope;
+  const dirty = ready && isDirty(draft, saved, harnessScope);
+  useDraftAutosave(ready ? draftKey(scope) : undefined, draft, baseline, ready && !pendingDraft);
+
+  const overrides = useMemo(() => (harnessScope && draft ? overridesFrom(draft.policy, draft.groups) : undefined), [harnessScope, draft]);
+  const debounced = useDebounced(harnessScope ? overrides : draft?.policy, 400);
   useEffect(() => {
     if (!debounced || !dirty) return;
+    let cancelled = false;
     const request = harnessScope
       ? api<{ issues: Issue[] }>(`/api/policy/overrides/${scope}/validate`, { method: "POST", body: { overrides: debounced } })
       : api<{ issues: Issue[] }>("/api/policy/validate", { method: "POST", body: { policy: debounced } });
-    request.then((result) => setIssues(result.issues)).catch(() => undefined);
-  }, [debounced, dirty]);
-
-  const harnessNames = useMemo(() => [...new Set((workspace?.harnesses ?? []).map((h) => h.name))].sort(), [workspace]);
-  const overridden = new Map((workspace?.policyOverrides ?? []).map((o) => [o.harness, o]));
-
-  if (!draft || !workspace || !base) {
-    return <Spinner />;
-  }
-  const update = (mutate: (p: ExecutionPolicy) => void) =>
-    setDraft((current) => {
-      const next = structuredClone(current!);
-      mutate(next);
-      return next;
-    });
-  const setOverride = (group: Group, on: boolean) => {
-    setGroups((current) => {
-      const next = new Set(current);
-      if (on) next.add(group);
-      else next.delete(group);
-      return next;
-    });
-    if (!on) {
-      update((p) => {
-        for (const field of GROUPS[group]) {
-          const value = base[field];
-          if (value === undefined) delete (p as Partial<ExecutionPolicy>)[field];
-          else (p as Record<string, unknown>)[field] = structuredClone(value);
-        }
-      });
+    request.then((result) => !cancelled && setIssues(result.issues)).catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [debounced, dirty, harnessScope, scope]);
+  // Reverting or undoing back to the saved document restores its validation.
+  useEffect(() => {
+    if (ready && !dirty && saved) {
+      const request = harnessScope
+        ? api<{ issues: Issue[] }>(`/api/policy/overrides/${scope}/validate`, { method: "POST", body: { overrides: overridesFrom(saved.policy, saved.groups) } })
+        : api<{ issues: Issue[] }>("/api/policy/validate", { method: "POST", body: { policy: saved.policy } });
+      let cancelled = false;
+      request.then((result) => !cancelled && setIssues(result.issues)).catch(() => undefined);
+      return () => {
+        cancelled = true;
+      };
     }
-  };
-  const errors = issues.filter((i) => i.level === "error");
-  const locked = (group: Group) => harnessScope && !groups.has(group);
-  const overrideToggle = (group: Group) =>
-    harnessScope ? (
-      <Toggle checked={groups.has(group)} onChange={(on) => setOverride(group, on)} label="Override for this harness" />
-    ) : undefined;
+    return undefined;
+    // Only when the document returns to its saved state; the load already set the saved issues.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dirty]);
+
+  const { errors, warnings } = countIssues(issues);
+  const issuesByGroup = useMemo(() => {
+    const grouped = new Map<Group | undefined, Issue[]>();
+    for (const found of issues) {
+      const group = issueGroup(found);
+      grouped.set(group, [...(grouped.get(group) ?? []), found]);
+    }
+    return grouped;
+  }, [issues]);
 
   async function save() {
+    if (!draft || !base) return;
+    if (errors > 0) {
+      toast("Fix the errors on this page before saving.", "error");
+      return;
+    }
     setBusy(true);
     try {
       if (harnessScope) {
-        if (groups.size === 0) {
+        if (draft.groups.length === 0) {
           await api(`/api/policy/overrides/${scope}`, { method: "DELETE" });
-          setSavedOverrides({});
-          setSaved(structuredClone(base!));
-          setDraft(structuredClone(base!));
-          setIssues([]);
+          show({ policy: structuredClone(base), groups: [] }, [], scope, false);
           toast(`Removed policy/harnesses/${scope}.json; ${scope} uses the base policy`, "success");
         } else {
           const result = await api<PolicyOverrideStatus>(`/api/policy/overrides/${scope}`, { method: "PUT", body: { overrides } });
-          setSaved(result.effective);
-          setDraft(structuredClone(result.effective));
-          setSavedOverrides(result.override?.overrides ?? {});
-          setGroups(overriddenGroups(result.override?.overrides));
-          setIssues(result.issues);
+          show({ policy: result.effective, groups: overriddenGroups(result.override?.overrides) }, result.issues, scope, false);
           toast(`Saved policy/harnesses/${scope}.json`, "success");
         }
       } else {
-        const result = await api<{ policy: ExecutionPolicy; issues: Issue[] }>("/api/policy", { method: "PUT", body: { policy: draft } });
+        const result = await api<{ policy: ExecutionPolicy; issues: Issue[] }>("/api/policy", { method: "PUT", body: { policy: draft.policy } });
         setBase(result.policy);
-        setSaved(result.policy);
-        setDraft(structuredClone(result.policy));
-        setIssues(result.issues);
+        show({ policy: result.policy, groups: [] }, result.issues, BASE, false);
         toast("Saved policy/execution-policy.json", "success");
       }
+      clearDraft(draftKey(scope));
       await refreshWorkspace();
     } catch (error) {
       toast(errorMessage(error), "error");
@@ -193,6 +203,69 @@ export function PolicyView() {
       setBusy(false);
     }
   }
+
+  useRegisterEditorActions(
+    ready
+      ? {
+          label: harnessScope ? `Policy for ${scope}` : "Execution policy",
+          canUndo: history.canUndo && !busy && !pendingDraft,
+          canRedo: history.canRedo && !busy && !pendingDraft,
+          undo: history.undo,
+          redo: history.redo,
+          dirty,
+          saving: busy,
+          save: () => void save(),
+        }
+      : undefined,
+  );
+
+  const harnessNames = useMemo(() => [...new Set((workspace?.harnesses ?? []).map((h) => h.name))].sort(), [workspace]);
+  const overridden = new Map((workspace?.policyOverrides ?? []).map((o) => [o.harness, o]));
+
+  if (!ready || !workspace) {
+    return <Spinner />;
+  }
+  const policy = draft.policy;
+  const groups = draft.groups;
+  /** Records an edit. Edits with the same key coalesce while typing, so undo steps back a whole value. */
+  const update = (mutate: (p: ExecutionPolicy) => void, key?: string) =>
+    history.set((current) => {
+      const next = structuredClone(current!);
+      mutate(next.policy);
+      return next;
+    }, key);
+  const setOverride = (group: Group, on: boolean) =>
+    history.set((current) => {
+      const next = structuredClone(current!);
+      next.groups = withGroup(next.groups, group, on);
+      if (!on) {
+        for (const field of GROUPS[group]) {
+          const value = base[field];
+          if (value === undefined) delete (next.policy as Partial<ExecutionPolicy>)[field];
+          else (next.policy as Record<string, unknown>)[field] = structuredClone(value);
+        }
+      }
+      return next;
+    });
+  const locked = (group: Group) => harnessScope && !groups.includes(group);
+  const cardTitle = (title: string, group: Group) => (
+    <span className="flex flex-wrap items-center gap-2">
+      {title}
+      {harnessScope && (groups.includes(group) ? <Badge tone="brand">overridden</Badge> : <Badge>inherited</Badge>)}
+    </span>
+  );
+  const overrideToggle = (group: Group) =>
+    harnessScope ? <Toggle checked={groups.includes(group)} onChange={(on) => setOverride(group, on)} label="Override for this harness" /> : undefined;
+  const footer = (group: Group) => (
+    <CardFooter
+      issues={issuesByGroup.get(group) ?? []}
+      differences={harnessScope && groups.includes(group) ? differencesFromBase(group, policy, base) : undefined}
+    />
+  );
+  const otherIssues = issuesByGroup.get(undefined) ?? [];
+  const globalLocked = harnessScope;
+  const globalHint = harnessScope ? "Global; set in the base policy." : undefined;
+  const yolo = (policy.permissionModes ?? []).includes("allow");
 
   return (
     <div className="space-y-6">
@@ -202,24 +275,57 @@ export function PolicyView() {
         description="Operator-enforced ceilings. Harnesses and callers can only narrow these. Changes apply to new jobs after the service restarts or redeploys."
         actions={
           <>
-            <button
-              type="button"
-              className="btn-secondary"
-              disabled={!dirty}
-              onClick={() => {
-                setDraft(structuredClone(saved!));
-                setGroups(overriddenGroups(savedOverrides));
-              }}
-            >
+            <button type="button" className="btn-secondary" disabled={!dirty || busy} onClick={() => history.set(structuredClone(saved))}>
               <RotateCcw className="h-4 w-4" /> Revert
             </button>
-            <button type="button" className="btn-primary" disabled={!dirty || errors.length > 0 || busy} onClick={() => void save()}>
-              {busy ? <Spinner /> : groups.size === 0 && harnessScope ? <Trash2 className="h-4 w-4" /> : <Save className="h-4 w-4" />}{" "}
-              {harnessScope ? (groups.size === 0 ? "Remove override" : "Save override") : "Save policy"}
+            <button
+              type="button"
+              className="btn-primary"
+              disabled={!dirty || errors > 0 || busy}
+              title={errors > 0 ? "Fix the errors on this page before saving." : undefined}
+              onClick={() => void save()}
+            >
+              {busy ? <Spinner /> : groups.length === 0 && harnessScope ? <Trash2 className="h-4 w-4" /> : <Save className="h-4 w-4" />}{" "}
+              {harnessScope ? (groups.length === 0 ? "Remove override" : "Save override") : "Save policy"}
             </button>
           </>
         }
       />
+
+      {pendingDraft && (
+        <Flash
+          tone="warn"
+          actions={
+            <>
+              <button
+                type="button"
+                className="btn-secondary btn-sm"
+                onClick={() => {
+                  clearDraft(draftKey(scope));
+                  setPendingDraft(undefined);
+                }}
+              >
+                Discard
+              </button>
+              <button
+                type="button"
+                className="btn-primary btn-sm"
+                onClick={() => {
+                  history.set(structuredClone(pendingDraft.value));
+                  setPendingDraft(undefined);
+                }}
+              >
+                Restore draft
+              </button>
+            </>
+          }
+        >
+          <strong>Unsaved policy changes from {new Date(pendingDraft.savedAt).toLocaleString()}.</strong>{" "}
+          {pendingDraft.stale
+            ? "The policy file changed after this draft was saved; restoring replaces those changes when you save."
+            : "Restore them to keep editing, or discard them."}
+        </Flash>
+      )}
 
       <Card
         title={
@@ -229,7 +335,7 @@ export function PolicyView() {
         }
       >
         <div className="flex flex-wrap items-center gap-3">
-          <select className="input max-w-sm" value={scope} disabled={dirty} onChange={(e) => setScope(e.target.value)} aria-label="Policy scope">
+          <select className="input max-w-sm" value={scope} disabled={dirty || busy} onChange={(e) => setScope(e.target.value)} aria-label="Policy scope">
             <option value={BASE}>All harnesses (base policy)</option>
             {harnessNames.map((name) => (
               <option key={name} value={name}>
@@ -246,21 +352,38 @@ export function PolicyView() {
           ))}
         </div>
         {harnessScope && (
-          <Flash>
-            Showing the effective policy for <strong>{scope}</strong>. Turn on <em>Override for this harness</em> on a card to replace those
-            settings in <code>policy/harnesses/{scope}.json</code>; other cards inherit the base policy. Lease timing and per-caller limits are
-            always global.
-          </Flash>
+          <p className="hint mt-3">
+            Showing the effective policy for <strong>{scope}</strong>. Turn on <em>Override for this harness</em> on a card to replace those settings in{" "}
+            <code>policy/harnesses/{scope}.json</code>; other cards inherit the base policy. Lease timing and per-caller limits are always global.
+          </p>
         )}
+        <div className="mt-4 border-t border-muted pt-3" aria-live="polite">
+          {errors === 0 && warnings === 0 ? (
+            <IssueList issues={[]} empty={harnessScope ? `The effective policy for ${scope} is valid.` : "The policy is valid."} />
+          ) : (
+            <p className="text-sm">
+              {errors > 0 && <Badge tone="red">{errors === 1 ? "1 error" : `${errors} errors`}</Badge>}{" "}
+              {warnings > 0 && <Badge tone="amber">{warnings === 1 ? "1 warning" : `${warnings} warnings`}</Badge>}{" "}
+              <span className="fg-muted">
+                {errors > 0 ? "Errors block saving. " : ""}Each issue is shown on the section it affects.
+              </span>
+            </p>
+          )}
+          {otherIssues.length > 0 && (
+            <div className="mt-3">
+              <IssueList issues={otherIssues} />
+            </div>
+          )}
+        </div>
       </Card>
 
-      <Card title="Approved agents and models" actions={overrideToggle("agents")}>
+      <Card title={cardTitle("Approved agents and models", "agents")} actions={overrideToggle("agents")}>
         <Locked locked={locked("agents")}>
           <div className="space-y-2">
             {workspace.profiles.map((profile) => (
               <Toggle
                 key={profile.id}
-                checked={draft.allowedProfiles.includes(profile.id)}
+                checked={policy.allowedProfiles.includes(profile.id)}
                 onChange={(checked) =>
                   update((p) => {
                     const list = p.allowedProfiles.filter((id) => id !== profile.id);
@@ -278,54 +401,49 @@ export function PolicyView() {
             ))}
           </div>
           <Field label="Approved models" help="policy.allowedModels" className="mt-5" hint="Model names served by the inference gateway. Each environment maps them to Foundry deployments.">
-            <ChipsInput values={draft.allowedModels} onChange={(values) => update((p) => void (p.allowedModels = values))} placeholder="Add a model and press Enter" />
+            <ChipsInput values={policy.allowedModels} onChange={(values) => update((p) => void (p.allowedModels = values))} placeholder="Add a model and press Enter" />
           </Field>
         </Locked>
+        {footer("agents")}
       </Card>
 
-      <Card title="Limits" actions={overrideToggle("limits")}>
-        <div className="grid gap-4 md:grid-cols-3">
-          <Locked locked={locked("limits")}>
-            <Field label="Max duration per attempt (s)" help="policy.maxDurationSeconds">
-              <NumberInput unit="seconds" value={draft.maxDurationSeconds} min={10} max={3600} onChange={(v) => update((p) => void (p.maxDurationSeconds = v))} />
+      <Card title={cardTitle("Limits", "limits")} actions={overrideToggle("limits")}>
+        <SubHeading hint={harnessScope ? "Overridable for this harness." : "Harnesses can lower these; none can raise them."}>Per job</SubHeading>
+        <Locked locked={locked("limits")} className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <Field label="Max duration per attempt" help="policy.maxDurationSeconds">
+            <NumberInput unit="seconds" value={policy.maxDurationSeconds} min={10} max={3600} onChange={(v) => update((p) => void (p.maxDurationSeconds = v), "maxDurationSeconds")} />
+          </Field>
+          <Field label="Max inference tokens per job" help="policy.maxInferenceTokensPerJob">
+            <NumberInput unit="tokens" value={policy.maxInferenceTokensPerJob} min={1000} step={1000} onChange={(v) => update((p) => void (p.maxInferenceTokensPerJob = v), "maxInferenceTokensPerJob")} />
+          </Field>
+          <Field label="Max attempts" help="policy.retry" hint="Including the first attempt.">
+            <NumberInput value={policy.retry.maxAttempts} min={1} max={5} onChange={(v) => update((p) => void (p.retry.maxAttempts = v), "retry.maxAttempts")} />
+          </Field>
+          <Field label="Retry backoff" hint="Doubles after each attempt.">
+            <NumberInput unit="seconds" value={policy.retry.backoffSeconds} min={1} max={3600} onChange={(v) => update((p) => void (p.retry.backoffSeconds = v), "retry.backoffSeconds")} />
+          </Field>
+        </Locked>
+        <div className="mt-6">
+          <SubHeading hint={harnessScope ? "These apply to every harness and are set in the base policy." : "These apply to every harness and cannot be overridden."}>
+            Global
+          </SubHeading>
+          <Locked locked={globalLocked} className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <Field label="Lease" help="policy.leaseSeconds" hint={globalHint ?? "Executors heartbeat every third of this."}>
+              <NumberInput unit="seconds" value={policy.leaseSeconds} min={10} max={600} onChange={(v) => update((p) => void (p.leaseSeconds = v), "leaseSeconds")} />
             </Field>
-          </Locked>
-          <Locked locked={locked("limits")}>
-            <Field label="Max inference tokens per job" help="policy.maxInferenceTokensPerJob">
-              <NumberInput unit="tokens" value={draft.maxInferenceTokensPerJob} min={1000} step={1000} onChange={(v) => update((p) => void (p.maxInferenceTokensPerJob = v))} />
+            <Field label="Concurrent attempts per caller" help="policy.maxConcurrentAttemptsPerPrincipal" hint={globalHint}>
+              <NumberInput value={policy.maxConcurrentAttemptsPerPrincipal} min={1} max={1000} onChange={(v) => update((p) => void (p.maxConcurrentAttemptsPerPrincipal = v), "maxConcurrentAttemptsPerPrincipal")} />
             </Field>
-          </Locked>
-          <fieldset disabled={harnessScope} className={harnessScope ? "opacity-70" : undefined}>
-            <Field label="Lease seconds" help="policy.leaseSeconds" hint={harnessScope ? "Global; set in the base policy." : "Executors heartbeat every third of this."}>
-              <NumberInput unit="seconds" value={draft.leaseSeconds} min={10} max={600} onChange={(v) => update((p) => void (p.leaseSeconds = v))} />
-            </Field>
-          </fieldset>
-          <fieldset disabled={harnessScope} className={harnessScope ? "opacity-70" : undefined}>
-            <Field label="Concurrent attempts per caller" help="policy.maxConcurrentAttemptsPerPrincipal" hint={harnessScope ? "Global; set in the base policy." : undefined}>
-              <NumberInput value={draft.maxConcurrentAttemptsPerPrincipal} min={1} onChange={(v) => update((p) => void (p.maxConcurrentAttemptsPerPrincipal = v))} />
-            </Field>
-          </fieldset>
-          <fieldset disabled={harnessScope} className={harnessScope ? "opacity-70" : undefined}>
-            <Field label="Open jobs per caller" help="policy.maxQueuedJobsPerPrincipal" hint={harnessScope ? "Global; set in the base policy." : undefined}>
-              <NumberInput value={draft.maxQueuedJobsPerPrincipal} min={1} onChange={(v) => update((p) => void (p.maxQueuedJobsPerPrincipal = v))} />
-            </Field>
-          </fieldset>
-          <div />
-          <Locked locked={locked("limits")}>
-            <Field label="Max attempts" help="policy.retry">
-              <NumberInput value={draft.retry.maxAttempts} min={1} max={5} onChange={(v) => update((p) => void (p.retry.maxAttempts = v))} />
-            </Field>
-          </Locked>
-          <Locked locked={locked("limits")}>
-            <Field label="Retry backoff (s)" hint="Doubles after each attempt.">
-              <NumberInput unit="seconds" value={draft.retry.backoffSeconds} min={1} max={3600} onChange={(v) => update((p) => void (p.retry.backoffSeconds = v))} />
+            <Field label="Open jobs per caller" help="policy.maxQueuedJobsPerPrincipal" hint={globalHint}>
+              <NumberInput value={policy.maxQueuedJobsPerPrincipal} min={1} max={100000} onChange={(v) => update((p) => void (p.maxQueuedJobsPerPrincipal = v), "maxQueuedJobsPerPrincipal")} />
             </Field>
           </Locked>
         </div>
+        {footer("limits")}
       </Card>
 
       <Card
-        title="Built-in tools and permissions"
+        title={cardTitle("Built-in tools and permissions", "tools")}
         subtitle="Which built-in Copilot tool groups harnesses may enable, and how their actions may be approved."
         actions={overrideToggle("tools")}
       >
@@ -346,7 +464,7 @@ export function PolicyView() {
               ).map(([id, label, detail]) => (
                 <Toggle
                   key={id}
-                  checked={(draft.builtinTools ?? []).includes(id)}
+                  checked={(policy.builtinTools ?? []).includes(id)}
                   onChange={(checked) =>
                     update((p) => {
                       const order = ["files", "shell", "web", "agents"] as const;
@@ -374,7 +492,7 @@ export function PolicyView() {
               ).map(([id, label, detail]) => (
                 <Toggle
                   key={id}
-                  checked={(draft.permissionModes ?? []).includes(id)}
+                  checked={(policy.permissionModes ?? []).includes(id)}
                   onChange={(checked) =>
                     update((p) => {
                       const next = (["ask", "allow"] as const).filter((m) => (m === id ? checked : (p.permissionModes ?? []).includes(m)));
@@ -388,17 +506,26 @@ export function PolicyView() {
               ))}
             </div>
           </div>
+          {yolo && (
+            <div className="mt-4">
+              <Flash tone="warn">
+                <strong>Allow</strong> lets harnesses approve shell commands, file writes and web access without review, and egress is not enforced.
+                Keep it out of shared deployments; prefer <strong>Ask</strong>.
+              </Flash>
+            </div>
+          )}
         </Locked>
+        {footer("tools")}
       </Card>
 
-      <Card title="Model options" subtitle="Ceilings for the model settings harnesses and sub-agents can request." actions={overrideToggle("model")}>
+      <Card title={cardTitle("Model options", "model")} subtitle="Ceilings for the model settings harnesses and sub-agents can request." actions={overrideToggle("model")}>
         <Locked locked={locked("model")}>
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="Maximum reasoning effort" help="policy.maxReasoningEffort" hint="Jobs from harnesses above the cap are rejected at admission.">
               <div>
                 <SegmentedControl
                   label="Maximum reasoning effort"
-                  value={draft.maxReasoningEffort ?? ""}
+                  value={policy.maxReasoningEffort ?? ""}
                   onChange={(value) =>
                     update((p) => {
                       if (value) p.maxReasoningEffort = value as NonNullable<ExecutionPolicy["maxReasoningEffort"]>;
@@ -417,7 +544,7 @@ export function PolicyView() {
             </Field>
             <div className="pt-6">
               <Toggle
-                checked={!!draft.allowLongContext}
+                checked={!!policy.allowLongContext}
                 help="policy.allowLongContext"
                 onChange={(checked) =>
                   update((p) => {
@@ -431,10 +558,11 @@ export function PolicyView() {
             </div>
           </div>
         </Locked>
+        {footer("model")}
       </Card>
 
       <Card
-        title="Required controls"
+        title={cardTitle("Required controls", "controls")}
         subtitle="Executors report what they enforce; each job is only handed to executors that meet its policy's requirements or whose gaps that policy acknowledges."
         actions={overrideToggle("controls")}
       >
@@ -444,7 +572,7 @@ export function PolicyView() {
               <div>
                 <SegmentedControl
                   label="Runner process isolation"
-                  value={draft.requirements.processIsolation}
+                  value={policy.requirements.processIsolation}
                   onChange={(value) => update((p) => void (p.requirements.processIsolation = value))}
                   options={[
                     { value: "uid", label: "Separate unprivileged user (uid)" },
@@ -457,7 +585,7 @@ export function PolicyView() {
               <div>
                 <SegmentedControl
                   label="Network egress"
-                  value={draft.requirements.egress}
+                  value={policy.requirements.egress}
                   onChange={(value) => update((p) => void (p.requirements.egress = value))}
                   options={[
                     { value: "gateway-only", label: "Gateway only" },
@@ -472,7 +600,7 @@ export function PolicyView() {
             {GAPS.map((gap) => (
               <Toggle
                 key={gap.id}
-                checked={draft.acknowledgedGaps.includes(gap.id)}
+                checked={policy.acknowledgedGaps.includes(gap.id)}
                 onChange={(checked) =>
                   update((p) => {
                     const list = p.acknowledgedGaps.filter((g) => g !== gap.id);
@@ -489,10 +617,7 @@ export function PolicyView() {
             </p>
           </div>
         </Locked>
-      </Card>
-
-      <Card title="Validation">
-        <IssueList issues={issues} empty={harnessScope ? `The effective policy for ${scope} is valid.` : "The policy is valid."} />
+        {footer("controls")}
       </Card>
     </div>
   );
