@@ -508,7 +508,8 @@ Keep the existing container host as the qualified starting point, then remove it
 
 ### 7.2 Mode 2: shared runtime
 
-**Status: implemented locally in stage 2** ([shared mode](#stage-2-harness-driven-shared-mode),
+**Status: implemented locally in stage 2** ([shared mode](#stage-2-harness-driven-shared-mode) and its
+[assisted-approval follow-up](#follow-up-assisted-approvals-without-host-injected-flags),
 [egress and remote MCP](#stage-2-shared-placement-egress-and-remote-mcp)). [Architecture](ARCHITECTURE.md#local-hybrid-hosting)
 and [shared conversation approvals](SECURITY.md#shared-conversation-approvals) describe current behavior; the base
 tool names are `SHARED_TOOLS` in [`shared.ts`](../contracts/src/shared.ts), implemented in
@@ -516,7 +517,9 @@ tool names are `SHARED_TOOLS` in [`shared.ts`](../contracts/src/shared.ts), impl
 the records show: with nobody attached, a request that the `assisted` judge declines waits for a person until the
 turn deadline instead of failing at once, because the worker's handler keeps the default no-result fallback (a
 rejecting fallback pre-empted an attached person's approval in the CLI gate); the approval modes need runtime
-`d89cfe45b29` (host `006b030`) or later; and the runtime's `limitTo` host allowlist (N3) was not evaluated.
+`d89cfe45b29` (host `006b030`) or later, whose assisted approval sits behind the experimental `AUTO_APPROVAL` flag
+that the worker sets in its own process, and activation refuses a session whose approval mode the runtime will not
+hold (`409 hosting_unavailable`); and the runtime's `limitTo` host allowlist (N3) was not evaluated.
 
 Make the existing shared worker harness-driven:
 
@@ -937,7 +940,7 @@ Stage status on 2026-10-16:
 | --- | --- | --- |
 | 0. Plan | Recorded 2026-10-15 | This document |
 | 1. Contract and policy | Exit evidence met locally | [Contracts and admission](#stage-1-contracts-policy-validation-and-admission), [configurator](#stage-1-configurator-hosting-editor-and-views) |
-| 2. Harness-driven shared mode | Exit evidence met locally | [Connection broker](#stage-2-connection-broker), [egress and remote MCP](#stage-2-shared-placement-egress-and-remote-mcp), [shared mode](#stage-2-harness-driven-shared-mode) |
+| 2. Harness-driven shared mode | Exit evidence met locally | [Connection broker](#stage-2-connection-broker), [egress and remote MCP](#stage-2-shared-placement-egress-and-remote-mcp), [shared mode](#stage-2-harness-driven-shared-mode) and its [assisted-approval follow-up](#follow-up-assisted-approvals-without-host-injected-flags) |
 | 3. Session containers | Exit evidence met locally | [Session containers](#stage-3-session-containers), [owner hosts and relay](#stage-3-per-harness-owner-hosts-and-relay) |
 | 4. Orchestrator workers | Exit evidence met locally | [Orchestrator workers](#stage-4-orchestrator-workers) |
 | 5. Promotion | Exit evidence met locally | [Promotion](#stage-5-promotion) |

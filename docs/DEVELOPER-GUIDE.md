@@ -265,7 +265,11 @@ those source snapshots with the runtime's unchanged generated Bazel definitions.
 ```
 
 The output directory must be absent or empty. It contains `copilot-runtime`, `runtime.node`, `sdk.tgz`,
-`provenance.json` (source revisions and input hashes), and verified `SHA256SUMS`. The Docker engine's
+`provenance.json` (source revisions and input hashes), and verified `SHA256SUMS`. Build the bundles for the
+shared-worker, session-container, and managed host images from the revisions above, and check `provenance.json`
+before using one. The recorded gates used artifacts from runtime `d89cfe45b29` with hosting `006b030`; a bundle from
+an earlier runtime, such as `0a32c39595f`, lacks the approval-mode ceilings, judge verdicts, and inherited human
+authority that shared sessions and workers need. The Docker engine's
 native Linux architecture is used; no emulated amd64 target is imposed on ARM64. The default `fast`
 configuration is a large, unoptimized qualification build; use `-Configuration release` for an optimized
 candidate and qualify it separately before comparative performance claims. `-NpmRegistry` supports the

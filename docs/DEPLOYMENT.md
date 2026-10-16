@@ -101,7 +101,8 @@ aspire run --apphost .\apphost.mts
 Replace `12345` with the numeric GitHub ID for the caller using the `dev` API key. This is an
 operator-controlled binding, not user-supplied identity. Each session uses the first of its harness's models that
 the effective policy approves, through the configured gateway; existing Foundry configuration is still required.
-The runtime launcher must match the **host** OS/architecture and have its matching library beside it;
+The runtime launcher must come from the [required runtime revision](DEVELOPER-GUIDE.md#hybrid-runtime-qualification),
+match the **host** OS/architecture, and have its matching library beside it;
 do not point a Windows Node worker at the Linux container bundle. The worker enables the runtime's experimental
 assisted-approval flag (`AUTO_APPROVAL`) in its own process, so neither the AppHost nor the image sets it.
 
@@ -192,12 +193,15 @@ supplied through `EXECUTION_CONTAINER_SETTINGS` when hosting that service direct
 
 A session created with an `isolated` conversation harness runs in its own resumable container
 ([architecture](ARCHITECTURE.md#session-containers)). Build the image from the same verified native Linux
-bundle as the shared worker; it needs no customer configuration because each container receives its session's
-admitted harness snapshot:
+bundle as the shared worker, built at the runtime and hosting revisions in
+[hybrid runtime qualification](DEVELOPER-GUIDE.md#hybrid-runtime-qualification): workers' approval modes and
+inherited human authority need them, and an older bundle lacks them. The image needs no customer configuration
+because each container receives its session's admitted harness snapshot:
 
 ```powershell
+# The bundle directory that deploy\build-hybrid-runtime.ps1 produced at the required revisions.
 docker build -f deploy\SessionContainer.Dockerfile `
-  --build-context runtime=.runtime-artifacts\hybrid-linux-arm64-verified `
+  --build-context runtime=C:\path\to\verified\linux-bundle `
   -t copilot-session-container:local .
 
 aspire secret set "Parameters:session-containers" "true"
@@ -285,12 +289,15 @@ inference; this is not Azure or paid-model evidence.
 
 ### Shared worker container
 
-The same worker is packaged independently; it is not the old singleton `agent-host` image.
-After building a verified native Linux bundle:
+The same worker is packaged independently; it is not the old singleton `agent-host` image. Build it from a
+verified native Linux bundle at the runtime and hosting revisions in
+[hybrid runtime qualification](DEVELOPER-GUIDE.md#hybrid-runtime-qualification), which approval modes need; the
+bundle's `provenance.json` records its revisions:
 
 ```powershell
+# The bundle directory that deploy\build-hybrid-runtime.ps1 produced at the required revisions.
 docker build -f deploy\SessionHost.Dockerfile `
-  --build-context runtime=.runtime-artifacts\hybrid-linux-arm64-verified `
+  --build-context runtime=C:\path\to\verified\linux-bundle `
   --build-context customer-config=.copilot-agent-workspace `
   -t copilot-hybrid-session-host:local .
 ```
@@ -379,7 +386,7 @@ supported stdio connection. This avoids relying on the SDK's unqualified bundled
 | `Parameters:demo-host-owner` | Expected GitHub login; resolved to a numeric account ID and pinned in durable host ownership |
 | `Parameters:demo-host-harness` | Managed profiles only: a conversation harness; defaults to `interactive-demo` |
 | `Parameters:demo-host-github-token` | Owner credential for Mission Control; store only in Aspire secrets, never in the customer workspace or target JSON |
-| `Parameters:demo-host-runtime-dir` | Managed profiles only: relative build-context directory holding a verified Linux runtime bundle from `deploy/build-hybrid-runtime.ps1` (`provenance.json`, `SHA256SUMS`, `copilot-runtime`, `runtime.node`, `sdk.tgz`). The image installs that runtime and its matching SDK in place of the published one. Local runs build for the bundle's architecture, so an arm64 bundle builds natively on ARM64; publishing requires a linux/amd64 bundle. Required for owner hosts |
+| `Parameters:demo-host-runtime-dir` | Managed profiles only: relative build-context directory holding a verified Linux runtime bundle from `deploy/build-hybrid-runtime.ps1`, built at the [required revisions](DEVELOPER-GUIDE.md#hybrid-runtime-qualification) (`provenance.json`, `SHA256SUMS`, `copilot-runtime`, `runtime.node`, `sdk.tgz`). The image installs that runtime and its matching SDK in place of the published one. Local runs build for the bundle's architecture, so an arm64 bundle builds natively on ARM64; publishing requires a linux/amd64 bundle. Required for owner hosts |
 
 For production-mode deployment, the corresponding names are `Parameters__demo-host-*`. The configurator forwards
 the GitHub credential from the protected local Aspire secret only when the selected target explicitly enables
