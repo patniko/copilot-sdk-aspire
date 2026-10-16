@@ -15,7 +15,7 @@ import type { CustomPermissionHandler } from "./permission-handlers.js";
 import { SharedPermissionPolicy, type ToolRule } from "./permissions.js";
 import { PromotionRefused, SharedPromotions } from "./promotion/coordinator.js";
 import { promotionTool } from "./promotion/tool.js";
-import { SharedSessionRuntime, type SharedActivationContext } from "./runtime.js";
+import { ApprovalModeRefused, SharedSessionRuntime, type SharedActivationContext } from "./runtime.js";
 import { SharedTurnScheduler } from "./scheduler.js";
 import { sharedToolset, type SharedToolkitOptions } from "./toolkit.js";
 
@@ -57,13 +57,25 @@ export interface SharedServiceOptions {
   promotion?: { store: PromotionStore; settings: SessionContainerSettings; pollMs?: number; readyTimeoutMs?: number };
 }
 
-/** Managed settings that keep the runtime from entering an approval mode the harness's policy does not allow. */
-export function approvalManagedSettings(approval: SharedApprovalPlan): ManagedSettings | undefined {
-  const permissions = {
-    ...(approval.available.includes("allow-all") ? {} : { disableBypassPermissionsMode: "disable" }),
-    ...(approval.available.includes("assisted") ? {} : { disableAssistedPermissionsMode: true }),
+/**
+ * Managed settings that keep the runtime from entering an approval mode the harness's policy does not allow. They are
+ * always stated, even when nothing is disabled, as the orchestrator workers' are, so a session's approval policy never
+ * depends on how the runtime treats an absent managed policy.
+ */
+export function approvalManagedSettings(approval: SharedApprovalPlan): ManagedSettings {
+  return {
+    permissions: {
+      ...(approval.available.includes("allow-all") ? {} : { disableBypassPermissionsMode: "disable" }),
+      ...(approval.available.includes("assisted") ? {} : { disableAssistedPermissionsMode: true }),
+    },
   };
-  return Object.keys(permissions).length ? { permissions } : undefined;
+}
+
+/** The API error for a conversation whose approval mode the runtime would not hold, so it was not started. */
+export function approvalModeUnavailable(error: ApprovalModeRefused): HttpError {
+  return new HttpError(409, "hosting_unavailable",
+    `This deployment's runtime cannot hold the conversation's '${error.mode}' approval mode, so the conversation was not started.`,
+    { prerequisite: { kind: "feature", name: "approval-modes" } });
 }
 
 /**
@@ -380,9 +392,9 @@ export class SharedSessionService {
       try { await this.deactivate(row.id); }
       finally {
         if (!this.#residents.has(row.id)) this.#harnessOf.delete(row.id);
-        this.options.report("session.activation_failed", row.id);
+        this.options.report(error instanceof ApprovalModeRefused ? "session.approval_mode_refused" : "session.activation_failed", row.id);
       }
-      throw error;
+      throw error instanceof ApprovalModeRefused ? approvalModeUnavailable(error) : error;
     }
   }
 

@@ -3,8 +3,8 @@ export { webFetchTool, webFetchPermissionRequest, htmlToText, type WebFetchToolO
 export { remoteMcpTools, remoteMcpToolFor } from "./remote-mcp-tools.js";
 export { createSharedEgress, type SharedEgress, type SharedEgressContext, type SharedEgressOptions, type SharedMcpConnection, type SharedMcpServer } from "./shared-egress.js";
 export { postgresSessionFilesystem, providerKey } from "./postgres-filesystem.js";
-export { SharedSessionRuntime, type SharedSessionOptions, type SharedActivationContext, type SharedApprovalModes } from "./runtime.js";
-export { SharedSessionService, approvalManagedSettings, type SharedServiceOptions } from "./service.js";
+export { SharedSessionRuntime, ApprovalModeRefused, applyApprovalMode, enableAssistedApprovals, recordedApprovalMode, type SharedSessionOptions, type SharedActivationContext, type SharedApprovalModes } from "./runtime.js";
+export { SharedSessionService, approvalManagedSettings, approvalModeUnavailable, type SharedServiceOptions } from "./service.js";
 export { SharedTurnScheduler } from "./scheduler.js";
 export { buildSharedHost } from "./server.js";
 export { SharedAdmission, SHARED_WORKER_DEPLOYMENT, sharedWorkerDeployment, admittedModel, approvalPlan, type SharedActivationPlan, type SharedAdmissionOptions, type SharedApprovalPlan } from "./admission.js";

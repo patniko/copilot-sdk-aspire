@@ -100,7 +100,8 @@ Replace `12345` with the numeric GitHub ID for the caller using the `dev` API ke
 operator-controlled binding, not user-supplied identity. Each session uses the first of its harness's models that
 the effective policy approves, through the configured gateway; existing Foundry configuration is still required.
 The runtime launcher must match the **host** OS/architecture and have its matching library beside it;
-do not point a Windows Node worker at the Linux container bundle.
+do not point a Windows Node worker at the Linux container bundle. The worker enables the runtime's experimental
+assisted-approval flag (`AUTO_APPROVAL`) in its own process, so neither the AppHost nor the image sets it.
 
 The worker reads harnesses and policy from the customer workspace (`CONFIG_ROOT`), like the other services. The
 examples include two shared harnesses with their policy overrides: `hybrid-coordinator` (the coordinator that
