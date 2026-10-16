@@ -140,7 +140,8 @@ export function HostingTab({ draft, update, issues, hosting, digest }: {
 
   const modes = HOSTING_MODE_ORDER.map((value) => {
     const allowed = !hosting || hosting.ceilings.modes.includes(value);
-    const blocked = !conversation && value !== "isolated"
+    const needsConversation = !conversation && value !== "isolated";
+    const blocked = needsConversation
       ? "Needs a conversation harness: set Interaction to Conversations."
       : !allowed
         ? "The operator policy does not allow this mode for this harness. Allow it on the Policy page."
@@ -153,7 +154,7 @@ export function HostingTab({ draft, update, issues, hosting, digest }: {
       label: info.label,
       disabled: !!blocked && value !== mode,
       badge: blocked
-        ? <Badge tone={allowed ? "neutral" : "red"}>{allowed ? "needs conversation" : "not allowed by policy"}</Badge>
+        ? <Badge tone={needsConversation ? "neutral" : "red"}>{needsConversation ? "needs conversation" : "not allowed by policy"}</Badge>
         : !conversation
           ? <Badge tone="green">batch jobs</Badge>
           : reported
@@ -168,7 +169,7 @@ export function HostingTab({ draft, update, issues, hosting, digest }: {
           <span className="block">
             <strong className="font-semibold">Costs:</strong> {info.costs}
           </span>
-          {blocked && <span className={allowed ? "mt-1 block fg-attention" : "mt-1 block fg-danger"}>{blocked}</span>}
+          {blocked && <span className={needsConversation ? "mt-1 block fg-attention" : "mt-1 block fg-danger"}>{blocked}</span>}
           {!blocked && reported?.status === "unavailable" && reported.problems[0] && (
             <span className="mt-1 block fg-attention">{describeProblem(reported.problems[0])}</span>
           )}
@@ -682,13 +683,13 @@ function ApprovalSection({ draft, update, hosting, errorAt, conversation }: Sect
   const profileHandlers = hosting?.profileHandlers ?? [];
   const usable = policyHandlers.filter((handler) => profileHandlers.includes(handler));
   const asks = !!permissions && (permissions.default === "ask" || Object.values(permissions.kinds ?? {}).includes("ask") || !!permissions.questions);
-  const reasonFor = (mode: ApprovalMode): string | undefined => {
-    if (!conversation && mode !== "manual") return "Batch harnesses use manual approval.";
-    if (!allowed.includes(mode)) return "Not allowed by the operator policy.";
+  const reasonFor = (mode: ApprovalMode): { text: string; badge: string; policy: boolean } | undefined => {
+    if (!conversation && mode !== "manual") return { text: "Batch harnesses use manual approval.", badge: "needs conversation", policy: false };
+    if (!allowed.includes(mode)) return { text: "Not allowed by the operator policy.", badge: "not allowed", policy: true };
     if (mode === "custom" && usable.length === 0) {
       return policyHandlers.length === 0
-        ? "The operator policy lists no permission handlers."
-        : "No allowed handler is provided by the TypeScript conversation profile.";
+        ? { text: "The operator policy lists no permission handlers.", badge: "no handler", policy: true }
+        : { text: "No allowed handler is provided by the TypeScript conversation profile.", badge: "no handler", policy: false };
     }
     return undefined;
   };
@@ -726,11 +727,11 @@ function ApprovalSection({ draft, update, hosting, errorAt, conversation }: Sect
             value: mode,
             label: APPROVAL_INFO[mode].label,
             disabled: !!reason && mode !== approval,
-            badge: reason ? <Badge tone={allowed.includes(mode) ? "neutral" : "red"}>{allowed.includes(mode) ? "unavailable" : "not allowed"}</Badge> : mode === "manual" ? <Badge>default</Badge> : undefined,
+            badge: reason ? <Badge tone={reason.policy ? "red" : "neutral"}>{reason.badge}</Badge> : mode === "manual" ? <Badge>default</Badge> : undefined,
             description: (
               <>
                 {APPROVAL_INFO[mode].detail}
-                {reason && <span className="mt-1 block fg-attention">{reason}</span>}
+                {reason && <span className={reason.policy ? "mt-1 block fg-danger" : "mt-1 block fg-attention"}>{reason.text}</span>}
               </>
             ),
           };

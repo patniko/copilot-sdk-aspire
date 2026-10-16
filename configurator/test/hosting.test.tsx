@@ -1,8 +1,10 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import type { HarnessHostingView, HostingHostsView } from "../server/types";
 import { HostingDiagram } from "../src/components/HostingDiagram";
-import { hostingObservation, hostingPlacement, hostingTopology, HOSTING_HEIGHT, HOSTING_NODE_HEIGHT, HOSTING_NODE_WIDTH, HOSTING_WIDTH } from "../src/hosting";
+import { harnessHostRow, hostingObservation, hostingPlacement, hostingTopology, HOSTING_HEIGHT, HOSTING_NODE_HEIGHT, HOSTING_NODE_WIDTH, HOSTING_WIDTH } from "../src/hosting";
 import { HostingView } from "../src/views/Hosting";
+import { HarnessHostingRows } from "../src/views/HostingHarnesses";
 
 vi.mock("../src/state", () => ({ useApp: () => ({
   settings: { local: { demoHost: { transport: "github", owner: "synthetic-owner" } }, targets: [] },
@@ -91,5 +93,87 @@ describe("hosting topology", () => {
     expect(html).toContain('disabled="">Shared CLI launcher unavailable');
     expect(html).toContain("not measured here yet");
     expect(html).not.toContain("0 ms");
+  });
+});
+
+function view(overrides: Partial<HarnessHostingView>): HarnessHostingView {
+  return {
+    harness: "chat",
+    version: "1.0.0",
+    digest: `sha256:${"0".repeat(64)}`,
+    interaction: "conversation",
+    mode: "isolated",
+    placement: "container",
+    status: "ready",
+    problems: [],
+    transports: [
+      { transport: "direct", allowed: true, available: true },
+      { transport: "github", allowed: true, available: true },
+    ],
+    effective: { mode: "isolated", declared: false, approvalMode: "manual", handoffs: [], mcpServers: [] },
+    ceilings: {
+      modes: ["isolated"], transports: ["direct", "github"], approvalModes: ["manual"], permissionHandlers: [],
+      sizes: { small: { cpus: 0.5, memoryMiB: 1024 } }, defaultSize: "small",
+      workers: { maxConcurrentPerSession: 4, maxPerSession: 16, maxPerPrincipal: 8, idleSeconds: 900, maxLifetimeSeconds: 3600, allowInheritedAuthority: false },
+      promotion: { approval: ["ask"] }, craftingTemplates: [], mcpServers: [],
+    },
+    ...overrides,
+  };
+}
+
+const sharedWorker: HostingHostsView = { executor: "pool", isolatedHosts: [], sharedWorker: { transports: ["direct"], features: [] } };
+const transportUnsupported = {
+  transport: "github" as const,
+  allowed: false,
+  available: false,
+  problem: { code: "transport_unsupported" as const, message: "Shared hosting supports direct WSS only; the GitHub relay serves isolated hosts." },
+};
+
+describe("per-harness hosting rows", () => {
+  it("connects to an owner host with the per-harness launcher and notes its always-on cost", () => {
+    const hosts: HostingHostsView = { executor: "pool", isolatedHosts: [{ harness: "chat", transports: ["direct", "github"], features: [] }] };
+    const row = harnessHostRow(view({}), hosts, "local");
+    expect(row.host).toBe("Owner host");
+    expect(row.costNote).toContain("Always on");
+    expect(row.connections.map((connection) => connection.command)).toEqual([
+      "pnpm host:connect --harness chat --target local --transport direct",
+      "pnpm host:connect --harness chat --target local --transport github",
+    ]);
+  });
+
+  it("connects to shared harnesses over direct WSS locally, and says why not over the relay or in Azure", () => {
+    const shared = view({ mode: "shared", placement: "shared", transports: [{ transport: "direct", allowed: true, available: true }, transportUnsupported] });
+    const local = harnessHostRow(shared, sharedWorker, "local");
+    expect(local.host).toBe("Shared worker");
+    expect(local.costNote).toContain("a session itself starts no container");
+    expect(local.connections[0]).toEqual({ transport: "direct", label: "Direct WSS", command: "pnpm host:connect --harness chat --target local --transport direct" });
+    expect(local.connections[1]?.disabledReason).toBe("Shared hosting supports direct WSS only; the GitHub relay serves isolated hosts.");
+    expect(harnessHostRow(shared, sharedWorker, "azure").connections[0]?.disabledReason).toContain("locally only");
+  });
+
+  it("names the missing host instead of offering a connection", () => {
+    const problem = { code: "hosting_unavailable" as const, message: "Shared hosting needs the shared worker.", prerequisite: { kind: "host" as const, name: "shared-worker" as const } };
+    const row = harnessHostRow(
+      view({ mode: "shared", placement: "shared", status: "unavailable", problems: [problem], transports: [{ transport: "direct", allowed: true, available: false, problem }, transportUnsupported] }),
+      { executor: "pool", isolatedHosts: [] },
+      "local",
+    );
+    expect(row.host).toBe("No shared worker");
+    expect(row.connections[0]?.disabledReason).toBe("Shared hosting needs the shared worker. Needs the harness-driven shared worker.");
+    expect(row.connections.every((connection) => !connection.command)).toBe(true);
+    const sessions = harnessHostRow(view({}), { executor: "pool", isolatedHosts: [], sessionContainers: { transports: ["direct"], features: [] } }, "local");
+    expect(sessions.host).toBe("Session containers");
+    expect(sessions.connections[0]?.disabledReason).toBe("The launcher cannot connect to per-session containers yet.");
+  });
+
+  it("runs batch harnesses as jobs without client transports", () => {
+    const row = harnessHostRow(view({ interaction: "batch", placement: "executor", transports: [] }), sharedWorker, "local");
+    expect(row).toEqual({ host: "Executor pool", hostDetail: "Runs as jobs through the jobs API, with no client transport.", connections: [] });
+  });
+
+  it("asks for the local stack before reading the service's view", () => {
+    const html = renderToStaticMarkup(<HarnessHostingRows target="local" />);
+    expect(html).toContain("Harness hosting");
+    expect(html).toContain("Start the local stack to see how the service hosts each harness.");
   });
 });
