@@ -235,7 +235,7 @@ it.skipIf(!enabled)("routes web_fetch and remote MCP approvals through the runti
     if (record.errors.length) throw new Error(record.errors.join("\n"));
     expect(prompts).toEqual([
       expect.objectContaining({ kind: "url", url: `http://docs.example:${sitePort}/approved`, intention: "Fetch a web page for the conversation" }),
-      { kind: "mcp", server: "docs-search", tool: "search", readOnly: true },
+      { kind: "mcp", server: "docs-search", tool: "search", readOnly: false, readOnlyHint: true },
       expect.objectContaining({ kind: "url", url: `http://other.example:${sitePort}/refused` }),
     ]);
     expect(hits).toEqual([`docs.example:${sitePort}/approved`]);
