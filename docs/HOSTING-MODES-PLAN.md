@@ -37,7 +37,7 @@ Decisions agreed on 2026-10-15, including answers from two review rounds on the 
 | Transports | Direct WSS for every mode. GitHub relay for isolated harness hosts only, with one Mission Control environment per relay-enabled harness |
 | GitHub relay for shared modes | Not in the first delivery. An owner-scoped relay was agreed and then withdrawn the same day: with relay, GitHub identity rather than the integrator's own principals decides who can attach, which does not suit integrator-managed multi-tenancy. Per-tenant relay in the runtime is parked |
 | Shared-mode tools | Basic workspace and utility tools, web access, and remote MCP servers. How skills are defined and mounted for harnesses will be designed later |
-| Permissions | Developers choose each harness's approval mode: manual, assisted (the Copilot runtime's safety judge), allow-all, or a custom handler written in code, within policy |
+| Permissions | Developers choose each harness's approval mode: manual, assisted (the Copilot runtime's safety judge), allow-all, or a custom handler written in code, within policy. A coordinator harness can opt in to letting its workers' judges use the session's human messages as authority |
 | What a mode-4 container runs | An agent worker: its own child agent session from an approved harness, which the main agent creates, messages, monitors, and archives, as the GitHub Copilot app manages sessions. One-shot `delegate_job` remains the simple case |
 | Promotion | Resume the same session inside the container, transparently to the CLI user where possible |
 | Handoffs | Predefined handoff-target harnesses, plus an optional, policy-bounded ability for the main agent to craft a harness at runtime, comparable to OpenAI Agents SDK handoffs |
@@ -119,6 +119,7 @@ Illustrative harness block; final names, bounds, and defaults belong in `contrac
       "maxConcurrent": 4,
       "maxPerSession": 12,
       "sharedStorage": "session",
+      "humanAuthority": "inherit",
       "crafting": { "template": "general-worker" }
     },
     "handoffs": [
@@ -135,6 +136,7 @@ Illustrative harness block; final names, bounds, and defaults belong in `contrac
 | `hosting.workers.harnesses` | `orchestrator` | Published conversation harnesses, each with effective mode `isolated`, that may run as workers |
 | `hosting.workers.sizes`, `maxConcurrent`, `maxPerSession` | `orchestrator` | Requested subset of operator sizes and concurrency, narrowed by policy |
 | `hosting.workers.sharedStorage` | `orchestrator` | `none` or `session` (one volume shared by that session's workers) |
+| `hosting.workers.humanAuthority` | `orchestrator` | `none` (default) or `inherit`: whether workers' assisted-approval judges may use this session's human messages as authority ([details](#inherited-human-authority)) |
 | `hosting.workers.crafting.template` | `orchestrator` | Optional operator crafting template; omitting it disables crafted workers |
 | `hosting.handoffs[]` | All conversation modes | Predefined targets, each with a description, a history policy (`full`, `summary`, or `none`), and an optional `approval` (`ask` or `allow`) |
 | `mcpServers[]` (new) | All | Remote MCP servers from the operator's catalog, with the tools this harness requests |
@@ -193,12 +195,36 @@ Consequences for this plan:
 - In managed sessions the judge model defaults to the session's model, so judge calls go through the gateway and
   count against the session's budget. A `judgeModel` must be an allowed model.
 - For workers, the judge's authority rule matters: a worker's instructions come from its coordinator, a model, so
-  they carry no human authority. Assisted workers will send most requests to a person unless the platform can pass
-  the authentic human messages from the coordinator session as authority. Whether the runtime supports that is an
-  open question. The coordinator never approves a worker's permissions.
+  they carry no human authority. Unless the coordinator harness opts in to
+  [inherited human authority](#inherited-human-authority), assisted workers send most requests to a person. The
+  coordinator never approves a worker's permissions.
 - Custom handlers are integrator code, reviewed and packaged like tool implementations; a harness selects one by
   name and cannot embed code. Hosted conversations are TypeScript-only, so extending custom handlers to batch jobs
   would also require a Python implementation.
+
+### Inherited human authority
+
+A coordinator harness can let its workers' assisted-approval judges treat the session's human messages as
+authority by setting `hosting.workers.humanAuthority: "inherit"`. Effective policy must also allow it. The harness
+author decides whether workers may act on the person's instructions without prompting; the operator sets the
+ceiling. It is off by default.
+
+When enabled:
+
+- The platform, not the coordinator, supplies the authority: the human messages recorded in the coordinator
+  session, exactly as sent and attributed to that session's principal. Text in `create_worker` or `send_to_worker`
+  arguments stays data, so the coordinator cannot invent or paraphrase authority.
+- The worker's judge evaluates each request against those messages. A request covered by what the person asked for
+  can run without a prompt; a request that only the coordinator asked for still goes to a person.
+- Per-kind rules, `deny`, mandatory confirmations, and the runtime's limits on authority-message size apply as
+  usual. A human message above the judge's size limit sends the request down the ordinary approval path.
+- The inherited messages are recorded alongside the worker's judge outcomes for audit.
+- Only `assisted` workers are affected; `manual`, `allow-all`, and `custom` workers behave as configured.
+
+This needs a runtime capability: accepting platform-supplied human authority for a session's judge, marked as
+inherited. The stage-4 gate verifies it. If the runtime cannot provide it, a harness that sets `inherit` fails
+validation rather than silently running without it. Inheritance widens what workers may do without asking, but
+only within the person's own words, and the judge remains guidance rather than a security boundary.
 
 Illustrative operator policy additions, overridable per harness through the existing
 [`HarnessPolicyOverride`](../contracts/src/profile.ts) mechanism:
@@ -222,7 +248,7 @@ Illustrative operator policy additions, overridable per harness through the exis
       "medium": { "cpus": 1,   "memoryMiB": 2048 },
       "large":  { "cpus": 2,   "memoryMiB": 4096 }
     },
-    "workers": { "maxConcurrentPerSession": 4, "maxPerSession": 16, "maxPerPrincipal": 8, "idleSeconds": 900, "maxLifetimeSeconds": 3600 },
+    "workers": { "maxConcurrentPerSession": 4, "maxPerSession": 16, "maxPerPrincipal": 8, "idleSeconds": 900, "maxLifetimeSeconds": 3600, "allowInheritedAuthority": true },
     "promotion": { "approval": ["ask"] },
     "crafting": {
       "templates": {
@@ -570,8 +596,8 @@ Rules:
   attached client or, when nobody is attached, through a principal-scoped API request queue modeled on the job
   [approvals and questions](API.md#approvals-and-questions) routes. With `assisted`, the runtime's judge decides
   first, but the coordinator's instructions are not human authority, so most requests still reach a person unless
-  the human messages from the coordinator session can be passed as authority. `allow-all` and `custom` behave as in
-  any other harness. Policy may let the coordinator answer a worker's questions.
+  the coordinator harness enables [inherited human authority](#inherited-human-authority). `allow-all` and `custom`
+  behave as in any other harness. Policy may let the coordinator answer a worker's questions.
 - **Backstops.** Idle timeout, maximum lifetime, per-session caps, an aggregate token budget across the
   coordinator and its workers, workers stopping when the coordinator closes, and controller orphan
   reconciliation. Container time is recorded per worker for cost attribution.
@@ -599,7 +625,8 @@ Handoffs follow the shape of OpenAI Agents SDK handoffs:
 - The new segment receives history according to the target's policy: `full` (resume the same runtime session under
   the target's instructions and tools, which the review expects the runtime to allow; the stage-6 spike verifies
   it), `summary` (a bounded summary written by the source), or `none` (the payload only). Filters can remove
-  content; they never add authority.
+  content; they never add authority. Only `full` keeps the person's messages as assisted-approval authority; a
+  summary is written by a model and carries none.
 - The application session ID stays the same. Clients reconnect to the new segment's `ahpSessionId`, which the
   launcher resolves from the API.
 
@@ -664,6 +691,8 @@ Additional risks to design for:
 - **Assisted Permissions is not a security boundary.** The runtime's own contract calls the judge probabilistic
   guidance that reduces prompts. Keep deny rules, credentials, container placement, and egress controls as the
   enforceable limits; policy can disable assisted mode, and the judge's outcomes are recorded as session events.
+- **Inherited human authority** lets workers act on a person's instructions without prompting. Keep it off by
+  default, allow it per harness through policy, source it only from recorded human messages, and audit it.
 - **Custom permission handlers** are integrator code with the same trust as tool implementations; review and
   package them the same way.
 - **Remote MCP credentials** stay in the host process; the model and the harness definition see only server names.
@@ -679,6 +708,7 @@ Update [Security](SECURITY.md) with verified controls as each slice lands. Until
 | --- | --- | --- |
 | Allowed modes and transports | All | Validation, admission, connection provisioning |
 | Approval modes, judge model, and approved custom handlers | All | Validation, admission, the runtime's managed permission settings, and the host's permission handler |
+| Inherited human authority for workers | 4 | Harness opt-in, policy ceiling, and the platform's authority source |
 | Web egress filtering in shared placement | 2, 3, 4 | In-process filter locally; egress proxy in Azure |
 | Remote MCP server catalog, tool lists, and secret references | All | Validation, admission, and the host's MCP client |
 | Size catalog and per-harness subset | 1, 3, 4 | Allocation admission |
@@ -801,7 +831,7 @@ When comparisons start, predeclare workloads, trial counts, and pass criteria, a
 | 1. Contract and policy | `hosting` harness block, `mcpServers`, approval modes, policy ceilings and per-harness overrides, validation and admission errors, configurator editing, and a read-only per-harness hosting view | Existing harnesses keep their digests; invalid combinations and disallowed modes fail with field-scoped errors; unavailable modes name their prerequisite; runtime behavior is unchanged |
 | 2. Harness-driven shared mode | The shared worker hosts `shared` harnesses with the base tool set, filtered web access, remote MCP, and approval modes; `/v1/sessions` accepts a harness; a separate broker service; launcher `--harness` | Two shared harnesses serve two API principals on one worker over direct WSS from the CLI; a shared harness uses web access and a remote MCP tool; loopback, private, link-local, and internal addresses are refused; the CLI can switch only to allowed approval modes; a GitHub relay request for a shared harness fails with `transport_unsupported`; no containers are allocated |
 | 3. Session containers | Resumable allocations with per-session volumes, idle stop and reallocation, broker routing to containers, per-session mode 1, and per-harness owner hosts with one relay environment each, built from the local runtime and SDK | A mode-1 session runs in its own container, stops when idle, and resumes from its volume; an isolated harness host registers its own environment and the CLI attaches over relay and direct WSS; orphan reconciliation and capacity accounting cover the new allocation kinds |
-| 4. Orchestrator workers | Worker tools, the durable coordinator inbox, sizes, the shared volume, backstops, worker approval modes, and listed and crafted workers | A coordinator runs two differently sized workers concurrently on a shared volume, messages and interrupts them, receives their completions without polling, and archives them; worker requests that need approval reach a person, never the coordinator; capacity returns to zero; a crafted definition cannot exceed its template |
+| 4. Orchestrator workers | Worker tools, the durable coordinator inbox, sizes, the shared volume, backstops, worker approval modes, and listed and crafted workers | A coordinator runs two differently sized workers concurrently on a shared volume, messages and interrupts them, receives their completions without polling, and archives them; worker requests that need approval reach a person, never the coordinator; with inherited human authority enabled, a request covered by the person's own words runs without a prompt while one only the coordinator asked for still reaches a person; capacity returns to zero; a crafted definition cannot exceed its template |
 | 5. Promotion | A transplant spike, then `promote_session`, API promotion, cutover fencing, and client continuity (launcher-supervised first) | A shared conversation promotes mid-task and continues with shell and files under the same application session, in the same terminal, without the user rerunning the launcher; failures before cutover leave it shared; no demotion route exists |
 | 6. Handoffs | Predefined targets, approval, history policies, and cross-placement handoff | A shared triage harness hands off to an isolated coding harness with summary history; a disallowed or unavailable target fails without transferring control |
 | 7. Azure | After stages 1 to 6 work locally: a spike of both container backends, then shared-worker image deployment, broker ingress, the chosen backend adapter with volumes, and relay for isolated hosts | Sessions and workers scale from zero to many to zero in Azure; the CLI attaches over direct WSS, and over relay for isolated hosts; observed costs are recorded |
@@ -823,6 +853,8 @@ Required failure coverage, in addition to existing suites:
   model or logs.
 - Approval modes: a request the judge declines, a judge error (fails closed), an unattended `assisted` request
   (does not run), a failing or slow custom handler (deny), and `allow-all` disabled by policy.
+- Inherited human authority: a coordinator that puts claimed human instructions in tool arguments, inheritance
+  requested by a harness when policy forbids it, and a human message too large for the judge.
 - Promotion: duplicate tool calls, failure at each step before cutover, a crash after cutover, stale shared
   writes after fencing, and demotion attempts.
 - Workers: limits under concurrent creation, coordinator closure with running workers, orphaned containers,
@@ -874,7 +906,7 @@ The IDs match the two review questionnaires answered on 2026-10-15. N-items are 
 | N4 | `assisted` approver outside workers | The runtime's judge serves any session, so no reviewer harness is needed; the developer sets the mode and judge model | Agreed |
 | N5 | Promotion continuity mechanism | Launcher-supervised restart first; later a CLI reconnect hook with either a per-session host key or a CLI key update | First step agreed; long-term option open |
 | N6 | Base tool set for shared mode | Files, web fetch, remote MCP, task list, questions, and in-runtime sub-agents ([section 7.2](#72-mode-2-shared-runtime)) | Agreed in principle; names in stage 1 |
-| N7 | Human authority for assisted workers | Can the runtime accept the coordinator session's human messages as authority for a worker's judge? | Open; stage 4 |
+| N7 | Human authority for assisted workers | Harness opt-in (`hosting.workers.humanAuthority: "inherit"`) within a policy ceiling; the platform supplies the coordinator session's recorded human messages ([details](#inherited-human-authority)) | Agreed; runtime support verified in stage 4 |
 
 Azure evidence reviewed on 2026-10-15: `az containerapp job start` accepts per-execution `--cpu`, `--memory`,
 `--image`, and environment overrides, and Container Apps jobs are documented as finite-duration tasks
