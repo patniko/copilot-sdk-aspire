@@ -161,7 +161,11 @@ and the builder's `sessionContainers` input.
 
 Hosted conversations share one permission policy: [`hosted-policy.ts`](../src/harness-hosting/src/hosted-policy.ts)
 denies tools the harness did not admit and returns no result for `ask`, so the attached AHP participant owns the
-prompt. The demo host and session containers both import it; the application never fabricates approval.
+prompt. The demo host and session containers both import it; the application never fabricates approval. Its pre-tool
+guard asks for a person's review of each built-in tool whose kind is `ask`, and the runtime then raises a `hook`
+confirmation; the handler judges that by the gated tool's rule, never the harness default, so a `deny` default cannot
+refuse, and an `allow` default cannot approve, what the guard sent to a person. Worker containers instead let only
+`deny` decide in the hook and answer the runtime's own requests ([`worker-permissions.ts`](../src/session-container/src/worker-permissions.ts)).
 
 The local hybrid worker is the shared host. [`SharedAdmission`](../src/session-host/src/admission.ts) evaluates a
 harness against the same deployment description and stores the admitted snapshot; every activation re-checks it
