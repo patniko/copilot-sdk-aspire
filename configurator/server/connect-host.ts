@@ -5,7 +5,7 @@ import { hostConnection } from "./host-client.js";
 import { Settings } from "./settings.js";
 import { StatusService } from "./status.js";
 import { TryService } from "./try.js";
-import { harnessHosting, sharedConnection } from "./shared-client.js";
+import { harnessHosting, sessionContainersOffer, sharedConnection } from "./shared-client.js";
 
 /** The harness `--destination shared` connects to, from before hosting was chosen per harness. */
 const LEGACY_SHARED_HARNESS = "hybrid-coordinator";
@@ -51,8 +51,13 @@ async function main(): Promise<void> {
   const harness = values.harness ?? (values.destination === "shared" ? LEGACY_SHARED_HARNESS : undefined);
   const api = harness ? await jobs.connection(values.target) : undefined;
   const hosting = harness && api ? await harnessHosting(api, harness) : undefined;
-  if (hosting?.placement === "shared" && api && harness) {
-    if (values.target !== "local") throw new Error("Shared hosting currently supports local connections only. Azure qualification remains open.");
+  // Isolated harnesses use the application API when the deployment runs them in session containers over this
+  // transport; otherwise they keep connecting to the demo host.
+  const sessions = hosting?.placement === "shared"
+    || (hosting?.placement === "container" && api !== undefined && await sessionContainersOffer(api, values.transport));
+  if (hosting && sessions && api && harness) {
+    const kind = hosting.placement === "shared" ? "shared conversation" : "session container";
+    if (values.target !== "local") throw new Error(`The ${kind} path currently supports local connections only. Azure qualification remains open.`);
     const transport = hosting.transports.find((entry) => entry.transport === values.transport);
     if (transport?.problem) throw new Error(`${transport.problem.code}: ${transport.problem.message}`);
     if (!values.resume && hosting.problems[0]) throw new Error(`${hosting.problems[0].code}: ${hosting.problems[0].message}`);
@@ -63,7 +68,7 @@ async function main(): Promise<void> {
     env.COPILOT_AHP_SERVER_KEY = JSON.stringify({ endpoint: url.href, ...connection.serverKey });
     url.searchParams.set("tkn", connection.token);
     args.push("--ahp", url.href, "--ahp-authenticate-with-github", "--resume", connection.ahpSessionId);
-    console.log(`Connecting to shared conversation ${connection.sessionId} (${harness}) through the connection broker with a one-use ticket. This explicitly authorizes GitHub identity authentication to the provisioned host.`);
+    console.log(`Connecting to ${kind} ${connection.sessionId} (${harness}) through the connection broker with a one-use ticket. This explicitly authorizes GitHub identity authentication to the provisioned host.`);
     console.log(`Resume later with: pnpm host:connect --harness ${harness} --resume ${connection.sessionId}`);
   } else {
     const { info, endpoint } = await hostConnection(values.target, values.transport, { settings, status, jobs });

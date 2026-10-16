@@ -19,7 +19,7 @@ import { Admission, ApiKeyAuthenticator, createLogger, loadPolicySet, loadProfil
 import { buildApi } from "../../src/agent-api/src/server.js";
 import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
 import { buildBroker } from "../../src/connection-broker/src/broker.js";
-import { DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/connection-broker/src/sessions.js";
+import { containerUpstream, DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/connection-broker/src/sessions.js";
 import { DispatcherClient as GatewayClient } from "../../src/inference-gateway/src/dispatcher-client.js";
 import { buildGateway } from "../../src/inference-gateway/src/server.js";
 import { parseRoutes } from "../../src/inference-gateway/src/routes.js";
@@ -206,7 +206,7 @@ it.skipIf(!enabled)("drives CLI delegation through actual Linux containers and d
     await host.listen({ port: 0, host: "127.0.0.1" });
     const { app: broker } = buildBroker({
       families: [sessionRoutes(new DispatcherDirectory(address(dispatcher.server), brokerKey))],
-      upstreams: { shared: sharedUpstream(new URL(address(host.server)), brokerKey) },
+      upstreams: { shared: sharedUpstream(new URL(address(host.server)), brokerKey), container: containerUpstream() },
     });
     apps.push(broker);
     await broker.listen({ port: 0, host: "127.0.0.1" });

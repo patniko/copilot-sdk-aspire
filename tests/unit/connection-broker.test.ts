@@ -9,7 +9,7 @@ import { BROKER_MOVED_CLOSE, PLACEMENT_EPOCH_HEADER, type PlacementRoute, type S
 import { createService, registerAhpProxy } from "@copilot-agent/service-defaults";
 import { buildBroker, type ConnectionBroker } from "../../src/connection-broker/src/broker.js";
 import { closeFrame, FrameCursor } from "../../src/connection-broker/src/frames.js";
-import { sessionRoutes, sharedUpstream, type PlacementDirectory } from "../../src/connection-broker/src/sessions.js";
+import { containerUpstream, sessionRoutes, sharedUpstream, type PlacementDirectory } from "../../src/connection-broker/src/sessions.js";
 
 const brokerKey = "synthetic-connection-broker-key-".repeat(2);
 const nativeToken = "synthetic-native-listener-token-".repeat(2);
@@ -151,7 +151,7 @@ async function fixture(checkMilliseconds = 25) {
   directory.placements.set(sessionId, { sessionId, kind: "shared", generation: 1 });
   const { app, broker } = buildBroker({
     families: [sessionRoutes(directory)],
-    upstreams: { shared: sharedUpstream(new URL(`http://127.0.0.1:${ingressPort}`), brokerKey) },
+    upstreams: { shared: sharedUpstream(new URL(`http://127.0.0.1:${ingressPort}`), brokerKey), container: containerUpstream() },
     checkMilliseconds,
   });
   const brokerPort = await listen(app.server);

@@ -12,6 +12,7 @@ import { Admission } from "@copilot-agent/service-defaults";
 import { registerConsole } from "./console.js";
 import { registerHostingRoutes } from "./hosting-routes.js";
 import { registerSharedSessionRoutes, type SharedApiDependencies } from "./shared-routes.js";
+import type { ContainerSessionService } from "./container-sessions.js";
 
 export interface ApiDependencies {
   store: JobStore;
@@ -24,6 +25,8 @@ export interface ApiDependencies {
   console?: boolean;
   host?: { store: HostStore; owner: string; principal: string; transport: string };
   shared?: SharedApiDependencies;
+  /** Per-session isolated containers (hosting mode 1). */
+  containers?: ContainerSessionService;
   execution?: "pool" | "dedicated";
   delegations?: DelegationStore;
   /** Published harnesses, profiles, policies, and deployment capabilities for the read-only `/v1/hosting` views. */
@@ -41,7 +44,9 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
   }
 
   const principalOf = (request: FastifyRequest) => deps.authenticator.authenticate(request).id;
-  if (deps.shared) registerSharedSessionRoutes(app, deps.shared, principalOf, deps.delegations, deps.hosting);
+  if (deps.shared || deps.containers) {
+    registerSharedSessionRoutes(app, deps.shared, principalOf, deps.delegations, deps.hosting, deps.containers);
+  }
   if (deps.hosting) registerHostingRoutes(app, deps.hosting, principalOf);
   if (deps.host) {
     const host = deps.host;

@@ -15,7 +15,7 @@ import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
 import { SharedSessionService } from "../../src/session-host/src/service.js";
 import { buildSharedHost } from "../../src/session-host/src/server.js";
 import { buildBroker } from "../../src/connection-broker/src/broker.js";
-import { DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/connection-broker/src/sessions.js";
+import { containerUpstream, DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/connection-broker/src/sessions.js";
 import { testGitHubAccount } from "../runtime/account.js";
 import { localRuntimeArtifacts } from "../runtime/artifacts.js";
 import { QualificationCli } from "../runtime/cli.js";
@@ -102,7 +102,7 @@ it.skipIf(!enabled)("answers through the real CLI via the broker, survives an AP
     const sharedPort = (await startHost()).server.address() as AddressInfo;
     ({ app: broker } = buildBroker({
       families: [sessionRoutes(new DispatcherDirectory(address(dispatcher), brokerKey))],
-      upstreams: { shared: sharedUpstream(new URL(`http://127.0.0.1:${sharedPort.port}`), brokerKey) },
+      upstreams: { shared: sharedUpstream(new URL(`http://127.0.0.1:${sharedPort.port}`), brokerKey), container: containerUpstream() },
     }));
     await broker.listen({ port: 0, host: "127.0.0.1" });
     const listener = new JobEventListener(pool);

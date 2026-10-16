@@ -11,6 +11,8 @@ export interface SharedSessionRecord {
   id: string;
   principal: string;
   githubUserId: number;
+  /** Where the session's loop runs. The shared worker activates and authorizes only `shared` sessions. */
+  placement: PlacementKind;
   definition: SharedSessionDefinition;
   view: SharedSessionView;
 }
@@ -287,7 +289,7 @@ export class SharedStore {
   async authorize(db: pg.PoolClient, lease: SessionFileLease): Promise<SessionRow> {
     const row = (await db.query<SessionRow>(
       `SELECT s.* FROM shared_sessions s JOIN session_file_namespaces n ON n.id=s.id
-       WHERE s.id=$1 AND s.principal=$2 AND NOT s.closed AND n.principal=s.principal
+       WHERE s.id=$1 AND s.principal=$2 AND NOT s.closed AND s.placement='shared' AND n.principal=s.principal
          AND n.epoch=$3 AND n.lease_until>clock_timestamp() FOR SHARE OF n`, [lease.id, lease.principal, lease.epoch])).rows[0];
     if (!row) throw new StoreError("not_found", "The conversation activation is unavailable.");
     row.definition = SharedSessionDefinition.parse(row.definition);
@@ -333,7 +335,7 @@ function record(row: SessionRow): SharedSessionRecord {
     : undefined;
   const createdAt = row.created_at.toISOString();
   return {
-    id: row.id, principal: row.principal, githubUserId: Number(row.github_user_id), definition,
+    id: row.id, principal: row.principal, githubUserId: Number(row.github_user_id), placement, definition,
     view: { id: row.id, label: row.label, model: definition.model, closed: row.closed, online: row.online ?? false,
       createdAt, lastActivityAt: row.last_activity_at.toISOString(),
       ...(harness ? { harness } : {}),
@@ -346,3 +348,7 @@ function record(row: SessionRow): SharedSessionRecord {
       jobs: row.jobs, continuations: row.continuations },
   };
 }
+
+/** The view builder for every placement, so placement-agnostic readers in this package build identical views. */
+export { record as sharedSessionRecord };
+export type { SessionRow as SharedSessionRow };

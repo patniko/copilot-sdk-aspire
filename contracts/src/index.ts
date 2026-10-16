@@ -8,6 +8,7 @@ export * from "./jsonl.js";
 export * from "./host.js";
 export * from "./shared.js";
 export * from "./placement.js";
+export * from "./session-container.js";
 export * from "./artifacts.js";
 export * from "./hosting.js";
 export * from "./promotion.js";

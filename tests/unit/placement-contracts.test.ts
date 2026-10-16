@@ -7,10 +7,18 @@ import {
 describe("session placement contracts", () => {
   it("routes only implemented placement kinds with a positive generation", () => {
     const sessionId = randomUUID();
-    expect(PlacementKind.options).toEqual(["shared"]);
+    expect(PlacementKind.options).toEqual(["shared", "container"]);
     expect(PlacementRoute.parse({ kind: "shared", sessionId, generation: 2, epoch: randomUUID() }).kind).toBe("shared");
+    const container = { kind: "container", sessionId, generation: 1, allocationId: randomUUID(), endpoint: "http://127.0.0.1:49152/", credential: "c".repeat(43) };
+    expect(PlacementRoute.parse(container).kind).toBe("container");
     for (const route of [
       { kind: "container", sessionId, generation: 1, epoch: randomUUID() },
+      { ...container, endpoint: "ws://127.0.0.1:49152/" },
+      { ...container, endpoint: "http://127.0.0.1:49152/sessions" },
+      { ...container, endpoint: "http://user:secret@127.0.0.1:49152/" },
+      { ...container, credential: "short" },
+      { ...container, epoch: randomUUID() },
+      { kind: "host", sessionId, generation: 1, epoch: randomUUID() },
       { kind: "shared", sessionId, generation: 0, epoch: randomUUID() },
       { kind: "shared", sessionId, generation: 1 },
       { kind: "shared", sessionId, generation: 1, epoch: randomUUID(), endpoint: "http://127.0.0.1:1" },
