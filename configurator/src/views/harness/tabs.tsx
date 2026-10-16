@@ -656,6 +656,25 @@ export function permissionSummary(permissions: HarnessManifest["permissions"]): 
     .join(" · ") || "every action denied";
 }
 
+/**
+ * The permissions a preset produces. Presets change only the rules: questions, the answer timeout, and the approval
+ * mode chosen on the Hosting tab are kept. Undefined means no permissions block (every request denied).
+ */
+export function permissionsPreset(current: HarnessManifest["permissions"], name: "deny" | "cli" | "yolo"): HarnessManifest["permissions"] {
+  const approval = {
+    ...(current?.approvalMode ? { approvalMode: current.approvalMode } : {}),
+    ...(current?.judgeModel ? { judgeModel: current.judgeModel } : {}),
+    ...(current?.handler ? { handler: current.handler } : {}),
+  };
+  if (name === "deny") return Object.keys(approval).length ? { default: "deny", ...approval } : undefined;
+  return {
+    default: name === "yolo" ? "allow" : "ask",
+    ...(current?.questions ? { questions: true } : {}),
+    ...(current?.timeoutSeconds ? { timeoutSeconds: current.timeoutSeconds } : {}),
+    ...approval,
+  };
+}
+
 function BuiltinToolsSection({ draft, update, issues }: { draft: HarnessDocument; update: Update; issues: Issue[] }) {
   const { workspace } = useApp();
   const allowed = new Set(workspace!.policy.builtinTools ?? []);
@@ -777,23 +796,9 @@ function PermissionsTab({ draft, update, issues, effective }: {
     });
   const preset = (name: "deny" | "cli" | "yolo") =>
     update((d) => {
-      // The approval mode is chosen on the Hosting tab; presets change only the rules.
-      const current = d.manifest.permissions;
-      const approval = {
-        ...(current?.approvalMode ? { approvalMode: current.approvalMode } : {}),
-        ...(current?.judgeModel ? { judgeModel: current.judgeModel } : {}),
-        ...(current?.handler ? { handler: current.handler } : {}),
-      };
-      if (name === "deny") {
-        if (Object.keys(approval).length) d.manifest.permissions = { default: "deny", ...approval };
-        else delete d.manifest.permissions;
-        return;
-      }
-      const questions = current?.questions;
-      const timeoutSeconds = current?.timeoutSeconds;
-      d.manifest.permissions = { default: name === "yolo" ? "allow" : "ask", ...approval };
-      if (questions) d.manifest.permissions.questions = true;
-      if (timeoutSeconds) d.manifest.permissions.timeoutSeconds = timeoutSeconds;
+      const next = permissionsPreset(d.manifest.permissions, name);
+      if (next) d.manifest.permissions = next;
+      else delete d.manifest.permissions;
     });
   const timeout = permissions?.timeoutSeconds ?? 600;
 
