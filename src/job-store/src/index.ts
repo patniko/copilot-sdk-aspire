@@ -7,3 +7,4 @@ export * from "./shared-store.js";
 export * from "./delegations.js";
 export * from "./allocations.js";
 export * from "./placements.js";
+export * from "./workers.js";
