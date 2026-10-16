@@ -140,8 +140,10 @@ export class ContainerSessionService {
   async connect(principal: string, id: string, request: SharedConnectionRequest): Promise<SharedConnection> {
     const record = await this.deps.store.get(principal, id);
     if (!record || record.closed || record.githubUserId !== this.identity(principal)) throw new HttpError(404, "not_found", "The conversation was not found.");
+    // A promoted `promotable` session runs here from its committed promotion on, including after an idle stop.
+    const promoted = async () => (await this.promotion(principal, id)) !== undefined;
     if (request.transport !== "direct") {
-      const { evaluation } = this.evaluate(record.harness, principal);
+      const { evaluation } = this.evaluate(record.harness, principal, await promoted());
       throw hostingError(connectionProblem(evaluation, request.transport) ?? {
         code: "hosting_unavailable", message: "Session containers accept direct WSS connections only.", prerequisite: { kind: "transport", name: request.transport },
       });
@@ -163,7 +165,7 @@ export class ContainerSessionService {
         if (requested && allocation?.id === requested) {
           throw new HttpError(503, "container_unavailable", `The session container could not start: ${allocation.error ?? "it stopped before becoming ready."}`);
         }
-        this.evaluate(record.harness, principal);
+        this.evaluate(record.harness, principal, await promoted());
         const created = await store(() => this.deps.allocations.request({
           sessionId: id, principal, purpose: "session", size: record.size, resources: record.resources,
           volumes: [{ purpose: "session", sessionId: id, target: "/data", readOnly: false }],

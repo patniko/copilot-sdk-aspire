@@ -9,7 +9,7 @@ import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import {
   ExecutionContainerSettings, PromotionResponse, PromotionSnapshotPage, SessionContainerReadyResult, SessionContainerSettings,
-  SessionContainerSpec, SharedSessionDefinition, SharedSessionLimits, SharedSessionView, SharedWorkerLimits,
+  SessionContainerSpec, SharedConnection, SharedSessionDefinition, SharedSessionLimits, SharedSessionView, SharedWorkerLimits,
   type HarnessSnapshot, type PlacementRoute, type PromotionState,
 } from "@copilot-agent/contracts";
 import {
@@ -103,11 +103,12 @@ async function until(id: string, done: (promotion: PromotionRecord) => boolean, 
 const reached = (id: string, ...states: PromotionState[]) => until(id, (promotion) => states.includes(promotion.state), states.join("/"));
 const allocated = (id: string) => until(id, (promotion) => promotion.allocationId !== undefined, "an allocation");
 
-/** Binds the allocation as the controller does and acts as the container through its allocation-scoped credential. */
+/** Binds and observes the allocation as the controller does, and acts as the container through its allocation-scoped credential. */
 async function container(allocationId: string) {
   const token = randomBytes(32).toString("base64url");
   await allocations.bind(lease, allocationId, ExecutionContainerSettings.parse({ namespace, image: `sha256:${"a".repeat(64)}` }), token,
     randomBytes(32).toString("base64url"));
+  await allocations.observed(lease, allocationId, randomBytes(32).toString("hex"), { host: "127.0.0.1", port: 9 });
   return (operation: string, body: object = {}) => dispatcher.inject({
     method: "POST", url: `/internal/session-containers/${operation}`, headers: { "x-internal-key": token }, payload: body,
   });
@@ -349,7 +350,7 @@ describe("promotion protocol", () => {
       shared: { url: `http://127.0.0.1:${(host.server.address() as AddressInfo).port}`, key: workerKey, brokerUrl: "http://127.0.0.1:47001" },
       containers: new ContainerSessionService({
         store: new SessionContainerStore(pool, shared), allocations, directory: new SessionDirectory(pool), catalog,
-        principals: { [principal]: 1 }, settings, limits: capacity, brokerUrl: "http://127.0.0.1:47001",
+        principals: { [principal]: 1 }, settings, limits: capacity, brokerUrl: "http://127.0.0.1:47001", connectWaitSeconds: 1,
       }),
     });
     try {
@@ -383,6 +384,19 @@ describe("promotion protocol", () => {
       await reached(accepted.promotion.id, "committed");
       const viewed = SharedSessionView.parse((await api.inject({ method: "GET", url: `/v1/sessions/${session.id}`, headers })).json());
       expect(viewed).toMatchObject({ id: session.id, placement: "container", segment: { generation: 2 }, promotion: { id: accepted.promotion.id, state: "committed" } });
+      // Clients now connect to the container, under the same application session.
+      const connected = await api.inject({ method: "POST", url: `/v1/sessions/${session.id}/connection`, headers, payload: {} });
+      expect(connected.statusCode, connected.body).toBe(200);
+      expect(SharedConnection.parse(connected.json())).toMatchObject({
+        sessionId: session.id, ahpSessionId: session.id, destination: "container", serverKey, url: `ws://127.0.0.1:47001/sessions/${session.id}`,
+      });
+      // After the container idles out, a connection requests a new one for the promoted session from its volume.
+      await pool.query("UPDATE execution_allocations SET state='retired' WHERE session_id=$1", [session.id]);
+      const resumed = await api.inject({ method: "POST", url: `/v1/sessions/${session.id}/connection`, headers, payload: {} });
+      expect(resumed.statusCode, resumed.body).toBe(503);
+      expect(resumed.json()).toMatchObject({ error: { code: "container_starting" } });
+      expect((await pool.query("SELECT state FROM execution_allocations WHERE session_id=$1 AND id<>$2", [session.id, allocation])).rows)
+        .toEqual([{ state: "starting" }]);
       const after = await promote("third");
       expect(after.statusCode).toBe(200);
       expect(PromotionResponse.parse(after.json())).toMatchObject({ created: false, promotion: { id: accepted.promotion.id, state: "committed" } });
