@@ -29,16 +29,21 @@ interface SessionRow {
   tokens_used: string; tokens_reserved: string; jobs: number; continuations: number;
   placement: string; placement_generation: number;
   created_at: Date; last_activity_at: Date;
+  /** The current segment's runtime session and start, when a promotion or handoff started it. */
+  segment_ahp_session_id?: string | null; segment_started_at?: Date | null;
 }
 interface TurnRow {
   id: string; session_id: string; principal: string; epoch: string; state: SharedTurn["state"];
   token_budget: number; tokens_used: string; deadline: Date | null; settled: boolean;
 }
 const SHARED_ADMISSION_LOCK = 7_310_442_002;
+/** The current segment's runtime session and start; generation 1 is implicit in the session row. */
+export const CURRENT_SEGMENT_COLUMNS = `g.ahp_session_id AS segment_ahp_session_id, g.started_at AS segment_started_at`;
+export const CURRENT_SEGMENT_JOIN = `LEFT JOIN session_segments g ON g.session_id=s.id AND g.generation=s.placement_generation`;
 const SESSION_SELECT = `SELECT s.*, EXISTS (
   SELECT 1 FROM shared_activations a JOIN session_file_namespaces n ON n.id=a.session_id AND n.epoch=a.epoch
   WHERE a.session_id=s.id AND n.principal=s.principal AND n.lease_until>clock_timestamp()
-) AS online FROM shared_sessions s`;
+) AS online, ${CURRENT_SEGMENT_COLUMNS} FROM shared_sessions s ${CURRENT_SEGMENT_JOIN}`;
 
 /** Durable admission authority. The bounded prototype serializes shared-ledger mutations, never network I/O. */
 export class SharedStore {
@@ -112,13 +117,15 @@ export class SharedStore {
     });
   }
 
-  async enqueueTurn(lease: SessionFileLease, operationKey: string, source: "user" | "completion", limits: SharedWorkerLimits): Promise<SharedTurn> {
+  async enqueueTurn(lease: SessionFileLease, operationKey: string, source: "user" | "completion" | "handoff", limits: SharedWorkerLimits): Promise<SharedTurn> {
     SharedWorkerLimits.parse(limits);
     if (!operationKey || operationKey.length > 200) throw new StoreError("invalid_request", "Invalid turn operation key.");
     return this.transaction(async (db) => {
       const session = await this.authorize(db, lease);
       const existing = (await db.query<TurnRow>("SELECT * FROM shared_turns WHERE session_id=$1 AND operation_key=$2", [lease.id, operationKey])).rows[0];
       if (existing) return turn(existing);
+      const moving = await db.query("SELECT 1 FROM session_handoffs WHERE session_id=$1 AND state='accepted'", [lease.id]);
+      if (moving.rowCount) throw new StoreError("invalid_state", "The conversation is being handed off to another harness; it admits no new turns until the move completes.");
       const harness = session.definition.harness?.name;
       const counts = await db.query<{ queued: number; own: number; harness: number }>(
         `SELECT count(*) FILTER(WHERE t.state='queued')::int AS queued,
@@ -341,8 +348,12 @@ function record(row: SessionRow): SharedSessionRecord {
       ...(harness ? { harness } : {}),
       mode: definition.harness?.mode ?? (placement === "shared" ? "shared" : "isolated"),
       placement,
-      // One segment per session until promotion or a handoff starts another; the runtime session keeps the session's ID.
-      segment: { generation: row.placement_generation, placement, ...(harness ? { harness } : {}), ahpSessionId: row.id, startedAt: createdAt },
+      // Generation 1 is implicit: its runtime session keeps the application session's ID. Promotion and handoff record
+      // the segments they start, and a handoff without full history starts a new runtime session.
+      segment: {
+        generation: row.placement_generation, placement, ...(harness ? { harness } : {}),
+        ahpSessionId: row.segment_ahp_session_id ?? row.id, startedAt: row.segment_started_at?.toISOString() ?? createdAt,
+      },
       limits: definition.limits,
       budget: { usedTokens, reservedTokens, remainingTokens: Math.max(0, definition.limits.tokenBudget - usedTokens - reservedTokens) },
       jobs: row.jobs, continuations: row.continuations },

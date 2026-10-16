@@ -1,6 +1,6 @@
 import type pg from "pg";
 import { ContainerSize, type SessionContainerState, type SharedSessionView } from "@copilot-agent/contracts";
-import { sharedSessionRecord, type SharedSessionRow } from "./shared-store.js";
+import { CURRENT_SEGMENT_COLUMNS, CURRENT_SEGMENT_JOIN, sharedSessionRecord, type SharedSessionRow } from "./shared-store.js";
 import { StoreError } from "./store.js";
 
 interface DirectoryRow extends SharedSessionRow {
@@ -10,9 +10,9 @@ interface DirectoryRow extends SharedSessionRow {
 const SELECT = `SELECT s.*,
     EXISTS (SELECT 1 FROM shared_activations a JOIN session_file_namespaces n ON n.id=a.session_id AND n.epoch=a.epoch
       WHERE a.session_id=s.id AND n.principal=s.principal AND n.lease_until>clock_timestamp()) AS online,
-    c.size,c.resources,c.activations,e.state AS allocation_state,e.ready_at,e.ingress
+    c.size,c.resources,c.activations,e.state AS allocation_state,e.ready_at,e.ingress,${CURRENT_SEGMENT_COLUMNS}
   FROM shared_sessions s LEFT JOIN session_containers c ON c.session_id=s.id
-  LEFT JOIN execution_allocations e ON e.session_id=s.id AND e.state<>'retired'`;
+  LEFT JOIN execution_allocations e ON e.session_id=s.id AND e.state<>'retired' ${CURRENT_SEGMENT_JOIN}`;
 
 /**
  * Placement-agnostic application-session views for the API, built by the shared store's view builder. A

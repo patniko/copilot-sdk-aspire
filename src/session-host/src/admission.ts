@@ -1,11 +1,12 @@
 import {
-  type ApprovalMode, approvalModeOf, connectionProblem, effectiveApprovalModes, evaluateHosting, type ExecutionPolicy,
-  type ExecutionProfile, type HarnessDefinition, type HarnessSnapshot, type HostingDeployment, type HostingEvaluation,
-  type HostingTarget, type HostingTransport, policyFor, RUNTIME_APPROVAL_MODES, type RuntimeApprovalMode,
+  type ApprovalMode, approvalModeOf, connectionProblem, effectiveApprovalModes, effectiveHostingPolicy, evaluateHosting, type ExecutionPolicy,
+  type ExecutionProfile, type HandoffErrorCode, type HandoffHistory, handoffHistoryFor, type HarnessDefinition, type HarnessSnapshot,
+  type HostingApproval, type HostingDeployment, type HostingEvaluation, type HostingMode, hostingModeOf, HostingPrerequisite, type HostingTarget,
+  type HostingTransport, type PlacementKind, placementMoveAllowed, policyFor, RUNTIME_APPROVAL_MODES, type RuntimeApprovalMode,
   SHARED_TOOLS, SHARED_WORKER_BINDINGS, SHARED_WORKER_FEATURES, SHARED_WORKER_TRANSPORTS, type SharedHarnessRef, type SharedSessionCreation,
-  SharedSessionDefinition, SharedSessionLimits, CONVERSATION_PROFILE,
+  SharedSessionDefinition, SharedSessionLimits, CONVERSATION_PROFILE, startingPlacement,
 } from "@copilot-agent/contracts";
-import { canonicalJson, hostingError, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
+import { canonicalJson, handoffToolName, hostingError, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
 import type { SharedConfiguration, SharedRegistry } from "./configuration.js";
 
 /** What this worker offers to hosting evaluation; the shared worker does not know about other hosts. */
@@ -36,6 +37,23 @@ export interface SharedActivationPlan {
   approval: SharedApprovalPlan;
   /** Batch harnesses the session's delegation tools may run. */
   delegation: SharedHarnessRef[];
+}
+
+/** A handoff checked against current policy and this deployment, before any effect. */
+export interface SharedHandoffPlan {
+  /** The target's published version, pinned for the cutover. */
+  target: SharedHarnessRef & { mode: HostingMode };
+  /** Where the target's segment runs. */
+  placement: PlacementKind;
+  history: HandoffHistory;
+  approval: HostingApproval;
+  /** The target's admitted session definition. A handoff never raises the session's aggregate ceilings. */
+  definition: SharedSessionDefinition;
+}
+
+/** A handoff check failed before any effect; the source stays in control. */
+export class HandoffRefusal extends Error {
+  constructor(readonly code: HandoffErrorCode, message: string, readonly prerequisite?: HostingPrerequisite) { super(message); }
 }
 
 export interface SharedAdmissionOptions {
@@ -70,9 +88,13 @@ export class SharedAdmission {
     const versions = registry.harnesses.get(request.harness);
     const snapshot = request.version ? versions?.find((entry) => entry.definition.version === request.version) : versions?.[0];
     if (!snapshot) throw new HttpError(404, "harness_not_found", "The requested harness version is not published.");
+    const policy = policyFor(registry.policies, snapshot.definition.name);
+    this.#evaluate(registry, snapshot.definition, policy, principal);
+    return this.#admitted(registry, snapshot, policy);
+  }
+
+  #admitted(registry: SharedRegistry, snapshot: HarnessSnapshot, policy: ExecutionPolicy): SharedSessionDefinition {
     const { definition } = snapshot;
-    const policy = policyFor(registry.policies, definition.name);
-    this.#evaluate(registry, definition, policy, principal);
     const model = admittedModel(definition, policy);
     const ceilings = this.options.sessionLimits;
     const tokenBudget = Math.min(definition.limits.maxInferenceTokens, policy.maxInferenceTokensPerJob, ceilings.tokenBudget);
@@ -92,6 +114,80 @@ export class SharedAdmission {
       },
       ...(delegates ? { delegation: { harnesses: this.#delegationTargets(registry) } } : {}),
     });
+  }
+
+  /**
+   * Checks a handoff from a session's admitted harness to one of its predefined targets, before any effect: the target
+   * must still be listed by the admitted snapshot, published as a conversation harness whose own mode its current
+   * policy allows, reachable from the session's placement (never from a container back to shared placement), allowed
+   * by the source's current handoff ceilings for its approval and resolved history, and hosted by this deployment.
+   * `pinned` re-checks the version accepted earlier, for the cutover. Throws a {@link HandoffRefusal}.
+   */
+  async handoff(input: {
+    principal: string;
+    session: SharedSessionDefinition;
+    from: PlacementKind;
+    target: string;
+    pinned?: { version: string; digest: string };
+  }): Promise<SharedHandoffPlan> {
+    const source = input.session.harness?.definition;
+    if (!source || !input.session.harness) throw new HandoffRefusal("handoff_not_allowed", "This conversation has no admitted harness to hand off from.");
+    const entry = source.hosting?.handoffs?.find((candidate) => candidate.harness === input.target);
+    if (!entry) throw new HandoffRefusal("handoff_not_allowed", `'${input.target}' is not one of ${source.name}'s handoff targets.`);
+    const registry = await this.options.configuration.current();
+    const versions = registry.harnesses.get(input.target) ?? [];
+    const snapshot = input.pinned
+      ? versions.find((candidate) => candidate.definition.version === input.pinned!.version && candidate.digest === input.pinned!.digest)
+      : versions[0];
+    if (!snapshot) {
+      throw new HandoffRefusal("handoff_not_allowed", input.pinned
+        ? `The accepted version of '${input.target}' is no longer published.`
+        : `Handoff target '${input.target}' is not a published harness.`);
+    }
+    const target = snapshot.definition;
+    if (target.interaction !== "conversation") throw new HandoffRefusal("handoff_not_allowed", `Handoff target '${input.target}' is not a conversation harness.`);
+    const targetPolicy = policyFor(registry.policies, target.name);
+    const mode = hostingModeOf(target);
+    if (!effectiveHostingPolicy(targetPolicy).modes.includes(mode)) {
+      throw new HandoffRefusal("handoff_not_allowed", `The operator policy does not allow ${mode} hosting for '${target.name}'.`);
+    }
+    const placement = startingPlacement(mode);
+    if (!placementMoveAllowed(input.from, placement)) {
+      throw new HandoffRefusal("handoff_one_way",
+        `'${target.name}' runs on the shared worker, and a conversation in a container never moves back to shared placement.`);
+    }
+    const history = handoffHistoryFor(entry.history, input.from, placement);
+    const approval = entry.approval ?? "ask";
+    const ceilings = effectiveHostingPolicy(policyFor(registry.policies, source.name)).handoffs;
+    if (!ceilings.approval.includes(approval)) {
+      throw new HandoffRefusal("handoff_not_allowed", `The operator policy no longer allows '${approval}' approval for ${source.name}'s handoffs.`);
+    }
+    if (!ceilings.history.includes(history)) {
+      throw new HandoffRefusal("handoff_not_allowed", `The operator policy does not allow '${history}' history for ${source.name}'s handoffs.`);
+    }
+    let admitted: SharedSessionDefinition;
+    try {
+      this.#evaluate(registry, target, targetPolicy, input.principal);
+      admitted = this.#admitted(registry, snapshot, targetPolicy);
+    } catch (error) {
+      if (!(error instanceof HttpError)) throw error;
+      const prerequisite = HostingPrerequisite.safeParse((error.details as { prerequisite?: unknown } | undefined)?.prerequisite);
+      throw error.code === "hosting_unavailable"
+        ? new HandoffRefusal("handoff_unavailable", error.message, prerequisite.success ? prerequisite.data : undefined)
+        : new HandoffRefusal("handoff_not_allowed", error.message);
+    }
+    // A handoff never raises the session's aggregate ceilings; per-turn limits are the target's.
+    const current = input.session.limits;
+    const tokenBudget = Math.min(current.tokenBudget, admitted.limits.tokenBudget);
+    const definition = SharedSessionDefinition.parse({
+      ...admitted,
+      limits: {
+        ...admitted.limits, tokenBudget, turnTokenBudget: Math.min(admitted.limits.turnTokenBudget, tokenBudget),
+        maxJobs: Math.min(current.maxJobs, admitted.limits.maxJobs),
+        maxContinuations: Math.min(current.maxContinuations, admitted.limits.maxContinuations),
+      },
+    });
+    return { target: { name: target.name, version: target.version, digest: snapshot.digest, mode }, placement, history, approval, definition };
   }
 
   /** Re-checks a retained session against the current policy before it activates. */
@@ -155,9 +251,13 @@ export class SharedAdmission {
         { prerequisite: { kind: "host", name: "session-containers" } });
     }
     const profile = registry.profiles.get(CONVERSATION_PROFILE)!;
+    const transfers = new Set((definition.hosting?.handoffs ?? []).map((handoff) => handoffToolName(handoff.harness)));
     definition.tools.forEach((tool, index) => {
       if (RESERVED_TOOL_NAMES.has(tool.name)) {
         throw new HttpError(422, "policy_rejected", `'${tool.name}' is reserved for the shared worker's own tools.`, { path: `tools.${index}.name` });
+      }
+      if (transfers.has(tool.name)) {
+        throw new HttpError(422, "policy_rejected", `'${tool.name}' is reserved for this harness's handoff tools.`, { path: `tools.${index}.name` });
       }
       if (tool.kind === "host" && (profile.inProcessBindings ?? []).includes(tool.binding) && !DELEGATION_BINDINGS.has(tool.binding)) {
         throw new HttpError(422, "policy_rejected", `The shared worker does not implement binding '${tool.binding}'.`, { path: `tools.${index}.binding` });
