@@ -115,14 +115,16 @@ export class SharedStore {
     });
   }
 
-  async enqueueTurn(lease: SessionFileLease, operationKey: string, source: "user" | "completion", limits: SharedWorkerLimits): Promise<SharedTurn> {
+  async enqueueTurn(lease: SessionFileLease, operationKey: string, source: "user" | "completion" | "handoff", limits: SharedWorkerLimits): Promise<SharedTurn> {
     SharedWorkerLimits.parse(limits);
     if (!operationKey || operationKey.length > 200) throw new StoreError("invalid_request", "Invalid turn operation key.");
     return this.transaction(async (db) => {
       const session = await this.authorize(db, lease);
       const existing = (await db.query<TurnRow>("SELECT * FROM shared_turns WHERE session_id=$1 AND operation_key=$2", [lease.id, operationKey])).rows[0];
       if (existing) return turn(existing);
-      // A session that is moving to a container admits no new turns until the move commits or fails.
+      // A conversation being handed off, or moving to a container, admits no new turns until the move completes or fails.
+      const handingOff = await db.query("SELECT 1 FROM session_handoffs WHERE session_id=$1 AND state='accepted'", [lease.id]);
+      if (handingOff.rowCount) throw new StoreError("invalid_state", "The conversation is being handed off to another harness; it admits no new turns until the move completes.");
       const moving = await db.query("SELECT 1 FROM session_promotions WHERE session_id=$1 AND state IN ('requested','moving','starting')", [lease.id]);
       if (moving.rowCount) throw new StoreError("invalid_state", "The conversation is moving to a dedicated container; it admits no new turns until the move completes.");
       const harness = session.definition.harness?.name;

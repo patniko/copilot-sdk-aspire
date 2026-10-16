@@ -152,6 +152,8 @@ function hostingSummary(hosting: HostingPolicy): string {
     hosting.defaultSize && `default size ${hosting.defaultSize}`,
     hosting.workers && `worker limits ${Object.entries(hosting.workers).map(([k, v]) => `${k} ${String(v)}`).join(", ")}`,
     hosting.promotion?.approval && `promotion ${hosting.promotion.approval.join(", ")}`,
+    hosting.handoffs?.approval && `handoff approval ${hosting.handoffs.approval.join(", ")}`,
+    hosting.handoffs?.history && `handoff history ${hosting.handoffs.history.join(", ")}`,
     hosting.crafting && `templates ${Object.keys(hosting.crafting.templates).join(", ") || "none"}`,
   ];
   return parts.filter(Boolean).join("; ");
@@ -175,6 +177,10 @@ export function effectiveHosting(hosting: HostingPolicy | undefined, defaults: E
     defaultSize: hosting?.defaultSize ?? smallestSize(sizes),
     workers: { ...defaults.workers, ...hosting?.workers } as EffectiveHostingPolicy["workers"],
     promotion: { approval: hosting?.promotion?.approval ?? defaults.promotion.approval },
+    handoffs: {
+      approval: hosting?.handoffs?.approval ?? defaults.handoffs.approval,
+      history: hosting?.handoffs?.history ?? defaults.handoffs.history,
+    },
     crafting: { templates: hosting?.crafting?.templates ?? {} },
   };
 }

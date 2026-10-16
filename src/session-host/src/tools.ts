@@ -261,7 +261,7 @@ export function delegationTools(
         description: `${request.description} Approved harnesses: ${targets.map((harness) => harness.name).join(", ") || "none"}.`,
         parameters: z.toJSONSchema(Delegate),
         handler: async (value, invocation) => {
-          if (invocation.sessionId !== session.id || invocation.agentId) throw new Error("Only the owning root agent can delegate.");
+          if (invocation.sessionId !== context.runtimeSessionId || invocation.agentId) throw new Error("Only the owning root agent can delegate.");
           const args = Delegate.parse(value);
           if (Buffer.byteLength(JSON.stringify(args), "utf8") > 256 * 1024) throw new Error("The delegation input exceeds 256 KiB.");
           const argumentsHash = sha256Hex(canonicalJson(args));

@@ -198,7 +198,7 @@ export type ConnectionTicket = z.infer<typeof ConnectionTicket>;
  * Harness features the shared worker implements (docs/HOSTING-MODES-PLAN.md, section 3). The deployment's hosting
  * evaluation reports any other requested feature as `hosting_unavailable`.
  */
-export const SHARED_WORKER_FEATURES = ["remote-mcp", "approval-modes", "custom-approval"] as const satisfies readonly HostingFeature[];
+export const SHARED_WORKER_FEATURES = ["remote-mcp", "approval-modes", "custom-approval", "handoffs"] as const satisfies readonly HostingFeature[];
 
 /** Client transports the shared worker offers. */
 export const SHARED_WORKER_TRANSPORTS = ["direct"] as const;

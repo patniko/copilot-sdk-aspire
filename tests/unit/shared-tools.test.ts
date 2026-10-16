@@ -29,7 +29,7 @@ beforeEach(async () => {
   context = {
     lease: { id: "session", principal: "alice", epoch: "epoch" } as SessionFileLease,
     signal: lifetime.signal, workspace: new SessionWorkspace(anchor, storage, lifetime.signal, () => undefined),
-    stateDirectory: join(root, "session-state"),
+    stateDirectory: join(root, "session-state"), runtimeSessionId: "session",
     humanMessages: async () => [],
   };
 });
