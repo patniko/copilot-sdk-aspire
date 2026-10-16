@@ -37,7 +37,7 @@ export class QualificationCli {
     const url = new URL(connection.url);
     const serverKey = JSON.stringify({ endpoint: url.href, ...connection.serverKey });
     url.searchParams.set("tkn", connection.token);
-    await this.launch(["--experimental", "--ahp", url.href, "--ahp-authenticate-with-github", "--resume", connection.sessionId],
+    await this.launch(["--experimental", "--ahp", url.href, "--ahp-authenticate-with-github", "--resume", connection.ahpSessionId],
       { COPILOT_AHP_SERVER_KEY: serverKey }, [connection.token]);
   }
 

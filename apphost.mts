@@ -290,6 +290,8 @@ if (demoHostTransport !== 'disabled') {
     .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport)
     .publishAsSingletonHost(environment);
   if (direct) await host.withExternalHttpEndpoints();
+  // Local runs: the API returns this endpoint from /v1/hosts/{harness}/connection, as it does for owner hosts.
+  if (direct && !isPublish) await api.withEnvironment(`OWNER_HOST_URL_${ownerHostEnvSuffix(demoHostHarness)}`, refExpr`${await host.getEndpoint('http')}`);
   if (direct && connectionToken) {
     await host.withEnvironment('DEMO_HOST_CONNECTION_TOKEN', connectionToken)
       .withReference(await gateway.getEndpoint('http'))

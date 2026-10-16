@@ -354,14 +354,16 @@ describe("agent-api hosting view", () => {
     expect(overview.hosts).toEqual({
       executor: "pool",
       isolatedHosts: [{ harness: "interactive-demo", transports: ["direct", "github"], features: [] }],
-      sharedWorker: { transports: ["direct"], features: [] },
+      sharedWorker: { transports: ["direct"], features: [...SHARED_WORKER_FEATURES] },
     });
     expect(JSON.stringify(overview)).not.toContain('"owner"');
     expect(overview.harnesses.map((view) => `${view.harness}:${view.interaction}:${view.placement}:${view.status}`)).toEqual([
       "copilot-coding-agent:batch:executor:ready",
       "dataset-analyst:batch:executor:ready",
+      "hybrid-coordinator:conversation:shared:ready",
       "insights-team:batch:executor:ready",
       "interactive-demo:conversation:container:ready",
+      "shared-researcher:conversation:shared:ready",
       "text-summarizer:batch:executor:ready",
     ]);
   });

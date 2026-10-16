@@ -43,7 +43,7 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
   }
 
   const principalOf = (request: FastifyRequest) => deps.authenticator.authenticate(request).id;
-  if (deps.shared) registerSharedSessionRoutes(app, deps.shared, principalOf, deps.delegations);
+  if (deps.shared) registerSharedSessionRoutes(app, deps.shared, principalOf, deps.delegations, deps.hosting);
   if (deps.hosting) registerHostingRoutes(app, deps.hosting, principalOf);
   // Per-harness owner hosts and the legacy single demo host routes.
   if (deps.hosts?.hosts.length) registerHostRoutes(app, deps.hosts, principalOf);

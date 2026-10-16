@@ -1,0 +1,69 @@
+import { z } from "zod";
+
+/**
+ * Where an application session's agent loop runs now. Each session has exactly one current placement, and
+ * every placement change increments its generation. Connection tickets bind to a generation, and the connection
+ * broker closes routes to an older generation with {@link BROKER_MOVED_CLOSE}.
+ *
+ * `shared` is the in-process shared worker. To add a kind, extend this enum, the ledger's
+ * `shared_sessions_placement_kind` constraint, {@link PlacementRoute}, ticket consumption in the job store's
+ * `PlacementStore`, and the broker's upstream table.
+ */
+export const PlacementKind = z.enum(["shared"]);
+export type PlacementKind = z.infer<typeof PlacementKind>;
+
+export const PlacementGeneration = z.number().int().positive().safe();
+
+/** A session's current placement, as recorded in the ledger. */
+export const SessionPlacement = z.object({
+  sessionId: z.string().uuid(),
+  kind: PlacementKind,
+  generation: PlacementGeneration,
+}).strict();
+export type SessionPlacement = z.infer<typeof SessionPlacement>;
+
+/**
+ * Where to route one consumed connection ticket: the session's placement plus what the broker needs to reach it.
+ * `shared` carries the activation epoch the ticket was issued for; the shared worker accepts the forwarded
+ * connection only while that activation is resident.
+ */
+export const PlacementRoute = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("shared"),
+    sessionId: z.string().uuid(),
+    generation: PlacementGeneration,
+    epoch: z.string().uuid(),
+  }).strict(),
+]);
+export type PlacementRoute = z.infer<typeof PlacementRoute>;
+
+/** Internal: the broker asks the dispatcher to consume one connection ticket presented on `/sessions/{sessionId}`. */
+export const BrokerTicketRequest = z.object({
+  sessionId: z.string().uuid(),
+  ticket: z.string().min(32).max(200),
+}).strict();
+export type BrokerTicketRequest = z.infer<typeof BrokerTicketRequest>;
+
+export const BrokerTicketResult = z.union([
+  z.object({ authorized: z.literal(false) }).strict(),
+  z.object({ authorized: z.literal(true), route: PlacementRoute }).strict(),
+]);
+export type BrokerTicketResult = z.infer<typeof BrokerTicketResult>;
+
+/** Internal: the broker's periodic check of the placements its live connections route to. Unknown sessions are omitted. */
+export const PlacementLookup = z.object({ sessionIds: z.array(z.string().uuid()).min(1).max(500) }).strict();
+export type PlacementLookup = z.infer<typeof PlacementLookup>;
+export const PlacementLookupResult = z.object({ placements: z.array(SessionPlacement).max(500) }).strict();
+export type PlacementLookupResult = z.infer<typeof PlacementLookupResult>;
+
+/**
+ * Header carrying the activation epoch on a broker-forwarded connection to the shared worker. The broker also sends
+ * its service key in `x-internal-key`; the worker accepts no public ticket.
+ */
+export const PLACEMENT_EPOCH_HEADER = "x-placement-epoch";
+
+/**
+ * WebSocket close the broker sends when an attached session's placement changes. The conversation continues at the
+ * new placement: request a new connection for the same session and reconnect to the same URL.
+ */
+export const BROKER_MOVED_CLOSE = { code: 4301, reason: "moved" } as const;

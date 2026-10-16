@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "1",
+  "name": "hybrid-coordinator",
+  "version": "1.0.0",
+  "description": "A shared-runtime coordinator that answers lightweight questions and delegates real filesystem or shell work to one-shot container jobs.",
+  "interaction": "conversation",
+  "hosting": { "mode": "shared" },
+  "instructionsFile": "instructions.md",
+  "model": { "preferred": "grok-4.6", "allowed": ["grok-4.6"] },
+  "tools": [
+    {
+      "name": "delegate_job",
+      "kind": "host",
+      "binding": "shared:delegate-job",
+      "description": "Queue durable container work and return immediately. Select optional workspace files to snapshot. Do not poll; completion is delivered to this conversation."
+    },
+    {
+      "name": "get_job",
+      "kind": "host",
+      "binding": "shared:get-job",
+      "description": "Read the status, bounded result, and retained artifact manifest of a job delegated by this conversation. Never loop-poll during a turn."
+    },
+    {
+      "name": "read_job_artifact",
+      "kind": "host",
+      "binding": "shared:read-job-artifact",
+      "description": "Read a bounded portion of a retained output artifact without requiring its container to remain alive."
+    },
+    {
+      "name": "import_job_artifact",
+      "kind": "host",
+      "binding": "shared:import-job-artifact",
+      "description": "Explicitly import an output artifact into the conversation workspace. Existing files require an exact destination etag; files are never silently overwritten."
+    }
+  ],
+  "builtinTools": ["files"],
+  "permissions": {
+    "default": "deny",
+    "kinds": { "read": "allow", "write": "allow" }
+  },
+  "input": { "schema": { "type": "object", "additionalProperties": false } },
+  "output": { "schema": { "type": "object" } },
+  "limits": { "maxDurationSeconds": 180, "maxInferenceTokens": 500000 },
+  "retry": { "safeToRetry": false, "maxAttempts": 1 },
+  "runners": { "allowedProfiles": ["node-ts-agent"], "defaultProfile": "node-ts-agent" }
+}
