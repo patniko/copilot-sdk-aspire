@@ -1022,7 +1022,9 @@ Pending.
 
 ### Stage 2: connection broker
 
-Recorded 2026-10-15 on branch `patniko-connection-broker` (commits `b0cc328`, `4c9cad5`, `6bdc70c`, and this record).
+Recorded 2026-10-15 on branch `patniko-connection-broker` (commits `b0cc328`, `4c9cad5`, `6bdc70c`, `af03bae`), then
+merged with the integration branch at `9c6b918` (harness-driven shared mode) in `f18c658` and re-verified. The
+results below are from the merged tree unless noted.
 
 Delivered, all local and opt-in through `Parameters:hybrid-hosting`:
 
@@ -1030,7 +1032,8 @@ Delivered, all local and opt-in through `Parameters:hybrid-hosting`:
   stable WebSocket path, `/sessions/{id}`. It consumes one-use tickets through the internal dispatcher route
   `POST /internal/broker/connection`, then forwards bytes unchanged to the session's placement. Its only credential
   is `CONNECTION_BROKER_KEY`; it holds no caller API key, database credential, inference grant, or provider
-  credential. `POST /v1/sessions/{id}/connection` returns the broker URL.
+  credential. `POST /v1/sessions/{id}/connection` returns the broker URL with the harness-driven `transport` and
+  `ahpSessionId` fields.
 - The shared worker accepts only connections forwarded with the broker key, for the activation epoch the consumed
   ticket was issued for, and refuses public tickets. Tickets keep their 60-second, one-use semantics and the CLI's
   server-key pin flow. The singleton demo `agent-host` direct path is unchanged.
@@ -1048,13 +1051,13 @@ Delivered, all local and opt-in through `Parameters:hybrid-hosting`:
 | Gate | Command | Result |
 | --- | --- | --- |
 | Baseline | `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`, `pnpm typecheck`, `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint` | All exit 0 |
-| Unit | `pnpm test:unit` | 299 passed, 1 skipped (baseline 286; 14 new broker, frame, proxy, and placement cases) |
-| Integration | `pnpm test:integration` | 62 passed, 8 opt-in skipped. New: ticket consumption and placement lookup, live connections across an `agent-api` restart, forwarded-only worker ingress, and `moved` after a test-only generation change |
-| Native runtime | `HYBRID_SESSION_RUNTIME_TESTS=1 COPILOT_AHP_FACTORY_PROFILE=managed`, `shared-service.test.ts` and `shared-session-runtime.test.ts` | 2 passed; an AHP handshake through the broker reached the runtime and returned its pinned key |
-| Real CLI | `HYBRID_CLI_TESTS=1 HYBRID_USE_GH_ACCOUNT=1`, `shared-cli.test.ts` | Passed: API, broker, dispatcher ticket consumption, shared worker; the CLI kept answering while `agent-api` was stopped and restarted; a replacement worker behind the same broker resumed the conversation for a fresh CLI |
-| Real containers | `HYBRID_DEPLOYMENT_TESTS=1 HYBRID_EXECUTOR_IMAGE=copilot-hybrid-executor:connection-broker`, `hybrid-deployment.test.ts` | Passed (59.5 s), with `agent-api` replaced while the CLI stayed attached |
+| Unit | `pnpm test:unit` | 508 passed, 1 skipped. Before the merge: 299 passed, 1 skipped (baseline 286; 14 new broker, frame, proxy, and placement cases) |
+| Integration | `pnpm test:integration` | 64 passed, 10 opt-in skipped (62 and 8 before the merge). New: ticket consumption and placement lookup, live connections across an `agent-api` restart, forwarded-only worker ingress, and `moved` after a test-only generation change |
+| Native runtime | `HYBRID_SESSION_RUNTIME_TESTS=1 COPILOT_AHP_FACTORY_PROFILE=managed`, `shared-service.test.ts`, `shared-session-runtime.test.ts`, and `shared-egress-runtime.test.ts` | 4 passed; an AHP handshake through the broker reached the runtime and returned its pinned key |
+| Real CLI | `HYBRID_CLI_TESTS=1 HYBRID_USE_GH_ACCOUNT=1`, `shared-cli.test.ts` | Passed with a harness-driven session: API, broker, dispatcher ticket consumption, shared worker; the CLI kept answering while `agent-api` was stopped and restarted; a replacement worker behind the same broker resumed the conversation for a fresh CLI |
+| Real containers | `HYBRID_DEPLOYMENT_TESTS=1 HYBRID_EXECUTOR_IMAGE=copilot-hybrid-executor:connection-broker`, `hybrid-deployment.test.ts` | Passed (57.9 s; 59.5 s before the merge), with `agent-api` replaced while the CLI stayed attached |
 | Packaged images | `HYBRID_CONTAINER_TESTS=1 HYBRID_SESSION_IMAGE=copilot-hybrid-session-host:connection-broker`, `shared-image.test.ts` and `artifact-safety.test.ts` | 2 passed |
-| Local AppHost | `aspire start --isolated` with hybrid parameters and a non-routable Foundry endpoint | All services healthy; the API returned the broker URL; a brokered AHP session stayed open and answered across `aspire resource agent-api restart` (the configurator's **Reload harnesses**); the used ticket was refused; `pnpm host:connect --destination shared --resume <id>` attached the CLI |
+| Local AppHost | `aspire start --isolated` with hybrid parameters and a non-routable Foundry endpoint | All seven services healthy; a `hybrid-coordinator` session's connection returned the broker URL, `transport: "direct"`, and `ahpSessionId`; a brokered AHP session stayed open and answered across `aspire resource agent-api restart` (the configurator's **Reload harnesses**); the used ticket was refused; `pnpm host:connect --destination shared --resume <id>` attached the CLI through the broker |
 
 Runtime and artifacts: the Windows in-process pair `.runtime-artifacts/cli-workspace-fix` (`copilot-runtime.exe`
 `d843b17a242886e4504bebdd39c1563cece0eec248fc3dcbfe921d209cf88c4d`, `runtime.node`
@@ -1063,9 +1066,15 @@ Runtime and artifacts: the Windows in-process pair `.runtime-artifacts/cli-works
 The `dist-cli/prebuilds/win32-arm64` launcher (`20791e27…`) predates that revision's Windows workspace
 path-spelling fix and refuses every CLI attachment with `application session resume failed`. The unmodified base
 gate reproduces this. The Linux bundle `hybrid-linux-arm64-verified` (runtime `0a32c39595f`, hosting `b20e188`)
-built `copilot-hybrid-session-host:connection-broker` (`sha256:5278e5b9…`). The executor image
-`copilot-hybrid-executor:connection-broker` (`sha256:e677df02…`) was built from `deploy/Dockerfile`, which now installs
-the broker package. Inference was synthetic throughout.
+built `copilot-hybrid-session-host:connection-broker` (merged tree `sha256:910603c3…`; earlier `sha256:5278e5b9…`). The
+executor image `copilot-hybrid-executor:connection-broker` (merged tree `sha256:85b2f5a3…`; earlier `sha256:e677df02…`)
+was built from `deploy/Dockerfile`, which now installs the broker package. Inference was synthetic throughout.
+
+The merge kept harness-driven sessions on the broker path: the shared worker returns ticket material with
+`ahpSessionId`, the API adds the broker URL and `transport`, and `ConnectionTicket` lives in `shared.ts` to avoid a
+contracts import cycle. The worker's egress filter previously took its own address from `SHARED_PUBLIC_URL`, which
+no longer exists; it now refuses its own listener and the broker's through `SHARED_WORKER_URL` and
+`CONNECTION_BROKER_URL`.
 
 Extension points for later stages: add a placement kind to `PlacementKind`, the `shared_sessions_placement_kind`
 constraint, `PlacementRoute`, a `CASE` branch in `PlacementStore.consumeTicket`, and the broker's per-kind upstream

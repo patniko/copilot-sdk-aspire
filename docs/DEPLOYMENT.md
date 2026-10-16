@@ -169,7 +169,9 @@ examples. Use `--build-context customer-config=examples/customer-config` only fo
 image. Do not put credentials in that context. Alternatively mount an operator-managed `/config`
 read-only and set `CONFIG_ROOT` at runtime. `PLATFORM_ROOT` remains `/platform`.
 Configure the same database, dispatcher/gateway URLs, worker key, broker key (`CONNECTION_BROKER_KEY`),
-and principal/model/harness settings as the Node service, and retain `/data`. Clients reach the container
+and principal/model/harness settings as the Node service, and retain `/data`. Set `SHARED_WORKER_URL` to the
+container's own URL and `CONNECTION_BROKER_URL` to the broker's, as the AppHost does, so shared web and MCP egress
+refuses both listeners. Clients reach the container
 only through a connection broker configured with the same broker key and the container's URL as its
 `session-host` endpoint; the worker refuses public tickets. The image runs unprivileged and contains
 the matching SDK plus native launcher/library and source provenance. It does not include the controller
