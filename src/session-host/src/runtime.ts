@@ -252,6 +252,24 @@ export class SharedSessionRuntime {
     return activation.session.send({ prompt, source: "system" });
   }
 
+  /** The approval mode the runtime reports in force for an active conversation. */
+  async approvalMode(id: string): Promise<string> {
+    const activation = this.#activations.get(id);
+    if (!activation || activation.close) throw new Error("The shared conversation is not active.");
+    return (await activation.session.rpc.permissions.getMode()).mode;
+  }
+
+  /**
+   * Asks the runtime for an approval mode, as an attached client's mode switch does. Managed settings refuse modes the
+   * harness's policy does not allow; the result is the mode in force afterwards.
+   */
+  async requestApprovalMode(id: string, mode: RuntimeApprovalMode): Promise<string> {
+    const activation = this.#activations.get(id);
+    if (!activation || activation.close || activation.lifetime.signal.aborted) throw new Error("The shared conversation is not active.");
+    try { return (await activation.session.rpc.permissions.setMode({ mode })).mode; }
+    catch { return (await activation.session.rpc.permissions.getMode()).mode; }
+  }
+
   async hasSystemMessage(id: string, marker: string): Promise<boolean> {
     const activation = this.#activations.get(id);
     if (!activation || activation.close) throw new Error("The shared conversation is not active.");

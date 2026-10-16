@@ -90,6 +90,16 @@ export class SharedSessionService {
     return counts;
   }
   busy(id: string): boolean { return this.#scheduler.busy(id) || this.#opening.has(id); }
+  /** The approval mode the runtime reports in force for a resident conversation. */
+  async approvalMode(principal: string, id: string): Promise<string> {
+    this.activation(principal, id);
+    return this.#runtime.approvalMode(id);
+  }
+  /** Asks the runtime for an approval mode, as an attached client's switch does; returns the mode in force afterwards. */
+  async requestApprovalMode(principal: string, id: string, mode: Parameters<SharedSessionRuntime["requestApprovalMode"]>[1]): Promise<string> {
+    this.activation(principal, id);
+    return this.#runtime.requestApprovalMode(id, mode);
+  }
   activation(principal: string, id: string): SessionFileLease {
     const resident = this.#residents.get(id);
     if (!resident?.connection || resident.record.principal !== principal || resident.closing || resident.controller.signal.aborted) {

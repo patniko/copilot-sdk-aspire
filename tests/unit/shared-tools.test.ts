@@ -37,7 +37,7 @@ afterEach(async () => { lifetime.abort(); await rm(root, { recursive: true, forc
 const byName = (tools: Array<{ tool: Tool }>) => new Map(tools.map(({ tool }) => [tool.name, tool]));
 const call = async (tool: Tool | undefined, args: unknown) => {
   if (!tool) throw new Error("Missing tool.");
-  return tool.handler(args, { sessionId: "session", toolCallId: "call", toolName: tool.name, arguments: args } as never) as Promise<Record<string, unknown>>;
+  return tool.handler!(args, { sessionId: "session", toolCallId: "call", toolName: tool.name, arguments: args } as never) as Promise<Record<string, unknown>>;
 };
 
 describe("shared workspace tools", () => {
@@ -106,7 +106,7 @@ describe("shared base tool set", () => {
       return {
         tools: [fakeTool("mcp_docs_search_search"), fakeTool("mcp_docs_search_delete")],
         descriptors: [
-          { name: "mcp_docs_search_search", server: "docs-search", tool: "search", readOnly: true, description: "", inputSchema: {} },
+          { name: "mcp_docs_search_search", server: "docs-search", tool: "search", readOnly: false, readOnlyHint: true, description: "", inputSchema: {} },
           { name: "mcp_docs_search_delete", server: "docs-search", tool: "delete", readOnly: false, description: "", inputSchema: {} },
         ] as never,
         refused: [], close: async () => undefined,
@@ -134,8 +134,8 @@ describe("shared base tool set", () => {
     ]);
     expect(calls).toEqual([{ web: "deny" }, { mcp: [{ name: "docs-search", policy: catalog["docs-search"], tools: ["search", "delete"] }] }]);
     expect(toolset.rules.get("web_fetch")).toMatchObject({ kind: "url" });
-    expect(toolset.rules.get("mcp_docs_search_search")).toMatchObject({ kind: "mcp", quietUnderAsk: true });
-    expect(toolset.rules.get("mcp_docs_search_delete")).toMatchObject({ kind: "mcp", quietUnderAsk: false });
+    // A remote server's read-only hint is untrusted, so no remote tool runs quietly under `ask`.
+    for (const name of ["mcp_docs_search_search", "mcp_docs_search_delete"]) expect(toolset.rules.get(name)?.quietUnderAsk, name).toBeUndefined();
     expect(toolset.rules.get("mcp_docs_search_delete")!.target!({})).toBe("docs-search:delete");
   });
 

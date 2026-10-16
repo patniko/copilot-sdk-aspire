@@ -10,7 +10,7 @@ const rules = new Map<string, ToolRule>([
   ["read_workspace_file", { kind: "read", quietUnderAsk: true, target: (args) => (args as { path?: string }).path }],
   ["write_workspace_file", { kind: "write", target: (args) => (args as { path?: string }).path }],
   ["web_fetch", { kind: "url", target: (args) => (args as { url?: string }).url }],
-  ["mcp_docs_search_search", { kind: "mcp", quietUnderAsk: true }],
+  ["mcp_docs_search_search", { kind: "mcp" }],
   ["mcp_docs_search_delete", { kind: "mcp", target: () => "docs-search:delete" }],
   ["update_task_list", {}],
 ]);
@@ -46,10 +46,10 @@ describe("shared permission policy", () => {
     }
   });
 
-  it("runs workspace reads and read-only MCP tools under ask without a prompt, like the Copilot CLI", () => {
+  it("runs workspace reads under ask without a prompt, like the Copilot CLI, but never remote MCP tools", () => {
     const { policy: asking } = policy(ask);
     expect(asking.preToolUse("read_workspace_file")).toEqual({ permissionDecision: "allow" });
-    expect(asking.preToolUse("mcp_docs_search_search")).toEqual({ permissionDecision: "allow" });
+    expect(asking.preToolUse("mcp_docs_search_search")).toBeUndefined();
     expect(asking.preToolUse("mcp_docs_search_delete")).toBeUndefined();
     expect(asking.preToolUse("write_workspace_file")).toBeUndefined();
   });
