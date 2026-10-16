@@ -34,22 +34,35 @@ export class QualificationCli {
   }
 
   async connect(connection: SharedConnection): Promise<void> {
+    const url = new URL(connection.url);
+    const serverKey = JSON.stringify({ endpoint: url.href, ...connection.serverKey });
+    url.searchParams.set("tkn", connection.token);
+    await this.launch(["--experimental", "--ahp", url.href, "--ahp-authenticate-with-github", "--resume", connection.sessionId],
+      { COPILOT_AHP_SERVER_KEY: serverKey }, [connection.token]);
+  }
+
+  /**
+   * Starts the CLI with explicit arguments and extra environment, confirms folder trust for the fixture directory when
+   * asked, and waits for the input prompt. `secrets` are redacted from diagnostics.
+   */
+  async launch(args: string[], extra: Record<string, string> = {}, secrets: string[] = []): Promise<void> {
     const path = process.env.HYBRID_CLI_PATH;
     if (!path || !isAbsolute(path)) throw new Error("HYBRID_CLI_PATH must identify the matching locally built CLI.");
     await access(path);
     const require = createRequire(join(resolve(dirname(path), ".."), "package.json"));
     const pty: PtyModule = require("node-pty");
-    const url = new URL(connection.url);
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(process.env)) {
       if (value !== undefined && !/^(DEMO_|HYBRID_|SHARED_|COPILOT_|GITHUB_TOKEN$|GH_TOKEN$)/.test(name)) env[name] = value;
     }
     env.GH_TOKEN = this.credential;
     env.GITHUB_TOKEN = this.credential;
-    env.COPILOT_AHP_SERVER_KEY = JSON.stringify({ endpoint: url.href, ...connection.serverKey });
-    this.#secrets.add(connection.token);
-    url.searchParams.set("tkn", connection.token);
-    this.#terminal = pty.spawn(process.execPath, [path, "--experimental", "--ahp", url.href, "--ahp-authenticate-with-github", "--resume", connection.sessionId], {
+    Object.assign(env, extra);
+    for (const secret of secrets) this.#secrets.add(secret);
+    this.#output = "";
+    this.#promptOutput = "";
+    this.#exited = false;
+    this.#terminal = pty.spawn(process.execPath, [path, ...args], {
       name: "xterm-256color", cols: 140, rows: 42, cwd: this.root, env,
     });
     this.#terminal.onData((value) => {
@@ -64,11 +77,14 @@ export class QualificationCli {
       });
     });
     this.#exit = new Promise((resolveExit) => this.#terminal!.onExit(() => { this.#exited = true; resolveExit(); }));
-    await this.waitFor("Confirm folder trust");
-    if (!this.#output.includes(this.root)) throw new Error("The CLI did not identify the task-owned fixture directory.");
-    this.#promptOutput = "";
-    this.#terminal.write("\r");
-    await this.wait(() => /(Type.*message|Ask.*anything|for shortcuts|Enter.*prompt|\u276f)/i.test(this.#promptOutput), "CLI prompt");
+    const prompt = /(Type.*message|Ask.*anything|for shortcuts|Enter.*prompt|\u276f)/i;
+    await this.wait(() => this.#rendered.includes("Confirm folder trust") || prompt.test(this.#promptOutput), "folder trust or the CLI prompt", 120_000);
+    if (this.#rendered.includes("Confirm folder trust")) {
+      if (!this.#output.includes(this.root)) throw new Error("The CLI did not identify the task-owned fixture directory.");
+      this.#promptOutput = "";
+      this.#terminal.write("\r");
+      await this.wait(() => prompt.test(this.#promptOutput), "CLI prompt");
+    }
   }
 
   async send(prompt: string): Promise<void> {
