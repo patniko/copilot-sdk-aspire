@@ -474,7 +474,9 @@ is snapshotted, restored into a Linux container at `/workspace`, and resumed wit
 and mixed-case file names. With `HYBRID_CLI_TESTS=1` as well, `promotion-cli.test.ts` is the promotion exit gate: a
 real CLI runs under the launcher's supervisor in one pseudo-terminal
 ([`supervised-cli.ts`](../tests/runtime/supervised-cli.ts)); the conversation writes notes, calls `promote_session`
-mid-task, and continues in a real session container with the shell and the same files, in the same terminal. Set the
+mid-task, and continues in a real session container with the shell and the same files, in the same terminal. It then
+kills that container: the next connection starts a replacement from the session volume, and the launcher restarts the
+CLI against it in the same terminal. Set the
 native pair, CLI path and account opt-in above, build the shared-worker, session-container and executor images
 (`HYBRID_EXECUTOR_IMAGE`, as for the session-container gate), then run:
 

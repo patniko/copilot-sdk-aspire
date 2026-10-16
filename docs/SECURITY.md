@@ -310,5 +310,5 @@ beyond them, and egress stays unenforced in both placements.
 The local gates verified the history transplant from the Windows-hosted worker and from the Linux shared-worker image
 into Linux containers, digest and path refusals, fencing and the one-way trigger, every failure before cutover
 leaving the session shared, and a real CLI promoting mid-task and continuing with shell and files in the same
-terminal, all with synthetic inference ([record](HOSTING-MODES-PLAN.md#stage-5-promotion)). Azure, paid models, and
-GitHub relay continuity were not exercised.
+terminal, through a crash of the promoted container, all with synthetic inference
+([record](HOSTING-MODES-PLAN.md#stage-5-promotion)). Azure, paid models, and GitHub relay continuity were not exercised.

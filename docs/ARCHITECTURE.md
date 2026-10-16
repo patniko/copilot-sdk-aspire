@@ -363,9 +363,10 @@ move with a target harness, a fresh runtime session, or an opening note.
 
 `pnpm host:connect` keeps the person's terminal attached across the move: it runs the CLI under a supervisor
 ([`cli-supervisor.ts`](../configurator/server/cli-supervisor.ts)) whose loopback relay spends one broker ticket per CLI
-connection. On a `moved` close the supervisor stops the CLI, provisions the same session again through the launcher's
-routing (retrying while the move completes), and restarts the CLI with `--resume` and the container's server key in
-the same terminal. Without the launcher, a client sees the `moved` close and must reconnect itself.
+connection. On a `moved` close, or when a new ticket carries another server key (a replacement container after a
+crash), the supervisor stops the CLI, provisions the same session again through the launcher's routing (retrying
+while a move completes), and restarts the CLI with `--resume` and the new server key in the same terminal. Without
+the launcher, a client sees the `moved` close and must reconnect itself.
 
 ## Optional demo agent host
 

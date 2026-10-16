@@ -1591,7 +1591,165 @@ Pending.
 
 ### Stage 5: promotion
 
-Pending.
+Recorded 2026-10-16 on branch `patniko-stage-5-promotion`. Commits:
+
+- `2c18da8`: case-preserving session file names, the promotion contract, and the ledger migration.
+- `db62dc8`: the history-transplant gate and the ledger.
+- `4e90e7d`: launcher supervision.
+- `e001655`: the end-to-end protocol.
+- `a988307`: protocol tests.
+- `ae08dfe`: promoted sessions resume after an idle stop.
+- `3fc0470`: the real-CLI gate.
+- `1bb9e43`: unit tests.
+- `319176f`: moves generalized for stage-6 handoffs, checkpointed early for the handoffs session.
+- `011e59d`: docs.
+- `cbe76c1`: the crash-after-cutover gate step and the supervisor's stale re-provisioning fix.
+- The commit that adds this record: docs.
+
+Merges of the integration branch: `3ad0c7d` (session containers, merged as `aef4040`), `27ff06c` (final shared mode and
+workers phase 1, `c15bb3d`), and `3d327f6` (per-harness owner hosts, `f8466af`).
+
+Environment: local only, Windows ARM64 host, Docker Desktop with linux/arm64 containers, disposable PostgreSQL 17, and
+synthetic inference.
+
+Delivered:
+
+- **History transplant**, the decisive gate. A conversation written through the PostgreSQL-backed `sessionFs` resumes
+  as the same runtime session on a real filesystem, at a different absolute path and on another OS, with no rebase
+  option:
+  - The snapshot carries the provider namespace's flat `sessionStatePath`, restored to
+    `<COPILOT_HOME>/session-state/<id>/`, and the workspace anchor's files, restored to the container workspace.
+  - The owner resumes with `workingDirectory` there and `continuePendingWork: false`, and the AHP host starts on the
+    same directory.
+  - The runtime rewrites `workspace.yaml`'s `cwd` but not history, so the container sends one move note mapping the
+    shared worker's path to its own.
+  - Windows provider keys are case-folded. `session_files.display_name` (migration `014_session_promotion.sql`) keeps
+    each entry's created spelling, and listings and snapshots return it.
+- **Ledger** (`PromotionStore`, migration `014`): one-way moves with states `requested`, `moving`, `starting`,
+  `committed`, and `failed`.
+  - Requests are idempotent per request key. A session has one open move and one committed promotion at most.
+  - Capture runs in one transaction that holds the namespace lock under a fresh lease. It leaves out the consent files
+    (`permissions.json`, `settings.json`, `config.json`) and `temp/`, records per-file SHA-256 and a manifest digest,
+    and stays within the session storage limits.
+  - Allocation joins the admission transaction: purpose `session`, the session volume at `/data`, and the harness
+    snapshot in `session_containers`. Snapshot pages are served only to that allocation while starting.
+  - The cutover commit sets placement `container` at generation + 1, replaces and pins the lease epoch, removes tickets
+    and the activation, and records a segment. Failure retires the allocation.
+  - A trigger refuses any return to `shared` placement and any generation decrease.
+  - For stage 6, moves also carry a kind (`promotion` or `handoff`), a history flag, a runtime session, an opening
+    notice, and a target harness and definition. Segments record the runtime session and reason, and views and both
+    connection paths take `ahpSessionId` from the latest segment.
+- **Shared worker**:
+  - `promote_session` registers through the per-harness toolset for `promotable` harnesses. Its rule is a person
+    under `ask` and none under `allow`, and its request key is `tool:<toolCallId>`.
+  - `SharedPromotions` checks current policy and capacity at request time and starts the move when the turn ends, or
+    at once for an idle API request. It recovers open moves after a restart; deactivates, captures, and allocates; and
+    waits for the cutover. On failure it tells the agent once (handoffs excepted).
+  - Turns and shared connections are refused while a move is open (`409 promotion_in_progress`).
+  - The worker offers the `promotion` feature only with `SESSION_CONTAINER_SETTINGS`, which the AppHost now passes it.
+- **Session container**:
+  - The supervisor restores the snapshot, digest-checked, with exclusive creates into fresh directories owned by uid
+    10001, and reports `promotion-failed` when it cannot.
+  - Readiness commits the cutover in the dispatcher's ready route.
+  - The owner sends the move note once, deduplicated by its first line.
+- **API**: `POST /v1/sessions/{id}/promote` takes an `Idempotency-Key` and returns 202 or 200, refusing with 409 or 429.
+  Views carry `promotion`, and promoted sessions connect to their container, including after an idle stop.
+- **Broker and launcher**:
+  - While a move is open, placements are marked `moving`, so the broker closes shared routes with `4301` as the move
+    begins.
+  - `pnpm host:connect` runs the CLI under a loopback relay supervisor (`configurator/server/cli-supervisor.ts`), the
+    first step of N5. On `moved`, or when a new ticket carries another server key, it stops the CLI and re-provisions
+    through `connect-route.ts` (`reprovisionSession`). It retries while a move is in progress and stops on a permanent
+    route change. It then restarts the CLI with `--resume` and the new key in the same terminal. A re-provisioning
+    result that began before the CLI was last replaced is discarded, since it can name a crashed container the
+    controller has not yet retired.
+- **Docs**: [architecture](ARCHITECTURE.md#promotion) (the flow moved from 7.3), [API](API.md#promotion),
+  [security](SECURITY.md#promotion-boundaries), deployment, the developer, user, and configurator guides, product scope,
+  and REST examples.
+
+Runtime artifacts:
+
+- The SDK links `copilot-agent-runtime-hybrid` at `62a6b07a10a` (`patniko-runtime-capabilities-for-hosting-modes`),
+  with native artifacts from `d89cfe45b29` and hosting crate `006b030`.
+- Windows pair for the in-process shared worker: `copilot-runtime.exe` `be1213d6…`, `runtime.node` `2dd77fc0…`. The CLI
+  is `dist-cli/index.js` from the same build.
+- Linux bundle `hybrid-linux-arm64-d89cfe45b29-host-006b030`: `copilot-runtime` `207690e4…`, `runtime.node`
+  `21aebad9…`, `sdk.tgz` `1f056620…`.
+- Images built from `319176f`'s sources: `copilot-hybrid-session-host:stage-5-promotion` `sha256:71a830d2…` and
+  `copilot-session-container:stage-5-promotion` `sha256:8a111bce…`. The executor image
+  `copilot-hybrid-executor:connection-broker` was reused.
+- The first transplant spike ran on runtime `0a32c39595f` and was repeated on `62a6b07a10a`.
+
+Exit evidence; each command passed:
+
+- **Baseline** on `cbe76c1`: `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`,
+  `aspire restore --apphost apphost.mts`, `pnpm typecheck`, `pnpm typecheck:tests`,
+  `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint`, `pnpm test:unit` (682 passed, 1 opt-in skipped), and
+  `pnpm test:integration` (135 passed, 21 opt-in skipped).
+- **Exit gate**, `promotion-cli.test.ts` with `HYBRID_PROMOTION_TESTS=1 HYBRID_CLI_TESTS=1 HYBRID_USE_GH_ACCOUNT=1`
+  (`HYBRID_SESSION_CONTAINER_IMAGE` and `HYBRID_EXECUTOR_IMAGE` set as above): passed 3 of 3 final runs, in 40 to 51 s
+  of test time each. Five earlier runs without the crash step had also passed, at 25 to 29 s.
+  1. In one pseudo-terminal, the launcher's supervisor ran the real CLI.
+  2. The shared conversation wrote `Notes/MixedCase.md` through `write_workspace_file` (no shell was offered in
+     shared placement), called `promote_session`, and ended its turn.
+  3. The broker closed the CLI's connection with `4301` as the move began, and the promotion committed: placement
+     `container`, generation 2, segment `promotion`.
+  4. The supervisor printed one move notice, re-provisioned through `connect-route`, and restarted the CLI with
+     `--resume` in the same terminal.
+  5. The container's continuation ran `bash` on the restored file, name and content intact, in
+     `/data/execution/workspace`. Its first model request held the earlier turn and the move note.
+  6. A later turn typed in the same terminal wrote and listed files with the shell.
+  7. `docker kill` then crashed the container after cutover. The next connection started a replacement from the
+     session volume, and the supervisor restarted the CLI against the replacement's new server key, in the same
+     terminal. A further turn read both files with the shell; placement stayed `container` at generation 2.
+  8. There is no demotion route (404), and the trigger refused a return to `shared`.
+
+  Four earlier runs of the crash step failed only on the restart-count assertion. Windows ConPTY repaints earlier
+  output when the screen changes, so launcher lines appeared twice; the test now numbers them. The investigation also
+  found a real race, fixed in `cbe76c1`: a slow re-provisioning that started before the restart could trigger a second,
+  stale restart. `cli-supervisor.test.ts` reproduces it with a fake CLI that times out handshakes.
+- **Transplant gate**, `promotion-transplant.test.ts` with `HYBRID_PROMOTION_TESTS=1` and
+  `HYBRID_SESSION_IMAGE=copilot-hybrid-session-host:stage-5-promotion`: 2 passed, one from the Windows-hosted worker
+  and one from the Linux shared-worker image, each into a Linux container at `/workspace`. History replayed, the next
+  request held the earlier turn, and mixed-case names were preserved.
+- **Ordinary suites**:
+  - `promotions.test.ts` (6), the ledger, including moves that continue an earlier segment's runtime session.
+  - `promotion-protocol.test.ts` (5): the coordinator, the real dispatcher, broker route checks, the API, and the
+    shared worker with a simulated container. It covers a handoff-shaped move and a cross-principal refusal.
+  - `session-files.test.ts`: case preservation.
+  - `cli-supervision.test.ts` (1): the real broker with a test-only generation bump.
+  - Unit: `promotion.test.ts` (9), `cli-supervisor.test.ts` (7), and `connect-route.test.ts` (7).
+- **Opt-in regression** for the other affected suites, on the same images and artifacts (`HYBRID_SESSION_RUNTIME_TESTS`,
+  `HYBRID_CLI_TESTS`, `HYBRID_SESSION_CONTAINER_TESTS`, `HYBRID_CONTAINER_TESTS`, and `HYBRID_DEPLOYMENT_TESTS`):
+  13 files and 18 tests passed in 342 s. The files: `shared-service`, `shared-session-runtime`, `shared-egress-runtime`,
+  `shared-approvals` (4), `shared-cli`, `shared-gate`, `shared-approval-cli`, `promotion-transplant` (2),
+  `promotion-cli`, `session-container-runtime`, `shared-image`, `artifact-safety`, and `hybrid-deployment`. This run was
+  on `011e59d`; the later commit changed only the supervisor and tests, and its gates were rerun as above.
+
+Failure coverage (section 14):
+
+- Duplicate tool calls and API retries join one promotion (ledger, protocol, and API tests).
+- A failure at each step before cutover leaves the session shared, writable, and accepting turns, with the allocation
+  retired and a tool-initiated agent told once. The steps covered are storage still held, restore failed, the container
+  stopped, readiness timed out, a stale snapshot, a closed session, and refusals for policy and capacity.
+- A crash after cutover is covered by the real gate (step 7) and by a simulated idle stop.
+- Stale shared writes after fencing fail with `ESTALE`, and no shared worker can take a writable lease again.
+- Demotion attempts: there is no route, and the trigger refuses `placement='shared'` and any generation decrease.
+- Another principal cannot promote, see, or snapshot the session: API 404, ledger `not_found`, and allocation-scoped
+  snapshot access.
+
+Remaining:
+
+- `approval: "ask"` reaches a person only under the `manual` approval mode. Under `assisted`, `allow-all`, or `custom`,
+  the runtime or handler decides as for any request, which is not separately verified.
+- No per-session host key moves with the session (N5): continuity depends on the launcher, the restarted CLI may ask
+  for folder trust again, and clients without the launcher reconnect themselves.
+- Shared clients are closed when the move begins, not at cutover. Interrupted turns are not replayed, and the crash was
+  injected while idle.
+- The shared namespace and stored snapshots have no automated retention or deletion.
+- The container's fresh-session path (moves without history, opening notices, or non-default runtime sessions) is
+  covered at the ledger and spec level only; stage 6 exercises it.
+- Not yet exercised: Azure, the GitHub relay (promotable is direct WSS only), paid models, and two real accounts.
 
 ### Stage 6: handoffs
 
