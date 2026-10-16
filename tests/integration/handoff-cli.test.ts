@@ -78,8 +78,8 @@ it.skipIf(!enabled)("hands a shared triage conversation to another shared harnes
 
     // The transfer asks the person in the CLI; they approve it.
     await triage.send("HAND ME OFF to the notes harness.");
-    expect(await firstOf(triage, ["transfer_to_cli_notes", "TRIAGE_FINISHED"], 120_000)).toBe("transfer_to_cli_notes");
-    await firstOf(triage, ["Approve", "Allow", "Yes"], 60_000);
+    expect(await firstOf(triage, ["Approve once", "TRIAGE_FINISHED"], 120_000)).toBe("Approve once");
+    expect(triage.screen).toContain(`SUMMARY_FROM_TRIAGE: the codeword is ${codeword}`);
     const prompt = triage.screen;
     await triage.press("\r");
     const handoff = await (async () => {
