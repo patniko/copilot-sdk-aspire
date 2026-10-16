@@ -243,9 +243,27 @@ reason, and for `summary` its summary, as untrusted data. Reconnect and resume t
 Without an explicit `history`, a target in the same placement gets `full` and one in another placement `summary`.
 History policies filter the conversation only; the session's workspace files stay with it. A handoff never raises the
 conversation's aggregate token budget or its job and continuation limits; per-turn limits are the target's. A
-conversation in a container never hands off to a harness that runs on the shared worker (`handoff_one_way`). The shared
-worker performs handoffs to targets that also run on it; a target that runs in a container is refused with
-`handoff_unavailable` (prerequisite `session-containers`).
+conversation in a container never hands off to a harness that runs on the shared worker (`handoff_one_way`).
+
+A target that runs in its own [session container](#session-containers), an `isolated` harness, needs session containers
+in the deployment; without them it is refused with `handoff_unavailable`. The conversation then moves one way into a
+new container for the target, through the same snapshot, allocation and cutover steps as a promotion:
+
+- The workspace files move, and the runtime history only with `full`; the source's consent files never move.
+- The container runs the target's snapshot under session-container rules: the first model its policy approves, the
+  policy's default size, its turn deadline, no delegated jobs, and the containers' idle stop. The aggregate token budget
+  is never raised.
+- While the move runs, `POST /v1/sessions/{id}/connection` returns `409 handoff_in_progress`; retry it, as the launcher's
+  supervisor does. When the container is ready the cutover commits, attached clients are closed with `4301`, and the
+  next connection returns `destination: "container"` with the target's `ahpSessionId`: the current one with `full`,
+  otherwise a new one. The container sends the handoff notice as the target's first turn.
+- A move that fails before the cutover leaves the source in control: no container capacity is `handoff_unavailable`,
+  and a container that cannot start or restore the snapshot is `handoff_failed`.
+
+Handoffs start only on the shared worker. A conversation that already runs in a container, as an `isolated` harness or
+after a promotion, cannot hand off yet: session containers do not implement the `handoffs` feature, so `isolated` and
+`promotable` harnesses that list handoffs are `hosting_unavailable` (prerequisite feature `handoffs`). Handoffs from
+containers are follow-up work.
 
 `GET /v1/sessions/{id}/handoffs` lists the transfers the tool ran. Each has `id`, `state` (`refused`, `accepted`,
 `committed` or `failed`), the `source` and `target` harnesses, `history`, `approval`, `approvedBy` (`person` or
@@ -261,9 +279,10 @@ person would be asked, and a transfer the person denies, fail the tool call with
 | `handoff_declined` | The handoff needs a person's approval and no person approved it |
 | `handoff_busy` | Another handoff or a promotion of the conversation is in progress |
 | `session_changed` | The conversation closed or moved while the handoff was in progress |
-| `handoff_failed` | The cutover could not complete |
+| `handoff_failed` | The cutover, or the move into the target's container, could not complete |
 
-A handoff that fails after it was accepted also tells the source agent, in a system turn, why it did not happen.
+A handoff that fails after it was accepted also tells the source agent, in a system turn, why it did not happen. While a
+handoff is open, `POST /v1/sessions/{id}/promote` returns `409 handoff_in_progress`.
 
 ### Session containers
 
@@ -279,8 +298,9 @@ per-turn budget, so its `turnTokenBudget` reports the aggregate cap.
 The first connection, and the first after an idle stop, starts the session's container and waits up to about
 two minutes for it to become ready. Only the `direct` transport is offered; other transports return the hosting
 error for that harness. The response has `destination: "container"`, `transport: "direct"`, the connection broker's
-`url` like shared sessions, and `ahpSessionId` equal to the session ID; the container accepts only connections the
-broker forwards. Closing retires the container and releases its retained volume.
+`url` like shared sessions, and the current segment's `ahpSessionId`: the session ID, unless a [handoff](#handoffs)
+started a new runtime session. The container accepts only connections the broker forwards. Closing retires the
+container and releases its retained volume.
 
 | Status | Code | Meaning |
 | --- | --- | --- |
@@ -358,9 +378,10 @@ Implemented in [hosting-routes.ts](../src/agent-api/src/hosting-routes.ts) with 
 `executor` (`pool` or `dedicated`), `isolatedHosts` (each managed agent host and the harness it serves, with its
 transports), `sharedWorker` (the local hybrid worker), `sessionContainers` (per-session containers, when enabled), and later
 `workerContainers`. Each host lists the harness `features` it implements: the shared worker implements `remote-mcp`,
-`approval-modes`, `custom-approval`, and `handoffs`; agent hosts and session containers implement none, and no host
-implements promotion or workers yet. GitHub-native demo hosting runs Copilot's own sessions rather than a harness, so
-it adds no isolated host. Owner principals are not returned.
+`approval-modes`, `custom-approval`, and `handoffs`, plus `promotion` when promotion and session containers are
+deployed; agent hosts and session containers implement none, and no host implements workers yet. GitHub-native demo
+hosting runs Copilot's own sessions rather than a harness, so it adds no isolated host. Owner principals are not
+returned.
 
 Each harness view (latest version, or `?version=` on the single-harness route) contains:
 

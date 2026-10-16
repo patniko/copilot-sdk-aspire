@@ -139,8 +139,10 @@ coordinator that manages container workers. Its first delivery targets Copilot C
 for isolated harness hosts; the GitHub Copilot app comes later. It also proposes handoffs and compares the design
 with OpenAI's Agents API. None of these modes is supported until its stage lands with evidence; the first stage adds
 only the harness and policy contract, its validation and admission errors, and the read-only hosting view. Handoffs
-work locally between conversations on the shared worker, with person approval, history policies and a handoff ledger
-([stage 6 record](HOSTING-MODES-PLAN.md#stage-6-handoffs)).
+work locally from conversations on the shared worker, to another harness there or into a target's own session
+container, with person approval, history policies and a handoff ledger
+([stage 6 record](HOSTING-MODES-PLAN.md#stage-6-handoffs)); handoffs from conversations that run in a container are
+follow-up work.
 
 ## Acceptance criteria for changes
 

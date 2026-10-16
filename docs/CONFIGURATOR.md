@@ -103,7 +103,9 @@ On the **Hosting** tab:
   the model, a history policy and an approval. History and approval options the policy's handoff ceilings do not allow
   are disabled. Without an explicit history, a target in the same placement receives full history and one in another
   placement a summary, and the editor reports when the ceilings do not allow that default. A harness that runs in a
-  container cannot list a target that runs on the shared worker, because a conversation never moves back.
+  container cannot list a target that runs on the shared worker, because a conversation never moves back. Handoffs
+  start only on the shared worker today, so the running service reports isolated and promotable harnesses that list
+  handoffs as unavailable.
 - **Approval mode**: manual, assisted with an optional judge model from the harness's approved models, allow all, or a
   custom handler that the policy allows and the TypeScript conversation profile provides. The per-kind rules on the
   **Permissions** tab still run first and deny always wins; the approval mode decides only requests those rules

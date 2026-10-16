@@ -238,19 +238,28 @@ snapshot lists. These controls apply ([`service.ts`](../src/session-host/src/ser
   `ask` is the only approval the default policy allows; an operator can allow `allow`.
 - **History filters remove content and add no authority.** `full` continues the runtime session under the target's
   instructions and tools, without the source's session-scoped approvals (`permissions.json`, `settings.json` and
-  `config.json`). `summary` and `none` start a new runtime session; the source's runtime history moves aside in the
-  session's storage, where it is retained and counts against the session's quota but the target cannot reach it. The
-  target's first turn quotes the source's payload as untrusted data in a system message, which is not a person's
-  message; only `full` keeps the person's own messages.
+  `config.json`). `summary` and `none` start a new runtime session; on the shared worker the source's runtime history
+  moves aside in the session's storage, where it is retained and counts against the session's quota but the target
+  cannot reach it. The target's first turn quotes the source's payload as untrusted data in a system message, which is
+  not a person's message; only `full` keeps the person's own messages.
+- **Moves into a target's container.** A target that runs in its own session container receives the conversation
+  through the promotion snapshot: read under a fenced storage lease, served only to the allocation started for the move,
+  and committed only when that container is ready, after which no shared worker can write the session's shared storage
+  again. Without `full` the snapshot holds only the workspace, so the source's runtime history stays behind in that
+  read-only storage. The container runs the target's admitted snapshot with the model and limits of session-container
+  admission and the [session container boundaries](#session-container-boundaries).
 - **No new authority or budget.** A handoff never raises the conversation's aggregate token budget, job, or
   continuation limits, and a conversation in a container never moves back to the shared worker.
 - **One move at a time.** The ledger records each transfer once per tool call, keeps at most one handoff open, refuses
-  one while a promotion is open, admits no turns while one is open, and commits the cutover with a new placement
-  generation, which voids outstanding connection tickets and closes attached clients with `moved`.
+  one while a promotion is open, and admits no turns while one is open; the worker refuses a promotion while a handoff
+  is open. The cutover commits with a new placement generation, which voids outstanding connection tickets and closes
+  attached clients with `moved`.
 
 The person approves on the reason and summary the source agent wrote, which the CLI prompt shows; they are model
 output and can be wrong or manipulated by content the source read. Workspace files stay with the conversation across
-handoffs, so the target sees files the source wrote.
+handoffs, so the target sees files the source wrote. Handoffs start only on the shared worker: session containers do
+not offer transfer tools yet, so harnesses that run there and list handoffs are reported unavailable rather than
+running without them.
 
 ### Shared-placement egress and remote MCP
 

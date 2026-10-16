@@ -188,8 +188,10 @@ Each session records a placement in the ledger: its kind (`shared`, or `containe
 [session containers](#session-containers)) and a generation that increases on every change
 ([contract](../contracts/src/placement.ts)). Tickets bind to the generation. When it changes, the broker ends
 attached clients with WebSocket close code `4301` (`moved`) after any frame in flight, and an upstream close is
-replaced with `moved` when the placement changed underneath it. No current code path moves a session between
-placements; promotion is proposed in the [hosting modes plan](HOSTING-MODES-PLAN.md#4-proposed-topology).
+replaced with `moved` when the placement changed underneath it. A [handoff](API.md#handoffs) changes it: the
+target's segment starts at the next generation, on the shared worker or, for a target that runs in its own session
+container, after a one-way move through the promotion snapshot and cutover
+([plan](HOSTING-MODES-PLAN.md#75-handoffs-and-crafted-harnesses)).
 
 Delegation records, child jobs, input snapshots and aggregate budget reservations commit atomically.
 SDK tool-call identity deduplicates acceptance. Completion-driven turns cannot create nested delegations.
