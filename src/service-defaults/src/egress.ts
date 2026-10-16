@@ -395,7 +395,7 @@ export interface VettedTarget {
 export interface EgressRequestOptions {
   url: string | URL;
   method?: "GET" | "POST" | "DELETE";
-  /** Sent on every hop. Must not carry credentials. */
+  /** Sent on the first hop; after a redirect only accept, accept-encoding, accept-language, and user-agent are. Credential-like names are refused. */
   headers?: Record<string, string>;
   /** Sent only on the first hop to the requested origin; never after a redirect. Requires HTTPS to public hosts. */
   credentials?: Record<string, string>;
@@ -429,6 +429,10 @@ export interface EgressResponse {
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_LOCATION_LENGTH = 4096;
 const MAX_TIMEOUT_MS = 10 * 60_000;
+/** Generic headers that may follow a redirect; everything else is sent to the requested origin only. */
+const REDIRECT_SAFE_HEADERS = new Set(["accept", "accept-encoding", "accept-language", "user-agent"]);
+/** Header names that carry credentials; they belong in `credentials`, which has stricter rules. */
+const CREDENTIAL_HEADER = /^(?:authorization|proxy-authorization|cookie)$|token|secret|api-?key|auth/i;
 
 function nodeErrorCode(error: unknown): string | undefined {
   const code = (error as { code?: unknown } | undefined)?.code;
@@ -522,7 +526,9 @@ export class EgressFilter {
     if (url.protocol !== "http:" && url.protocol !== "https:") throw new EgressError("scheme", "Only HTTP and HTTPS URLs are allowed.");
     if (url.username || url.password) throw new EgressError("credentials_in_url", "URLs with embedded credentials are refused.");
     const secure = url.protocol === "https:";
+    // Node treats port 0 as the default port, which would slip past port-scoped internal rules.
     const port = url.port ? Number(url.port) : secure ? 443 : 80;
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) throw new EgressError("invalid_url", "The URL port is not valid.");
     const signal = options.signal;
     if (signal?.aborted) throw abortReason(signal);
     await this.#refreshInternal(signal);
@@ -585,7 +591,9 @@ export class EgressFilter {
   }
 
   async #refreshInternal(signal?: AbortSignal): Promise<void> {
-    if (!this.#internalNames.size || Date.now() - this.#resolvedAt < this.#refreshMs) return;
+    if (!this.#internalNames.size) return;
+    const unresolved = () => [...this.#internalNames.keys()].some((name) => !this.#resolvedByName.has(name));
+    if (!unresolved() && Date.now() - this.#resolvedAt < this.#refreshMs) return;
     this.#refreshing ??= (async () => {
       await Promise.all([...this.#internalNames].map(async ([name, ports]) => {
         try {
@@ -596,7 +604,7 @@ export class EgressFilter {
             if (!parsed) continue;
             for (const port of ports) rules.push({ family: parsed.family, value: parsed.value, prefix: parsed.family === 4 ? 32 : 128, port });
           }
-          this.#resolvedByName.set(name, rules);
+          if (rules.length) this.#resolvedByName.set(name, rules);
         } catch {
           // Keep the last resolved addresses: a resolver outage must not drop protections.
         }
@@ -605,6 +613,8 @@ export class EgressFilter {
       this.#resolvedAt = Date.now();
     })().finally(() => { this.#refreshing = undefined; });
     await raceSignal(this.#refreshing, signal);
+    // Fail closed until every internal name has resolved once: its addresses are otherwise unknown.
+    if (unresolved()) throw new EgressError("internal", "This deployment's internal endpoints could not be resolved yet, so outbound requests are paused.");
   }
 
   /**
@@ -614,6 +624,8 @@ export class EgressFilter {
   async request(options: EgressRequestOptions): Promise<EgressResponse> {
     if (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 1 || options.timeoutMs > MAX_TIMEOUT_MS) throw new Error("Invalid egress timeout.");
     if (!Number.isSafeInteger(options.maxResponseBytes) || options.maxResponseBytes < 1) throw new Error("Invalid egress response limit.");
+    const sensitive = Object.keys(options.headers ?? {}).find((name) => CREDENTIAL_HEADER.test(name));
+    if (sensitive) throw new Error(`Pass the '${sensitive}' header in credentials, not headers.`);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(new EgressError("timeout", "The request timed out.")), options.timeoutMs);
     const onAbort = () => controller.abort(new EgressError("aborted", "The request was cancelled."));
@@ -642,7 +654,9 @@ export class EgressFilter {
         if (credentials && Object.keys(credentials).length && !target.secure && target.addresses.some((address) => address.category === "public")) {
           throw new EgressError("insecure_credentials", "Credentials are sent only over HTTPS, except to an approved development server.");
         }
-        const response = await this.#send(target, method, options.headers, credentials, hop === 0 ? options.body : undefined, controller.signal);
+        const headers = hop === 0 ? options.headers : Object.fromEntries(Object.entries(options.headers ?? {})
+          .filter(([name]) => REDIRECT_SAFE_HEADERS.has(name.toLowerCase())));
+        const response = await this.#send(target, method, headers, credentials, hop === 0 ? options.body : undefined, controller.signal);
         const status = response.statusCode ?? 0;
         const location = response.headers.location;
         if (REDIRECT_STATUSES.has(status) && location !== undefined) {
