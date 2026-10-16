@@ -7,7 +7,7 @@ import pg from "pg";
 import type { FastifyInstance } from "fastify";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
-import { BROKER_MOVED_CLOSE, SharedConnection, SharedSessionDefinition, SharedSessionLimits, SharedSessionView } from "@copilot-agent/contracts";
+import { BROKER_MOVED_CLOSE, SharedConnection, SharedSessionDefinition, SharedSessionLimits, SharedSessionView, type SharedSessionCreation } from "@copilot-agent/contracts";
 import {
   JobEventListener, JobStore, migrate, PlacementStore, SessionFileStore, SharedStore, StoreError, type SessionFileLease,
 } from "@copilot-agent/job-store";
@@ -38,7 +38,7 @@ class LedgerBackedOwner {
   readonly healthy = true;
   readonly leases = new Map<string, SessionFileLease>();
   constructor(private readonly store: SharedStore, private readonly files: SessionFileStore, private readonly nativePort: () => number) {}
-  async create(owner: string, label: string) { return (await this.store.create(owner, 1, label, definition, 100)).view; }
+  async create(owner: string, request: SharedSessionCreation) { return (await this.store.create(owner, 1, request.label, definition, 100)).view; }
   async list(owner: string) { return this.store.list(owner); }
   async get(owner: string, id: string) {
     const row = await this.store.get(owner, id);
@@ -51,7 +51,7 @@ class LedgerBackedOwner {
       await this.store.publish(lease, serverKey);
       this.leases.set(id, lease);
     }
-    return { sessionId: id, ...(await this.store.issueTicket(owner, id)) };
+    return { sessionId: id, ahpSessionId: id, ...(await this.store.issueTicket(owner, id)) };
   }
   async resolveForwarded(path: string, epoch: string | undefined) {
     const lease = this.leases.get(/^\/sessions\/([0-9a-f-]{36})$/.exec(path)?.[1] ?? "");
@@ -171,10 +171,11 @@ async function echo(client: Client, text: string): Promise<void> {
 describe("connection broker deployment path", () => {
   it("keeps live connections across agent-api restarts and issues new tickets from the replacement", async () => {
     const first = await startApi();
-    const session = await call(first, "/v1/sessions", SharedSessionView, { label: "broker" });
+    const session = await call(first, "/v1/sessions", SharedSessionView, { harness: "broker-fixture", label: "broker" });
     sessions.push(session.id);
     const connection = await call(first, `/v1/sessions/${session.id}/connection`, SharedConnection);
     expect(connection.url).toBe(`${url(broker).replace("http:", "ws:")}/sessions/${session.id}`);
+    expect(connection).toMatchObject({ destination: "shared", transport: "direct", ahpSessionId: session.id });
     expect(Date.parse(connection.expiresAt) - Date.now()).toBeGreaterThan(50_000);
     expect(Date.parse(connection.expiresAt) - Date.now()).toBeLessThanOrEqual(61_000);
     const client = await attached(connection.url, connection.token);
@@ -196,7 +197,7 @@ describe("connection broker deployment path", () => {
 
   it("accepts placement ingress only from the broker and closes with moved on a placement change", async () => {
     const base = api ? url(api) : await startApi();
-    const session = await call(base, "/v1/sessions", SharedSessionView, { label: "moved" });
+    const session = await call(base, "/v1/sessions", SharedSessionView, { harness: "broker-fixture", label: "moved" });
     sessions.push(session.id);
     const direct = await call(base, `/v1/sessions/${session.id}/connection`, SharedConnection);
     expect(await attach(`${url(shared).replace("http:", "ws:")}/sessions/${session.id}`, direct.token)).toBe(401);
@@ -212,7 +213,7 @@ describe("connection broker deployment path", () => {
 
   it("refuses expired tickets and tickets for closed sessions", async () => {
     const base = api ? url(api) : await startApi();
-    const session = await call(base, "/v1/sessions", SharedSessionView, {});
+    const session = await call(base, "/v1/sessions", SharedSessionView, { harness: "broker-fixture" });
     sessions.push(session.id);
     const expired = await call(base, `/v1/sessions/${session.id}/connection`, SharedConnection);
     await pool.query("UPDATE shared_connection_tickets SET expires_at=clock_timestamp()-interval '1 second' WHERE session_id=$1", [session.id]);

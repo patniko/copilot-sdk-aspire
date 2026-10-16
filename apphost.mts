@@ -187,9 +187,13 @@ if (hybridEnabled === 'true') {
     .withHttpEndpoint({ env: 'PORT' }).withHttpHealthCheck({ path: '/health' })
     .withExternalHttpEndpoints()
     .withEnvironment('CONNECTION_BROKER_KEY', brokerKey);
+  const brokerEndpoint = await broker.getEndpoint('http');
+  // The worker's shared egress refuses its own listener and the broker's.
+  await shared.withEnvironment('SHARED_WORKER_URL', refExpr`${sharedEndpoint}`)
+    .withEnvironment('CONNECTION_BROKER_URL', refExpr`${brokerEndpoint}`);
   await api.withReference(sharedEndpoint).waitFor(shared)
     .withEnvironment('SHARED_WORKER_KEY', workerKey)
-    .withEnvironment('CONNECTION_BROKER_URL', refExpr`${await broker.getEndpoint('http')}`)
+    .withEnvironment('CONNECTION_BROKER_URL', refExpr`${brokerEndpoint}`)
     .withEnvironment('EXECUTOR_MODE', 'on-demand');
   await dispatcher.withEnvironment('SHARED_WORKER_KEY', workerKey)
     .withEnvironment('CONNECTION_BROKER_KEY', brokerKey);
@@ -220,7 +224,8 @@ if (demoHostTransport !== 'disabled') {
     .withEnvironment('DEMO_HOST_HARNESS', demoHostHarness);
   await api
     .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
-    .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport);
+    .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport)
+    .withEnvironment('DEMO_HOST_HARNESS', demoHostHarness);
   const hostStage = direct && demoHostRuntimeDirectory ? 'agent-host-runtime' : 'agent-host';
   const host = await builder
     .addDockerfile('agent-host', '.', {

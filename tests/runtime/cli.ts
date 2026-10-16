@@ -49,7 +49,7 @@ export class QualificationCli {
     env.COPILOT_AHP_SERVER_KEY = JSON.stringify({ endpoint: url.href, ...connection.serverKey });
     this.#secrets.add(connection.token);
     url.searchParams.set("tkn", connection.token);
-    this.#terminal = pty.spawn(process.execPath, [path, "--experimental", "--ahp", url.href, "--ahp-authenticate-with-github", "--resume", connection.sessionId], {
+    this.#terminal = pty.spawn(process.execPath, [path, "--experimental", "--ahp", url.href, "--ahp-authenticate-with-github", "--resume", connection.ahpSessionId], {
       name: "xterm-256color", cols: 140, rows: 42, cwd: this.root, env,
     });
     this.#terminal.onData((value) => {

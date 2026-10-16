@@ -98,7 +98,9 @@ The loader in [`registry.ts`](../src/service-defaults/src/registry.ts) uses two 
   ([`HarnessPolicyOverride`](../contracts/src/profile.ts)). Admission resolves the harness's effective policy and
   stores its digest, required controls, acknowledged gaps, and retry backoff with the job; the dispatcher matches
   executors per job and rechecks the current effective policy at claim time. Lease timing and per-caller quotas
-  are global. The API fails startup when an override names an unpublished harness.
+  are global. The API fails startup when an override names an unpublished harness. An override replaces each field
+  it lists whole, including object fields such as `hosting`, whose omitted sub-fields then take their defaults
+  rather than the base policy's values.
 - Configuration is loaded at process startup, not continuously watched by runtime services.
 
 | Change | Local activation | Azure activation |
@@ -140,6 +142,15 @@ The managed demo path requires `interaction: "conversation"`; ordinary batch adm
 harnesses. `buildSessionOptions(..., "conversation")` omits the terminal result contract while the default
 three-argument mapping remains unchanged for batch runners. The hosted implementation is TypeScript only;
 Python/TypeScript batch parity remains required.
+
+The demo host is an isolated host for exactly one harness. [`admitHostedHarness`](../src/service-defaults/src/host-policy.ts)
+also refuses a harness whose `hosting.mode` is not `isolated`, isolated hosting that its effective policy does not
+allow (`hosting_mode_not_allowed`), and harness features the host does not implement (`hosting_unavailable`): remote
+MCP servers, approval modes other than `manual`, custom permission handlers, and handoffs. It never runs a harness
+without a feature it requested. `DEMO_HOST_FEATURES` in [`hosting.ts`](../src/service-defaults/src/hosting.ts) and
+`SHARED_WORKER_FEATURES` in [`shared.ts`](../contracts/src/shared.ts) record what each host implements; a slice that
+implements a feature adds it there. agent-api's [`hostingDeployment`](../src/agent-api/src/hosting-deployment.ts)
+builds the deployment's hosts from its configuration for admission and the `/v1/hosting` [views](API.md#hosting-views).
 
 GitHub-native mode instead starts host-owned sessions through the released CLI server pinned in the host
 package. It supplies no app factories or custom provider and uses the standard Mission Control owner binding.
@@ -408,9 +419,33 @@ Follow the complete feature path rather than changing only a schema or an editor
 Preserve optional-field omission when appropriate: adding materialized defaults to resolved harnesses can change
 their digests. Changing prompt behavior must not silently widen tool access. Permissions and built-in tool groups
 remain subject to the operator policy.
+[`harness-digests.test.ts`](../tests/unit/harness-digests.test.ts) pins the shipped example digests; a contract change
+that alters them changes every published harness's identity.
 
 For a new language or runtime, implement [runner protocol v1](RUNNER-PROTOCOL.md), package an approved execution
 profile, and report actual capabilities. Do not claim unsupported controls or add a direct-provider fallback.
+
+### Hosting, approval-mode, and remote MCP fields
+
+The per-harness [hosting modes](HOSTING-MODES-PLAN.md) contract has three layers; keep each rule in its layer so the
+API, hosts, and configurator report the same field-scoped problem:
+
+| Layer | Contract | Rules |
+| --- | --- | --- |
+| Harness alone | `HarnessDefinition` refinements in [`harness.ts`](../contracts/src/harness.ts) | `hosting` (`mode`, `promotion`, `workers`, `handoffs`), `mcpServers`, and `permissions.approvalMode`/`judgeModel`/`handler`: mode-specific blocks, duplicates and self-references, shared-placement tool limits (no `shell`, Python, or local MCP tools for `shared` or `orchestrator`), and judge and handler pairing. Batch harnesses reject `hosting`, `mcpServers`, and approval modes other than `manual`, because neither batch runner implements them |
+| Effective policy and profile | [`profile.ts`](../contracts/src/profile.ts) | `approvalModes`, `permissionHandlers`, the `mcpServers` catalog, and `hosting` ceilings, all overridable per harness. `toolPolicyViolations` checks approval modes, judge models, handlers, and catalog servers and tools wherever policy is enforced; `hostingPolicyViolations` checks modes, transports, sizes, inherited authority, and crafting templates; `hostedProfileViolations` checks the profile's `inProcessBindings` and `permissionHandlers` |
+| Registry and deployment | [`hosting.ts`](../contracts/src/hosting.ts) | Worker and handoff targets, then the hosts, transports, and host features the deployment provides. `evaluateHosting` orders problems as admission reports them and `HOSTING_ERROR_STATUS` maps codes to HTTP statuses |
+
+Omitted policy fields keep today's behavior: isolated hosting only, both transports, `manual` approvals, no MCP
+servers or handlers, the default size catalog and worker limits, and `ask` for promotion. A harness feature becomes
+admissible on a host only when that host lists it in its features; until then admission returns
+`hosting_unavailable` naming it. A new hosted feature that batch runners would also see needs TypeScript and Python
+runner parity, or the batch rejection above.
+
+A catalog server's `allowPrivateNetwork: true` is an operator-only development allowance: its exact configured origin,
+never a redirect, may be a private, loopback, or container address, and its credential may then travel over `http`.
+Without it, a server that receives a credential must use `https`. The shared-placement egress filter, not the
+contract, enforces which addresses stay refused.
 
 ## Change a service or data contract
 

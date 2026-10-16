@@ -7,9 +7,9 @@ import { join } from "node:path";
 import pg from "pg";
 import type { FastifyInstance } from "fastify";
 import { expect, inject, it } from "vitest";
-import { SharedConnection, SharedSessionDefinition, SharedSessionLimits, SharedSessionView, SharedWorkerLimits } from "@copilot-agent/contracts";
+import { SHARED_WORKER_FEATURES, SharedConnection, SharedSessionView, SharedWorkerLimits } from "@copilot-agent/contracts";
 import { JobEventListener, JobStore, migrate, PlacementStore, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
-import { Admission, ApiKeyAuthenticator, loadHarnesses, loadPolicySet, loadProfiles } from "@copilot-agent/service-defaults";
+import { Admission, ApiKeyAuthenticator } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../src/agent-api/src/server.js";
 import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
 import { SharedSessionService } from "../../src/session-host/src/service.js";
@@ -19,6 +19,7 @@ import { DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/co
 import { testGitHubAccount } from "../runtime/account.js";
 import { localRuntimeArtifacts } from "../runtime/artifacts.js";
 import { QualificationCli } from "../runtime/cli.js";
+import { sharedAdmission, sharedHarness, sharedRegistry } from "./fixtures/shared-harness.js";
 
 const enabled = process.env.HYBRID_CLI_TESTS === "1";
 const address = (app: FastifyInstance) => `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
@@ -74,23 +75,20 @@ it.skipIf(!enabled)("answers through the real CLI via the broker, survives an AP
     await migrate(pool);
     await new Promise<void>((resolve, reject) => { upstream.once("error", reject); upstream.listen(0, "127.0.0.1", resolve); });
     const store = new SharedStore(pool);
-    const repo = join(import.meta.dirname, "..", "..");
-    const [harnesses, profiles, policies] = await Promise.all([
-      loadHarnesses(join(repo, "examples", "customer-config")), loadProfiles(repo), loadPolicySet(join(repo, "examples", "customer-config")),
-    ]);
+    const harness = sharedHarness("cli-qualification", { instructions: "You are a synthetic shared-host qualification agent. Reply briefly." });
+    const registry = await sharedRegistry([harness]);
+    const harnesses = new Map(registry.harnesses);
+    const profiles = new Map(registry.profiles);
     const jobs = new JobStore(pool);
     dispatcher = buildDispatcher({
-      store: jobs, policies, executorKey: "unused-executor-key-".repeat(3), gatewayKey: "unused-gateway-key-".repeat(3),
+      store: jobs, policies: registry.policies, executorKey: "unused-executor-key-".repeat(3), gatewayKey: "unused-gateway-key-".repeat(3),
       signingKey: "unused-signing-key-".repeat(4), broker: { store: new PlacementStore(pool), key: brokerKey },
     });
     await dispatcher.listen({ port: 0, host: "127.0.0.1" });
     const startHost = async (port = 0) => {
       const service = new SharedSessionService({
         root, store, files: new SessionFileStore(pool), principals: { [principal]: githubUserId },
-        definition: SharedSessionDefinition.parse({
-          model: "gpt-5.4", instructions: "You are a synthetic shared-host qualification agent. Reply briefly.",
-          allowedHarnesses: [], limits: SharedSessionLimits.parse({ idleSeconds: 300 }),
-        }),
+        admission: sharedAdmission(registry, { sessionLimits: { idleSeconds: 300 } }),
         limits: SharedWorkerLimits.parse({}),
         gatewayUrl: `http://127.0.0.1:${(upstream.address() as AddressInfo).port}`,
         mintToken: async (lease, turn) => { await store.grant(lease, turn.id); return "synthetic-unused-grant"; },
@@ -110,9 +108,13 @@ it.skipIf(!enabled)("answers through the real CLI via the broker, survives an AP
     const listener = new JobEventListener(pool);
     const startApi = async (port = 0) => {
       api = buildApi({
-        store: jobs, listener, harnesses, admission: new Admission({ harnesses, profiles, policies }), maxOpenJobsPerPrincipal: 10,
+        store: jobs, listener, harnesses, admission: new Admission({ harnesses, profiles, policies: registry.policies }), maxOpenJobsPerPrincipal: 10,
         console: false, authenticator: new ApiKeyAuthenticator(`${principal}:${apiKey}`),
         shared: { url: address(host!), key: workerKey, brokerUrl: address(broker!) },
+        hosting: {
+          harnesses, profiles, policies: registry.policies,
+          deployment: { isolatedHosts: [], sharedWorker: { transports: ["direct"], features: [...SHARED_WORKER_FEATURES] } },
+        },
       });
       await api.listen({ port, host: "127.0.0.1" });
       return address(api);
@@ -133,7 +135,7 @@ it.skipIf(!enabled)("answers through the real CLI via the broker, survives an AP
     };
 
     let apiUrl = await startApi();
-    const session = SharedSessionView.parse(await post(apiUrl, "/v1/sessions", { label: "CLI qualification" }));
+    const session = SharedSessionView.parse(await post(apiUrl, "/v1/sessions", { harness: harness.definition.name, label: "CLI qualification" }));
     sessions.push(session.id);
     await attach(apiUrl, session.id);
     await cli!.send(question);

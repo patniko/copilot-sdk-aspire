@@ -10,7 +10,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { expect, inject, it } from "vitest";
 import {
-  HarnessDefinition, ExecutionContainerSettings, SharedSessionDefinition, SharedSessionLimits, SharedWorkerLimits, SharedConnection, SharedSessionView,
+  HarnessDefinition, ExecutionContainerSettings, SHARED_WORKER_FEATURES, SharedWorkerLimits, SharedConnection, SharedSessionView,
 } from "@copilot-agent/contracts";
 import {
   AllocationStore, DelegationStore, JobEventListener, JobStore, PlacementStore, SharedStore, SessionFileStore, migrate,
@@ -25,12 +25,12 @@ import { buildGateway } from "../../src/inference-gateway/src/server.js";
 import { parseRoutes } from "../../src/inference-gateway/src/routes.js";
 import { SharedSessionService } from "../../src/session-host/src/service.js";
 import { buildSharedHost } from "../../src/session-host/src/server.js";
-import { coordinatorTools } from "../../src/session-host/src/tools.js";
 import { CompletionPump } from "../../src/session-host/src/completions.js";
 import { ExecutionController } from "../../src/execution-controller/src/controller.js";
 import { testGitHubAccount } from "../runtime/account.js";
 import { localRuntimeArtifacts } from "../runtime/artifacts.js";
 import { QualificationCli } from "../runtime/cli.js";
+import { sharedAdmission, sharedHarness } from "./fixtures/shared-harness.js";
 
 const enabled = process.env.HYBRID_DEPLOYMENT_TESTS === "1";
 const address = (server: Server) => `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -144,7 +144,7 @@ it.skipIf(!enabled)("drives CLI delegation through actual Linux containers and d
     const repo = join(import.meta.dirname, "..", "..");
     const profiles = await loadProfiles(repo);
     const base = await loadPolicySet(join(repo, "examples", "customer-config"));
-    const policies = { base: { ...base.base, allowedModels: ["gpt-5.4"], allowedBuiltinTools: ["shell" as const], allowedPermissionModes: ["allow" as const],
+    const policies = { base: { ...base.base, allowedModels: ["gpt-5.4"], hosting: { modes: ["isolated" as const, "shared" as const] },
       requirements: { processIsolation: "uid" as const, egress: "none" as const }, acknowledgedGaps: [] }, overrides: new Map() };
     const definition = HarnessDefinition.parse({
       schemaVersion: "1", name: "hybrid-file-job", version: "1.0.0", description: "Synthetic real-filesystem container qualification.",
@@ -156,7 +156,20 @@ it.skipIf(!enabled)("drives CLI delegation through actual Linux containers and d
       runners: { allowedProfiles: ["node-ts-agent", "python-agent"], defaultProfile: "node-ts-agent" },
     });
     const harness = { definition, digest: `sha256:${sha256Hex(canonicalJson(definition))}` };
-    const harnesses = new Map([[definition.name, [harness]]]);
+    const delegation = (name: string, binding: string, description: string) => ({ name, kind: "host", binding, description });
+    const coordinator = sharedHarness("hybrid-test-coordinator", {
+      instructions: "Synthetic shared coordinator; use only the provided application tools.",
+      model: { preferred: "gpt-5.4", allowed: ["gpt-5.4"] },
+      limits: { maxDurationSeconds: 90, maxInferenceTokens: 500_000 },
+      builtinTools: ["files"], permissions: { default: "deny", kinds: { read: "allow", write: "allow" } },
+      tools: [
+        delegation("delegate_job", "shared:delegate-job", "Queue durable container work and return immediately. Do not poll."),
+        delegation("get_job", "shared:get-job", "Read a delegated job's status, bounded result, and artifacts."),
+        delegation("read_job_artifact", "shared:read-job-artifact", "Read a bounded portion of a retained output artifact."),
+        delegation("import_job_artifact", "shared:import-job-artifact", "Import an output artifact into the workspace."),
+      ],
+    });
+    const harnesses = new Map([[definition.name, [harness]], [coordinator.definition.name, [coordinator]]]);
     const admission = new Admission({ harnesses, profiles, policies });
     await new Promise<void>((resolve, reject) => { upstream.once("error", reject); upstream.listen(0, "127.0.0.1", resolve); });
     const dispatcher = buildDispatcher({ store: jobs, policies, executorKey, gatewayKey, signingKey,
@@ -176,12 +189,7 @@ it.skipIf(!enabled)("drives CLI delegation through actual Linux containers and d
     let host: FastifyInstance;
     service = new SharedSessionService({
       root, store: shared, files: new SessionFileStore(pool), principals: { [principal]: githubUserId }, limits: workerLimits,
-      definition: SharedSessionDefinition.parse({
-        model: "gpt-5.4", instructions: "Synthetic shared coordinator; use only the provided application tools.", allowedHarnesses: [
-          { name: definition.name, version: definition.version, digest: harness.digest },
-        ],
-        limits: SharedSessionLimits.parse({ idleSeconds: 300, maxTurnSeconds: 90 }),
-      }),
+      admission: sharedAdmission({ harnesses, profiles, policies }, { sessionLimits: { idleSeconds: 300, maxTurnSeconds: 90 }, delegation: [definition.name] }),
       gatewayUrl: `${address(gateway.server)}/openai/v1`,
       mintToken: async (lease, turn) => {
         const response = await dispatcher.inject({ method: "POST", url: "/internal/shared/grant",
@@ -189,7 +197,7 @@ it.skipIf(!enabled)("drives CLI delegation through actual Linux containers and d
         if (response.statusCode !== 200) throw new Error("The shared grant was refused.");
         return z.object({ token: z.string() }).parse(response.json()).token;
       },
-      tools: (session, context, current) => coordinatorTools(session, context, current, { admission, profiles, jobs, delegations, maxOpenJobs: 10 }),
+      toolkit: { delegation: { admission: async () => admission, profiles: async () => profiles, jobs, delegations, maxOpenJobs: 10 } },
       report: (event) => { if (event.endsWith("_failed")) errors.push(event); },
     });
     await service.start();
@@ -206,7 +214,8 @@ it.skipIf(!enabled)("drives CLI delegation through actual Linux containers and d
     pump.start();
     const callerApi = () => buildApi({ store: jobs, listener: new JobEventListener(pool), admission, harnesses,
       authenticator: new ApiKeyAuthenticator(`${principal}:${key}`), maxOpenJobsPerPrincipal: 10, console: false,
-      shared: { url: address(host.server), key: workerKey, brokerUrl: address(broker.server) }, delegations, execution: "dedicated" });
+      shared: { url: address(host.server), key: workerKey, brokerUrl: address(broker.server) }, delegations, execution: "dedicated",
+      hosting: { harnesses, profiles, policies, deployment: { executor: "dedicated", isolatedHosts: [], sharedWorker: { transports: ["direct"], features: [...SHARED_WORKER_FEATURES] } } } });
     let api = callerApi();
     apps.push(api);
     controller = new ExecutionController({
@@ -217,7 +226,7 @@ it.skipIf(!enabled)("drives CLI delegation through actual Linux containers and d
     });
     await controller.start();
     const headers = { authorization: `Bearer ${key}` };
-    const created = await api.inject({ method: "POST", url: "/v1/sessions", headers, payload: {} });
+    const created = await api.inject({ method: "POST", url: "/v1/sessions", headers, payload: { harness: coordinator.definition.name } });
     expect(created.statusCode).toBe(201);
     const session = SharedSessionView.parse(created.json());
     sessionIds.push(session.id);

@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { SharedServerKey } from "./shared.js";
 
 /**
  * Where an application session's agent loop runs now. Each session has exactly one current placement, and
@@ -56,18 +55,6 @@ export const PlacementLookup = z.object({ sessionIds: z.array(z.string().uuid())
 export type PlacementLookup = z.infer<typeof PlacementLookup>;
 export const PlacementLookupResult = z.object({ placements: z.array(SessionPlacement).max(500) }).strict();
 export type PlacementLookupResult = z.infer<typeof PlacementLookupResult>;
-
-/**
- * Internal: connection material a placement issues for the API, which returns it with the broker's session URL.
- * The one-use ticket expires after 60 seconds and binds to the session's current placement generation.
- */
-export const ConnectionTicket = z.object({
-  sessionId: z.string().uuid(),
-  token: z.string().min(32).max(200),
-  expiresAt: z.iso.datetime(),
-  serverKey: SharedServerKey,
-}).strict();
-export type ConnectionTicket = z.infer<typeof ConnectionTicket>;
 
 /**
  * Header carrying the activation epoch on a broker-forwarded connection to the shared worker. The broker also sends

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import { PLACEMENT_EPOCH_HEADER, SharedSessionClosure, SharedSessionCreation } from "@copilot-agent/contracts";
+import { PLACEMENT_EPOCH_HEADER, SharedConnectionRequest, SharedSessionClosure, SharedSessionCreation } from "@copilot-agent/contracts";
 import { StoreError } from "@copilot-agent/job-store";
 import { createService, HttpError, registerAhpProxy, requireInternalKey, singleHeader } from "@copilot-agent/service-defaults";
 import { SharedSessionService } from "./service.js";
@@ -10,7 +10,7 @@ const Control = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("create"), principal: Principal, request: SharedSessionCreation }).strict(),
   z.object({ operation: z.literal("list"), principal: Principal }).strict(),
   z.object({ operation: z.literal("get"), principal: Principal, id: z.string().uuid() }).strict(),
-  z.object({ operation: z.literal("connect"), principal: Principal, id: z.string().uuid() }).strict(),
+  z.object({ operation: z.literal("connect"), principal: Principal, id: z.string().uuid(), request: SharedConnectionRequest.default({ transport: "direct" }) }).strict(),
   z.object({ operation: z.literal("close"), principal: Principal, id: z.string().uuid(), request: SharedSessionClosure }).strict(),
 ]);
 
@@ -35,10 +35,10 @@ export function buildSharedHost(service: SharedSessionService, key: string, brok
     const command = parsed.data;
     try {
       switch (command.operation) {
-        case "create": return await service.create(command.principal, command.request.label);
+        case "create": return await service.create(command.principal, command.request);
         case "list": return { sessions: await service.list(command.principal) };
         case "get": return (await service.get(command.principal, command.id)).view;
-        case "connect": return await service.connection(command.principal, command.id);
+        case "connect": return await service.connection(command.principal, command.id, command.request.transport);
         case "close":
           await service.close(command.principal, command.id, command.request.cancelChildren);
           return { closed: true };

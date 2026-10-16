@@ -8,9 +8,9 @@ import pg from "pg";
 import type { FastifyInstance } from "fastify";
 import { expect, inject, it } from "vitest";
 import WebSocket from "ws";
-import { SharedConnection, SharedSessionDefinition, SharedSessionLimits, SharedSessionView, SharedWorkerLimits } from "@copilot-agent/contracts";
+import { SHARED_WORKER_FEATURES, SharedConnection, SharedSessionView, SharedWorkerLimits } from "@copilot-agent/contracts";
 import { JobEventListener, JobStore, migrate, PlacementStore, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
-import { Admission, ApiKeyAuthenticator, loadHarnesses, loadPolicySet, loadProfiles, signSessionCapability } from "@copilot-agent/service-defaults";
+import { Admission, ApiKeyAuthenticator, signSessionCapability } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../src/agent-api/src/server.js";
 import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
 import { SharedSessionService } from "../../src/session-host/src/service.js";
@@ -20,6 +20,7 @@ import { DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/co
 import { buildGateway } from "../../src/inference-gateway/src/server.js";
 import { parseRoutes } from "../../src/inference-gateway/src/routes.js";
 import { localRuntimeArtifacts } from "../runtime/artifacts.js";
+import { sharedAdmission, sharedHarness, sharedRegistry } from "./fixtures/shared-harness.js";
 
 const enabled = process.env.HYBRID_SESSION_RUNTIME_TESTS === "1";
 const address = (server: FastifyInstance["server"]) => `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -114,12 +115,11 @@ it.skipIf(!enabled)("provisions protected shared sessions, accounts usage, dedup
       },
     });
     await gateway.listen({ port: 0, host: "127.0.0.1" });
+    const harness = sharedHarness("service-fixture");
+    const registry = await sharedRegistry([harness]);
     service = new SharedSessionService({
       root, store, files: new SessionFileStore(pool), principals: { [principal]: 1, [other]: 2 },
-      definition: SharedSessionDefinition.parse({
-        model: "fixture", instructions: "Reply briefly to the synthetic application message.", allowedHarnesses: [],
-        limits: SharedSessionLimits.parse({ idleSeconds: 2, tokenBudget: 1000, turnTokenBudget: 400, maxContinuations: 2 }),
-      }),
+      admission: sharedAdmission(registry, { sessionLimits: { idleSeconds: 2, tokenBudget: 1000, turnTokenBudget: 400, maxContinuations: 2 } }),
       limits: SharedWorkerLimits.parse({ residentSessions: 1, activeTurns: 1 }),
       gatewayUrl: `${address(gateway.server)}/openai/v1`,
       mintToken: async (lease, turn) => {
@@ -136,13 +136,11 @@ it.skipIf(!enabled)("provisions protected shared sessions, accounts usage, dedup
     await service.start();
     host = buildSharedHost(service, controlKey, brokerKey);
     await host.listen({ port: 0, host: "127.0.0.1" });
-    const repo = join(import.meta.dirname, "..", "..");
-    const [harnesses, profiles, policies] = await Promise.all([
-      loadHarnesses(join(repo, "examples", "customer-config")), loadProfiles(repo), loadPolicySet(join(repo, "examples", "customer-config")),
-    ]);
+    const harnesses = new Map(registry.harnesses);
+    const profiles = new Map(registry.profiles);
     dispatcher = buildDispatcher({
-      store: new JobStore(pool), policies, executorKey: "unused-executor-key-".repeat(3), gatewayKey: "unused-gateway-key-".repeat(3),
-      signingKey, broker: { store: new PlacementStore(pool), key: brokerKey },
+      store: new JobStore(pool), policies: registry.policies, executorKey: "unused-executor-key-".repeat(3),
+      gatewayKey: "unused-gateway-key-".repeat(3), signingKey, broker: { store: new PlacementStore(pool), key: brokerKey },
     });
     await dispatcher.listen({ port: 0, host: "127.0.0.1" });
     ({ app: broker } = buildBroker({
@@ -152,17 +150,27 @@ it.skipIf(!enabled)("provisions protected shared sessions, accounts usage, dedup
     await broker.listen({ port: 0, host: "127.0.0.1" });
     api = buildApi({
       store: new JobStore(pool), listener: new JobEventListener(pool), harnesses,
-      admission: new Admission({ harnesses, profiles, policies }), maxOpenJobsPerPrincipal: 10, console: false,
+      admission: new Admission({ harnesses, profiles, policies: registry.policies }), maxOpenJobsPerPrincipal: 10, console: false,
       authenticator: new ApiKeyAuthenticator(`${principal}:${apiKey};${other}:${otherKey}`),
       shared: { url: address(host.server), key: controlKey, brokerUrl: address(broker.server) },
+      hosting: { harnesses, profiles, policies: registry.policies, deployment: { isolatedHosts: [], sharedWorker: { transports: ["direct"], features: [...SHARED_WORKER_FEATURES] } } },
     });
     const headers = { authorization: `Bearer ${apiKey}` };
     expect((await api.inject({ method: "GET", url: "/v1/sessions" })).statusCode).toBe(401);
     expect((await host.inject({ method: "POST", url: "/internal/shared", payload: { operation: "list", principal } })).statusCode).toBe(401);
-    const created = await api.inject({ method: "POST", url: "/v1/sessions", headers, payload: { label: "Fixture" } });
+    expect((await api.inject({ method: "POST", url: "/v1/sessions", headers, payload: { label: "No harness" } })).statusCode).toBe(400);
+    const created = await api.inject({ method: "POST", url: "/v1/sessions", headers, payload: { harness: harness.definition.name, label: "Fixture" } });
     expect(created.statusCode).toBe(201);
     const session = SharedSessionView.parse(created.json());
     sessions.push(session.id);
+    expect(session).toMatchObject({
+      mode: "shared", placement: "shared", harness: { name: harness.definition.name, version: "1.0.0", digest: harness.digest },
+      segment: { generation: 1, placement: "shared", ahpSessionId: session.id }, limits: { tokenBudget: 1000, turnTokenBudget: 400 },
+    });
+    const relay = await api.inject({ method: "POST", url: `/v1/sessions/${session.id}/connection`, headers, payload: { transport: "github" } });
+    expect(relay.statusCode).toBe(422);
+    expect(relay.json().error.code).toBe("transport_unsupported");
+    expect(service.residentCount).toBe(0);
     expect(service.residentCount).toBe(0);
     expect(calls).toBe(0);
     expect((await api.inject({ method: "GET", url: `/v1/sessions/${session.id}`, headers: { authorization: `Bearer ${otherKey}` } })).statusCode).toBe(404);
@@ -171,6 +179,7 @@ it.skipIf(!enabled)("provisions protected shared sessions, accounts usage, dedup
     expect(connected.headers["cache-control"]).toBe("no-store");
     const connection = SharedConnection.parse(connected.json());
     expect(connection.url).toBe(`${address(broker.server).replace("http:", "ws:")}/sessions/${session.id}`);
+    expect(connection).toMatchObject({ transport: "direct", ahpSessionId: session.id });
     expect(await brokeredServerKey({ ...connection, url: `${address(host.server).replace("http:", "ws:")}/sessions/${session.id}` })).toBe(401);
     expect(await brokeredServerKey(connection)).toMatchObject({ keyId: connection.serverKey.keyId, publicKey: connection.serverKey.publicKey });
     expect(await brokeredServerKey(connection)).toBe(401);

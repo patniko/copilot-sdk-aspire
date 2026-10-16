@@ -9,3 +9,4 @@ export * from "./host.js";
 export * from "./shared.js";
 export * from "./placement.js";
 export * from "./artifacts.js";
+export * from "./hosting.js";
