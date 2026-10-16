@@ -67,7 +67,10 @@ Use [configurator development mode](CONFIGURATOR.md#developing-the-configurator)
 The AppHost also builds a small .NET 10 hosting integration referenced by `aspire.config.json`.
 After changing it, run `dotnet build deploy\CopilotAgent.Hosting\CopilotAgent.Hosting.csproj` and
 `aspire restore --apphost apphost.mts` before AppHost type-checking. The integration analyzers are enabled
-and warnings are errors. Its generated methods are not hand-maintained.
+and warnings are errors, including NuGet vulnerability audit warnings. The project suppresses one advisory,
+[GHSA-qhrr-8q5h-9q3h](https://github.com/advisories/GHSA-qhrr-8q5h-9q3h), for `MessagePack` 2.5.302, which
+`Aspire.Hosting` 13.6.0 brings in transitively and which has no patched release yet; remove the suppression once an
+Aspire update brings a fixed version. Its generated methods are not hand-maintained.
 
 For a focused test run after building:
 
