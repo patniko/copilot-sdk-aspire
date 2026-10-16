@@ -937,6 +937,9 @@ The functional demonstration, which doubles as the local acceptance path:
    disallowed mode cannot be selected.
 6. Hand off from a shared triage harness to an isolated coding harness with summary history.
 
+*(2026-10-16: all six steps ran on the local AppHost with a paid model; see the
+[local demonstration](#local-demonstration-with-a-real-model).)*
+
 When comparisons start, predeclare workloads, trial counts, and pass criteria, and report negative results.
 
 ## 14. Delivery sequence and acceptance gates
@@ -967,8 +970,9 @@ Stage status on 2026-10-16:
 | 7. Azure | Not started | None |
 | 8. Comparison | Not started; deferred | None |
 
-The local evidence used synthetic inference, one real GitHub account, and locally built runtime artifacts
-([runtime capabilities](#runtime-capabilities)). It is not paid-model, two-account, or Azure evidence, and each
+The stage gates used synthetic inference, one real GitHub account, and locally built runtime artifacts
+([runtime capabilities](#runtime-capabilities)). The section 13 demonstration then ran on the same local build with a
+paid model ([record](#local-demonstration-with-a-real-model)). None of it is two-account or Azure evidence, and each
 record lists the limitations that remain.
 
 Stages 2 and 3 can proceed in parallel after stage 1. Stages 4 and 5 depend on stages 2 and 3, and stage 6 reuses
@@ -2373,3 +2377,201 @@ Limitations: N5 is not implemented. An application `setMode` after publication d
 The host does not project answers from the owning SDK client, so an attached client can keep showing a confirmation
 that the application already answered until the tool completes. Handler verdicts and `followAssistedApproval` exist
 only in the Node SDK. These are local builds from unmerged branches, not released runtime artifacts.
+
+### Local demonstration with a real model
+
+Recorded 2026-10-16 on branch `patniko-real-model-demo`: the [section 13](#13-measurements-and-demonstration)
+demonstration on the local AppHost with the paid Foundry deployment `grok-4.6`, to check end to end what the synthetic
+gates qualify. The branch starts from the integration branch at `3d327f6` and has commits `b39558e` (fixes, with
+tests), `5737b86` (docs) and `447f38a` (a stricter session-container gate); merges of the integration branch at
+`5c68724` (`beec294`), `2ebf07d` (`8a7bc62`) and `032c9df` (`d970f0a`); fast-forwards to it at `c82c6d4`, `37aac23`
+and `eb606c3`; and the commit that adds this entry. Local only: Windows ARM64, Docker Desktop with linux/arm64
+containers, one real GitHub account.
+
+Setup:
+
+- **Model.** `grok-4.6` through the inference gateway, which used the developer's Azure CLI identity; every model
+  request was billed.
+- **Runtime.** `copilot-agent-runtime-hybrid` at `62a6b07a10a` (artifacts `d89cfe45b29`, hosting `006b030`; see
+  [runtime capabilities](#runtime-capabilities)): the Windows pair for the shared worker, which the local AppHost runs
+  on the host from `pnpm build`; the CLI `dist-cli/index.js` (`e520ae56…`); and the Linux bundle
+  `hybrid-linux-arm64-d89cfe45b29-host-006b030` in the container images.
+- **Images.** Each run used a session-container image built from its tree: `sha256:85ad88be…` (`beec294`),
+  `sha256:9a45972a…` (`8a7bc62`, also used on `37aac23`, which changed none of its sources), and `sha256:6adb3920…`
+  (`eb606c3`). After the final rerun, a rebuild from `eb606c3` was fully cached and has the same 10,849 application,
+  runtime and SDK files; its ID (`sha256:8bfa0200…`) differs only in build provenance. The AppHost built each run's
+  owner-host image (`sha256:20d9866d…` on `eb606c3`). No step starts the executor, and the local AppHost does not use
+  the session-host image.
+- **AppHost.** `aspire start --apphost apphost.mts --isolated` with `hybrid-hosting`, `hybrid-principals` (the `dev`
+  principal bound to the account), `hybrid-runtime-path`, `session-containers`, `session-container-image`,
+  `orchestrator-workers`, `owner-hosts` `[{"harness":"interactive-demo","transport":"both"}]`, `demo-host-owner`,
+  `demo-host-runtime-dir`, and `hybrid-worker-limits` `{"executionContainers":4,"containersPerPrincipal":4}` (two
+  workers beside a session container). The runs before the final one also set `hybrid-session-limits`
+  `{"turnTokenBudget":100000,"maxTurnSeconds":300}` (see [findings](#findings-from-the-real-model-runs)); the final
+  rerun used the defaults that `eb606c3` adopted.
+- **Environment.** The AppHost and every CLI ran without `AUTO_APPROVAL` and the `COPILOT_*` variables that the GitHub
+  Copilot app injects into its sessions' processes, which a user's machine does not have. The driver set only a private
+  `COPILOT_HOME` and `COPILOT_CLI_ENABLED_FEATURE_FLAGS` (`AHP_CLIENT`, or `RELAY_CLIENT` for the relay), and kept
+  `GH_TOKEN` and `GH_HOST`.
+- **Customer workspace** (ignored, not committed):
+  - A remote MCP catalog entry for Microsoft Learn (`https://learn.microsoft.com/api/mcp`, tool
+    `microsoft_docs_search`; public, unauthenticated and read-only). `shared-researcher` requests it, with
+    `permissions.default: "ask"` because remote MCP tools use the default rule.
+  - `container-coder`: isolated; files and shell; reads `allow`, writes and shell `ask`, default `deny`.
+  - `promotable-coder`: promotable, with promotion `size: "small"` and `approval: "ask"`.
+  - `triage-desk`: shared, with one handoff to `container-coder` (`history: "summary"`, `approval: "ask"`).
+  - The orchestrator examples (`hybrid-orchestrator`, `hybrid-builder`, `hybrid-reviewer` and their policy overrides),
+    and `interactive-demo` as the owner host.
+- **Driver.** The real CLI was started by `configurator/server/connect-host.ts`, the `pnpm host:connect` script, run
+  through tsx from a scratch directory, in node-pty with a headless xterm, as the CLI gates do. Approvals were answered
+  in the terminal, and worker requests through `GET /v1/worker-input-requests` and
+  `POST /v1/sessions/{id}/input-requests/{rid}/respond`. Outcomes were checked through the API, PostgreSQL, Docker, and
+  the runtimes' event logs. The driver and its redacted transcripts stay outside the repository.
+
+Runs:
+
+| Run | Tree | Outcome |
+| --- | --- | --- |
+| Exploratory | `3d327f6`, in the Copilot app's environment | Steps 1, 2 and 5 found the two defects fixed in `b39558e` (see findings). Superseded, because the app's injected variables are not a user's environment |
+| First | `beec294` for steps 1, 2, 3 and 5; `8a7bc62` for steps 4 and 6 | All passed except Assisted Permissions in step 5, which the runtime refused before the shared-mode fix in `2ebf07d`. Step 4's first attempt, on `beec294`, failed on model behavior (below); it passed on `8a7bc62` with a revised first message |
+| Full rerun | `37aac23`, with the turn-limit override | Steps 1, 4 and 6 passed. In steps 2 and 3 the product did what was asked, but the driver timed out: the model ended step 2 with "tools -ok", with a space, and in step 3 the driver typed its next prompt while the relaunched CLI was still resuming, so the prompt was lost. Step 5 did not run, because it resumes step 2's session. The driver now accepts spaced markers and waits for the launcher's "Resuming session" notice and the continued turn |
+| Final rerun | `eb606c3`, default limits | All six passed in 8 minutes 39 seconds: step 1 in 105 s, 2 in 62 s, 5 in 51 s, 3 in 75 s, 4 in 139 s, and 6 in 87 s, in that order |
+
+Results of the final rerun by step. Token counts are the gateway's usage for `grok-4.6` and vary between runs; the
+earlier runs matched unless noted.
+
+1. **Connect to each mode.** All four connections passed, each with one short turn:
+   - `shared-researcher` over direct WSS: the launcher created the session (`mode` and `placement` `shared`,
+     generation 1) and attached through the broker. Its limits were the new defaults (a 100,000-token turn budget and a
+     300-second turn deadline) and the harness's 200,000-token budget. One model request: 4,253 input and 19 output
+     tokens; no allocation.
+   - `container-coder` over direct WSS: the connection started a session container (`small`: 0.5 CPU, 1 GiB, `CapDrop:
+     ALL`, `no-new-privileges`, its volume at `/data`). The person approved `uname -sm; id -u; pwd; echo
+     from-the-container > note.txt; cat note.txt` in the CLI, and it printed `Linux aarch64`, `10001`,
+     `/data/execution/workspace` and the note.
+   - `interactive-demo` on its owner host over direct WSS, through the broker's `/hosts/interactive-demo`. The person
+     approved `uname -sm; hostname`, which printed the host container's ID, and the host attributed the CLI's
+     `ahpSessionId` (12,692 input tokens).
+   - The same owner-host session over the GitHub relay (`--transport github --resume <ahpSessionId>`), through the
+     host's own Mission Control environment, `Aspire interactive-demo (patniko)`. It replayed the conversation, and the
+     model answered with that hostname from history without running anything (19,193 input tokens for the session so
+     far).
+2. **Shared tools, web, and a remote MCP tool with no containers.** In a new `shared-researcher` session, one turn
+   called `microsoft_docs_search`, fetched `https://example.com/` (HTTP 200), wrote both findings to
+   `notes/findings.md` with `write_workspace_file`, and added a task with `update_task_list`. The person approved the
+   search, the fetch, and the write (3 prompts; the task list needs none). The search result reached the model inline,
+   bounded and without a spill pointer (16,762 characters as escaped in the runtime's event log). The turn took 4 model
+   requests, 29,706 input and 240 output tokens, and 33 s, more than the old 20,000-token turn default allowed. A second
+   turn tried `http://169.254.169.254/latest/meta-data/`; the person approved, and the egress filter refused it ("The
+   destination resolves to a cloud metadata address, which shared sessions may not reach."), in 2 requests and 17,942
+   input tokens. The session had no `execution_allocations` row and started no container. On `beec294` the first turn
+   took 3 requests and 21,230 input tokens; before `b39558e` it took 7 (see findings).
+3. **Promotion.** A `promotable-coder` session started `shared` (generation 1, no allocation). Asked to run shell
+   commands, the model called `promote_session`; the person approved it in the CLI, the turn ended, and the move
+   committed: placement `container`, generation 2, a `small` session allocation. The launcher printed "Session … moved
+   to a new placement. Reconnecting in this terminal..." and "Resuming session … at its new placement." and restarted
+   the CLI in the same terminal, which asked for folder trust again. The container's notice mapped the old workspace
+   path to `/data/execution/workspace` and said nothing was replayed. The agent continued, and the person approved its
+   commands, which printed `Linux aarch64`, `10001` and `/data/execution/workspace` and wrote `hello.txt`. A later turn
+   listed and read the file in the container. `POST /v1/sessions/{id}/demote` and `/placement` returned 404, and an
+   `UPDATE` to `placement='shared'` failed with "A session cannot return to shared placement." Before the move the
+   shared session used 2 model requests (8,068 input and 68 output tokens).
+4. **Orchestrator workers.** `hybrid-orchestrator` started `builder` (`hybrid-builder`, `small`: 0.5 CPU, 1 GiB,
+   `manual`, shared volume read-write) and `reviewer` (`hybrid-reviewer`, `medium`: 1 CPU, 2 GiB, `assisted` with
+   inherited authority, shared volume read-only) in one turn without a CLI prompt, and both ran at once. Each
+   container had its own volume at `/data` and the conversation's volume at `/shared` (`ro` for the reviewer), with
+   `CapDrop: ALL`.
+   - The builder's shell command reached the person through `GET /v1/worker-input-requests`, and the person's approval
+     through `POST /v1/sessions/{id}/input-requests/{rid}/respond` ran it.
+   - The reviewer's runtime recorded the person's messages (`session.inherited_authority_changed`), and the judge
+     approved its `ls -la /shared` (`decisionSource: "assisted_approval"`).
+   - The person asked the coordinator to message both workers and said they did not authorize the reviewer's write in
+     advance. The builder's `sleep 300` reached the person, who approved it. The judge did not approve the reviewer's
+     write to `/shared/review.txt`; it reached the person, who denied it, and so did the reviewer's retry through the
+     shell.
+   - `interrupt_worker` interrupted the builder, and `archive_worker` stopped both: `stopReason: "archived"`,
+     `capacityReleased`, both allocations `retired`, no worker containers left, volumes kept. All four requests were
+     answered by the principal; the coordinator has no tool that answers them.
+   - The coordinator used 7 turns, 12 model requests, and 67,127 input and 971 output tokens. The builder used 16,036
+     tokens and the reviewer, including its judge, 47,436. The earlier runs' coordinators used 56,334 and 73,341 input
+     tokens. On `8a7bc62` the reviewer's retry was refused without a prompt, because archiving had already revoked its
+     grant.
+5. **Approval modes from the CLI.** In step 2's session, `/permissions` offered exactly Manual Approval ✓ and Assisted
+   Permissions, with no Allow All. Choosing Assisted Permissions changed the footer and recorded
+   `session.permissions_changed`. The next turn appended "assisted check" to `notes/findings.md` with
+   `edit_workspace_file`: the judge approved it (`decisionSource: "assisted_approval"`), and no prompt reached the
+   person. `/permissions allow-all` failed with "The host does not allow approval mode 'allow-all' in this session.",
+   and `/permissions manual` restored Manual Approval. On `beec294`, before the shared-mode fix in `2ebf07d`, choosing
+   Assisted Permissions failed in this environment ("Couldn't enable Assisted Permissions"), because the runtime offered
+   assisted mode only behind the `AUTO_APPROVAL` flag that the Copilot app had been supplying.
+6. **Handoff.** `triage-desk` wrote `notes/request.md` and called `transfer_to_container_coder` with a reason and a
+   summary. The person approved the write and the transfer in the CLI, and the handoff committed 11.5 s after it was
+   requested: `history: "summary"`, `approvedBy: "person"`, generation 1 `shared` to generation 2 `container`, with a
+   new `ahpSessionId`. The launcher printed the move and resumed the target's session in the same terminal. The coding
+   agent took over from the notice; the person approved its commands, and its `hello.sh` printed "hello from the coder"
+   beside the moved `notes/request.md`. The person's first message included a codename that the triage desk was asked
+   to keep to itself. No file in the coding container contains it, while the shared worker's retained source history
+   (`events.jsonl` and `workspace.yaml`) does. Before the handoff the triage desk used 4 model requests (17,115 input
+   and 239 output tokens).
+
+Totals for the final rerun, from the ledger: the shared worker made 29 model requests (176,868 input and 1,792 output
+tokens), session containers 15 (94,341 and 727), and workers 13 (63,472 tokens); the owner host reported 19,193 input
+and 67 output tokens. That is about 356,000 tokens. The largest shared turn used 32,817 tokens, and three turns
+exceeded the old 20,000-token default.
+
+#### Findings from the real-model runs
+
+Defects in landed slices, fixed in `b39558e` with tests:
+
+- **Hosted review prompts were refused for `deny`-default harnesses.** In session containers, owner hosts, and the
+  managed demo host, the pre-tool guard asks a person to review each tool whose kind is `ask`. The runtime raises that
+  review as a `hook` request, and `hostPermissionHandler` mapped the kind `hook` through the harness default. Every
+  such tool was therefore rejected for harnesses whose default is `deny`, including the shipped `interactive-demo`,
+  while the CLI still showed "Approve once". With an `allow` default it would have been approved with nobody asked.
+  The handler now applies the gated tool's rule and otherwise leaves the request to the attached person. The earlier
+  gates used `allow` defaults. Without the fix, step 1's container and owner-host shells, step 3's promoted container,
+  and step 6's coding container could not run a command. `447f38a` makes the session-container gate use a `deny`
+  default with reviewed writes and shell; it passes on the fixed image and fails on one built from `2ebf07d`.
+- **Large shared tool results were unreadable.** The runtime replaces a tool result above 20 KiB with a pointer to a
+  temporary file and tells the model to use `grep` and `view`, which shared placement does not have; the pointer also
+  named the worker's path. The real Learn search returned 22.7 KB. The model tried four workspace calls on the
+  pointer, then fetched the article page instead: 7 model requests and 38.5k input tokens for step 2's first turn.
+  Shared sessions now disable that spill, which holds for turns no client drives, and remote MCP results are bounded to
+  16 KiB of UTF-8 with a truncation note, because with a client attached runtime `d89cfe45b29` spills anyway. The same
+  turn then took 3 requests and 21.2k input tokens. The shared-mode slice later bounded every shared tool result
+  ([follow-up](#follow-up-bounded-tool-results-and-real-model-limits)); the final rerun used those bounds.
+
+Reported to other slices and the runtime:
+
+- With a client attached, the runtime ignores a session's `largeOutput: { enabled: false }`
+  (`shared-large-output-cli.test.ts` reproduces it). The shared-mode slice now keeps every shared tool result within
+  16 KiB instead; the runtime setting is a recorded follow-up.
+- The default `turnTokenBudget` of 20,000 fit about three model requests, because each request carried about 4,200
+  tokens of base prompt and tools. The runs before `eb606c3` raised it through `hybrid-session-limits`; `eb606c3` made
+  100,000 tokens and 300 seconds the defaults, and the final rerun needed no override.
+- Idle eviction (300 s) closes an attached CLI's connection. Before the launcher's supervisor (stage 5), the CLI
+  retried with its consumed ticket, received 401, and said the host no longer had the session, so the person had to
+  rerun the launcher with `--resume`. The supervisor now reconnects in the same terminal, but reports the eviction as
+  "moved to a new placement" (seen on `37aac23` while the driver waited). Recorded as a follow-up.
+- The orchestrator's instructions described files under `/shared`, but `read_shared_file` refused `/shared/plan.txt`
+  and needed `plan.txt`; the model recovered. Fixed in the workers' slice (`0d597eb`).
+- The CLI confirms `/permissions manual` with "Your organization requires Manual Approval for this session, so Assisted
+  Permissions were turned off.", which reads as if policy forced the change (runtime wording).
+
+Model behavior, not product defects:
+
+- `grok-4.6` wrote requested end-of-reply markers in lower case although asked for upper case, and once with a space
+  ("tools -ok"); the driver matches them regardless of case and spacing.
+- Following its instruction to archive each worker when its work is done, the coordinator archived both workers as
+  soon as they completed, so later messages failed ("The worker has stopped") and the names could not be reused. The
+  person's first message now asks it to keep them.
+- After the person denied the reviewer's write, the reviewer retried it through the shell. The retry reached the
+  person again, or was refused once archiving had revoked the worker's grant.
+- The coding agent first looked for the moved files under `/data/execution/input`, then found them in its working
+  directory, as the handoff notice said.
+
+Limitations: one real account, so every principal-isolation claim rests on the synthetic gates; local only; the CLI
+ran with staff feature flags (`AHP_CLIENT`, `RELAY_CLIENT`); a CLI permission prompt can stay on screen after the host
+has answered it (a runtime limitation recorded above), so some of the driver's keypresses had no effect; after each
+move the relaunched CLI asked for folder trust again; the demonstration is not a measurement (section 13 metrics remain
+deferred), and turn counts and token use vary between runs.
