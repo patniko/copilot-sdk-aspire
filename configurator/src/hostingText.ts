@@ -69,7 +69,10 @@ export const APPROVAL_INFO: Record<ApprovalMode, { label: string; detail: string
 export const APPROVAL_ORDER = Object.keys(APPROVAL_INFO) as ApprovalMode[];
 
 export const TRANSPORT_INFO: Record<HostingTransport, { label: string; detail: string }> = {
-  direct: { label: "Direct WSS", detail: "Copilot CLI connects straight to the host with a one-use ticket and a pinned server key." },
+  direct: {
+    label: "Direct WSS",
+    detail: "Copilot CLI connects over WebSocket with a one-use ticket and a pinned server key: through the connection broker for shared and session-container sessions, or straight to an owner host.",
+  },
   github: { label: "GitHub relay", detail: "Copilot CLI attaches through Mission Control. Isolated hosts only, for their owner." },
 };
 

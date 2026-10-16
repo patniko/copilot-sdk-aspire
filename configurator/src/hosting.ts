@@ -162,6 +162,8 @@ export interface HarnessConnection {
   label: string;
   command?: string;
   disabledReason?: string;
+  /** The launcher creates an application session (shared worker or session container) and prints its --resume command. */
+  createsSession?: boolean;
 }
 
 /** What hosts a harness in one deployment, what keeps costing while idle, and how Copilot CLI connects. */
@@ -177,6 +179,14 @@ export function launcherCommand(harness: string, target: TryTarget, transport: "
   return `pnpm host:connect --harness ${harness} --target ${target} --transport ${transport}`;
 }
 
+const OWNER_HOST_COST = "Always on: an owner host runs, and costs compute, for as long as it is deployed, whether or not anyone is connected.";
+const SESSION_CONTAINER_COST = "Each session's container stops after an idle period and keeps its volume; a new or resumed session waits for its container to start.";
+
+/**
+ * A harness's host and connection actions as `pnpm host:connect --harness` routes them: shared placement goes to the
+ * shared worker; container placement goes to session containers over every transport they offer, and otherwise to
+ * the harness's owner host. The service's view decides what is available to the caller.
+ */
 export function harnessHostRow(view: HarnessHostingView, hosts: HostingHostsView, target: TryTarget): HarnessHostRow {
   if (view.interaction === "batch") {
     return {
@@ -189,15 +199,21 @@ export function harnessHostRow(view: HarnessHostingView, hosts: HostingHostsView
   let hostDetail: string;
   let costNote: string | undefined;
   const ownerHost = hosts.isolatedHosts.find((entry) => entry.harness === view.harness);
+  const sessionContainers = view.placement === "container" ? hosts.sessionContainers : undefined;
   if (view.placement === "container") {
-    if (ownerHost) {
+    if (sessionContainers && ownerHost) {
+      const over = sessionContainers.transports.map((transport) => TRANSPORT_INFO[transport].label).join(" and ");
+      host = "Session containers and an owner host";
+      hostDetail = `Over ${over}, a container per session, stopped when idle and resumed from its volume; over other transports, this harness's owner host, for its owner only.`;
+      costNote = `${OWNER_HOST_COST} ${SESSION_CONTAINER_COST}`;
+    } else if (ownerHost) {
       host = "Owner host";
       hostDetail = "A dedicated container for this harness, connectable by its owner only.";
-      costNote = "Always on: an owner host runs, and costs compute, for as long as it is deployed, whether or not anyone is connected.";
-    } else if (hosts.sessionContainers) {
+      costNote = OWNER_HOST_COST;
+    } else if (sessionContainers) {
       host = "Session containers";
       hostDetail = "A container per session, stopped when idle and resumed from its volume.";
-      costNote = "No idle compute; each new or resumed session waits for a container to start.";
+      costNote = SESSION_CONTAINER_COST;
     } else {
       host = "No host";
       hostDetail = "No isolated host or session containers serve this harness here.";
@@ -218,17 +234,23 @@ export function harnessHostRow(view: HarnessHostingView, hosts: HostingHostsView
   const blocking = view.problems[0];
   const connections = view.transports.map((transport): HarnessConnection => {
     const label = TRANSPORT_INFO[transport.transport].label;
+    const disabled = (disabledReason: string): HarnessConnection => ({ transport: transport.transport, label, disabledReason });
     const problem = blocking ?? transport.problem;
-    if (problem || !transport.available) {
-      return { transport: transport.transport, label, disabledReason: problem ? describeProblem(problem) : `${label} is not available.` };
+    if (problem || !transport.available) return disabled(problem ? describeProblem(problem) : `${label} is not available.`);
+    const command = launcherCommand(view.harness, target, transport.transport);
+    if (view.placement === "shared" || sessionContainers?.transports.includes(transport.transport)) {
+      // The launcher creates application sessions on the local stack only.
+      if (target !== "local") {
+        return disabled(
+          view.placement === "shared"
+            ? "The launcher connects to shared hosting locally only; Azure qualification remains open."
+            : "The launcher connects to session containers locally only; Azure qualification remains open.",
+        );
+      }
+      return { transport: transport.transport, label, command, createsSession: true };
     }
-    if (view.placement === "shared") {
-      return target === "local"
-        ? { transport: transport.transport, label, command: launcherCommand(view.harness, target, transport.transport) }
-        : { transport: transport.transport, label, disabledReason: "The launcher connects to shared hosting locally only; Azure qualification remains open." };
-    }
-    if (ownerHost) return { transport: transport.transport, label, command: launcherCommand(view.harness, target, transport.transport) };
-    return { transport: transport.transport, label, disabledReason: "The launcher cannot connect to per-session containers yet." };
+    if (ownerHost?.transports.includes(transport.transport)) return { transport: transport.transport, label, command };
+    return disabled(`No host here offers the ${label}.`);
   });
   return { host, hostDetail, ...(costNote ? { costNote } : {}), connections };
 }

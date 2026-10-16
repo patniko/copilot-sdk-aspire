@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { HostingPageInfo, TryTarget } from "../../server/types";
+import type { HarnessHostingView, HostingHostsView, HostingPageInfo, TryTarget } from "../../server/types";
 import { api, errorMessage } from "../api";
 import { Badge, CopyButton, Spinner } from "../components/ui";
 import { harnessHostRow } from "../hosting";
@@ -65,59 +65,68 @@ export function HarnessHostingRows({ target }: { target: TryTarget }) {
           </p>
         )}
         {overview && overview.harnesses.length === 0 && <p className="text-sm fg-muted">The service has no published harnesses.</p>}
-        {overview?.harnesses.map((view) => {
-          const row = harnessHostRow(view, overview.hosts, target);
-          const status = STATUS_BADGES[view.status];
-          const rowProblem = view.problems[0] ? describeProblem(view.problems[0]) : undefined;
-          return (
-            <div key={view.harness} className="space-y-2 border-b border-muted pb-3 last:border-b-0 last:pb-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-semibold">{view.harness}</span>
-                <span className="font-mono text-xs fg-muted">v{view.version}</span>
-                <Badge tone="done">{view.interaction === "batch" ? "Batch jobs" : MODE_INFO[view.mode].label}</Badge>
-                <Badge tone={status.tone}>{status.label}</Badge>
-              </div>
-              <p className="text-sm">
-                <span className="font-medium">{row.host}.</span> <span className="fg-muted">{row.hostDetail}</span>
-              </p>
-              {row.costNote && <p className="text-xs fg-attention">{row.costNote}</p>}
-              {rowProblem && <p className="text-sm">{rowProblem}</p>}
-              {view.transports.length > 0 && (
-                <div className="flex flex-wrap gap-2">
-                  {view.transports.map((transport) => (
-                    <Badge key={transport.transport} tone={transport.available && !rowProblem ? "green" : "neutral"} title={transport.problem?.message}>
-                      {TRANSPORT_INFO[transport.transport].label}: {transport.available ? "available" : transport.allowed ? "unavailable" : "not allowed"}
-                    </Badge>
-                  ))}
-                </div>
-              )}
-              <div className="flex flex-wrap items-start gap-3">
-                {view.interaction === "batch" ? (
-                  <button type="button" className="btn-secondary btn-sm" disabled={view.status !== "ready"} onClick={() => setView("try")}>
-                    Run a job in Try it
-                  </button>
-                ) : (
-                  row.connections.map((connection) =>
-                    connection.command ? (
-                      <CopyButton key={connection.transport} label={`Copy ${connection.label} launcher`} text={connection.command} />
-                    ) : (
-                      <div key={connection.transport} className="max-w-md">
-                        <button type="button" className="btn-secondary btn-sm" disabled title={connection.disabledReason}>
-                          Connect over {connection.label}
-                        </button>
-                        {connection.disabledReason !== rowProblem && <p className="mt-1 text-xs fg-muted">{connection.disabledReason}</p>}
-                      </div>
-                    ),
-                  )
-                )}
-              </div>
-              {view.placement === "shared" && row.connections.some((connection) => connection.command) && (
-                <p className="text-xs fg-muted">The launcher starts a new conversation and prints the --resume command for returning to it.</p>
-              )}
-            </div>
-          );
-        })}
+        {overview?.harnesses.map((view) => <HarnessHostingRow key={view.harness} view={view} hosts={overview.hosts} target={target} />)}
       </div>
     </section>
+  );
+}
+
+/** One harness's row: mode, status, host and cost, transports, and the launcher actions `harnessHostRow` derives. */
+export function HarnessHostingRow({ view, hosts, target }: { view: HarnessHostingView; hosts: HostingHostsView; target: TryTarget }) {
+  const { setView } = useApp();
+  const row = harnessHostRow(view, hosts, target);
+  const status = STATUS_BADGES[view.status];
+  const rowProblem = view.problems[0] ? describeProblem(view.problems[0]) : undefined;
+  const sessionLaunchers = row.connections.filter((connection) => connection.command && connection.createsSession).map((connection) => connection.label);
+  return (
+    <div className="space-y-2 border-b border-muted pb-3 last:border-b-0 last:pb-0">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-semibold">{view.harness}</span>
+        <span className="font-mono text-xs fg-muted">v{view.version}</span>
+        <Badge tone="done">{view.interaction === "batch" ? "Batch jobs" : MODE_INFO[view.mode].label}</Badge>
+        <Badge tone={status.tone}>{status.label}</Badge>
+      </div>
+      <p className="text-sm">
+        <span className="font-medium">{row.host}.</span> <span className="fg-muted">{row.hostDetail}</span>
+      </p>
+      {row.costNote && <p className="text-xs fg-attention">{row.costNote}</p>}
+      {rowProblem && <p className="text-sm">{rowProblem}</p>}
+      {view.transports.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {view.transports.map((transport) => (
+            <Badge key={transport.transport} tone={transport.available && !rowProblem ? "green" : "neutral"} title={transport.problem?.message}>
+              {TRANSPORT_INFO[transport.transport].label}: {transport.available ? "available" : transport.allowed ? "unavailable" : "not allowed"}
+            </Badge>
+          ))}
+        </div>
+      )}
+      <div className="flex flex-wrap items-start gap-3">
+        {view.interaction === "batch" ? (
+          <button type="button" className="btn-secondary btn-sm" disabled={view.status !== "ready"} onClick={() => setView("try")}>
+            Run a job in Try it
+          </button>
+        ) : (
+          row.connections.map((connection) =>
+            connection.command ? (
+              <CopyButton key={connection.transport} label={`Copy ${connection.label} launcher`} text={connection.command} />
+            ) : (
+              <div key={connection.transport} className="max-w-md">
+                <button type="button" className="btn-secondary btn-sm" disabled title={connection.disabledReason}>
+                  Connect over {connection.label}
+                </button>
+                {connection.disabledReason !== rowProblem && <p className="mt-1 text-xs fg-muted">{connection.disabledReason}</p>}
+              </div>
+            ),
+          )
+        )}
+      </div>
+      {sessionLaunchers.length > 0 && (
+        <p className="text-xs fg-muted">
+          The {sessionLaunchers.join(" and ")} {sessionLaunchers.length > 1 ? "launchers start" : "launcher starts"} a new conversation and{" "}
+          {sessionLaunchers.length > 1 ? "print" : "prints"} the --resume command for returning to it. Add --cli &lt;path&gt; to run a Copilot CLI that
+          matches the hosting runtime.
+        </p>
+      )}
+    </div>
   );
 }

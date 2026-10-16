@@ -4,7 +4,7 @@ import type { HarnessHostingView, HostingHostsView } from "../server/types";
 import { HostingDiagram } from "../src/components/HostingDiagram";
 import { harnessHostRow, hostingObservation, hostingPlacement, hostingTopology, HOSTING_HEIGHT, HOSTING_NODE_HEIGHT, HOSTING_NODE_WIDTH, HOSTING_WIDTH } from "../src/hosting";
 import { HostingView } from "../src/views/Hosting";
-import { HarnessHostingRows } from "../src/views/HostingHarnesses";
+import { HarnessHostingRow, HarnessHostingRows } from "../src/views/HostingHarnesses";
 
 vi.mock("../src/state", () => ({ useApp: () => ({
   settings: { local: { demoHost: { transport: "github", owner: "synthetic-owner" } }, targets: [] },
@@ -128,6 +128,18 @@ const transportUnsupported = {
   available: false,
   problem: { code: "transport_unsupported" as const, message: "Shared hosting supports direct WSS only; the GitHub relay serves isolated hosts." },
 };
+/** Session containers as agent-api reports them, and the relay view `evaluateHosting` gives an isolated harness they serve alone. */
+const sessionContainers: HostingHostsView = { executor: "pool", isolatedHosts: [], sessionContainers: { transports: ["direct"], features: [] } };
+const noRelay = {
+  transport: "github" as const,
+  allowed: true,
+  available: false,
+  problem: {
+    code: "hosting_unavailable" as const,
+    message: "No host for 'chat' offers the GitHub relay.",
+    prerequisite: { kind: "transport" as const, name: "github" as const },
+  },
+};
 
 describe("per-harness hosting rows", () => {
   it("connects to an owner host with the per-harness launcher and notes its always-on cost", () => {
@@ -146,7 +158,12 @@ describe("per-harness hosting rows", () => {
     const local = harnessHostRow(shared, sharedWorker, "local");
     expect(local.host).toBe("Shared worker");
     expect(local.costNote).toContain("a session itself starts no container");
-    expect(local.connections[0]).toEqual({ transport: "direct", label: "Direct WSS", command: "pnpm host:connect --harness chat --target local --transport direct" });
+    expect(local.connections[0]).toEqual({
+      transport: "direct",
+      label: "Direct WSS",
+      command: "pnpm host:connect --harness chat --target local --transport direct",
+      createsSession: true,
+    });
     expect(local.connections[1]?.disabledReason).toBe("Shared hosting supports direct WSS only; the GitHub relay serves isolated hosts.");
     expect(harnessHostRow(shared, sharedWorker, "azure").connections[0]?.disabledReason).toContain("locally only");
   });
@@ -161,9 +178,71 @@ describe("per-harness hosting rows", () => {
     expect(row.host).toBe("No shared worker");
     expect(row.connections[0]?.disabledReason).toBe("Shared hosting needs the shared worker. Needs the harness-driven shared worker.");
     expect(row.connections.every((connection) => !connection.command)).toBe(true);
-    const sessions = harnessHostRow(view({}), { executor: "pool", isolatedHosts: [], sessionContainers: { transports: ["direct"], features: [] } }, "local");
-    expect(sessions.host).toBe("Session containers");
-    expect(sessions.connections[0]?.disabledReason).toBe("The launcher cannot connect to per-session containers yet.");
+  });
+
+  it("connects to session containers over direct WSS locally, and keeps the relay disabled with its reason", () => {
+    const isolated = view({ transports: [{ transport: "direct", allowed: true, available: true }, noRelay] });
+    const local = harnessHostRow(isolated, sessionContainers, "local");
+    expect(local.host).toBe("Session containers");
+    expect(local.costNote).toBe(
+      "Each session's container stops after an idle period and keeps its volume; a new or resumed session waits for its container to start.",
+    );
+    expect(local.connections).toEqual([
+      { transport: "direct", label: "Direct WSS", command: "pnpm host:connect --harness chat --target local --transport direct", createsSession: true },
+      { transport: "github", label: "GitHub relay", disabledReason: "No host for 'chat' offers the GitHub relay. Needs the GitHub relay on its host." },
+    ]);
+    expect(harnessHostRow(isolated, sessionContainers, "azure").connections[0]).toEqual({
+      transport: "direct",
+      label: "Direct WSS",
+      disabledReason: "The launcher connects to session containers locally only; Azure qualification remains open.",
+    });
+  });
+
+  it("sends direct WSS to session containers and the relay to the owner host when both serve a harness", () => {
+    const hosts: HostingHostsView = { ...sessionContainers, isolatedHosts: [{ harness: "chat", transports: ["direct", "github"], features: [] }] };
+    const row = harnessHostRow(view({}), hosts, "local");
+    expect(row.host).toBe("Session containers and an owner host");
+    expect(row.hostDetail).toBe(
+      "Over Direct WSS, a container per session, stopped when idle and resumed from its volume; over other transports, this harness's owner host, for its owner only.",
+    );
+    expect(row.costNote).toContain("Always on");
+    expect(row.costNote).toContain("stops after an idle period");
+    expect(row.connections).toEqual([
+      { transport: "direct", label: "Direct WSS", command: "pnpm host:connect --harness chat --target local --transport direct", createsSession: true },
+      { transport: "github", label: "GitHub relay", command: "pnpm host:connect --harness chat --target local --transport github" },
+    ]);
+  });
+
+  it("does not offer session containers to a harness they cannot host", () => {
+    const problem = {
+      code: "hosting_unavailable" as const,
+      path: "mcpServers",
+      message: "No isolated host for 'chat' supports remote MCP servers yet.",
+      prerequisite: { kind: "feature" as const, name: "remote-mcp" as const },
+    };
+    const row = harnessHostRow(
+      view({ status: "unavailable", problems: [problem], transports: [{ transport: "direct", allowed: true, available: true }, noRelay] }),
+      sessionContainers,
+      "local",
+    );
+    expect(row.host).toBe("Session containers");
+    expect(row.connections.every((connection) => !connection.command)).toBe(true);
+    expect(row.connections[0]?.disabledReason).toBe("No isolated host for 'chat' supports remote MCP servers yet. Needs remote MCP support in its host.");
+  });
+
+  it("renders the session launcher with how to resume, and the relay's reason", () => {
+    const html = renderToStaticMarkup(
+      <HarnessHostingRow view={view({ transports: [{ transport: "direct", allowed: true, available: true }, noRelay] })} hosts={sessionContainers} target="local" />,
+    );
+    expect(html).toContain("Copy Direct WSS launcher");
+    expect(html).toContain('disabled="" title="No host for &#x27;chat&#x27; offers the GitHub relay. Needs the GitHub relay on its host.">Connect over GitHub relay');
+    expect(html).toContain("The Direct WSS launcher starts a new conversation and prints the --resume command for returning to it.");
+    expect(html).toContain("Add --cli &lt;path&gt; to run a Copilot CLI that matches the hosting runtime.");
+    const owner = renderToStaticMarkup(
+      <HarnessHostingRow view={view({})} hosts={{ executor: "pool", isolatedHosts: [{ harness: "chat", transports: ["direct", "github"], features: [] }] }} target="local" />,
+    );
+    expect(owner).toContain("Copy GitHub relay launcher");
+    expect(owner).not.toContain("--resume");
   });
 
   it("runs batch harnesses as jobs without client transports", () => {

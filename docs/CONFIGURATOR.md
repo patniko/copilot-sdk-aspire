@@ -141,17 +141,21 @@ local hybrid path, and the separately labeled, unqualified Azure hybrid proposal
 **Harness hosting** rows come from the chosen target's agent-api and its read-only
 [hosting views](API.md#hosting-views): local rows while the local stack runs, or the selected Azure target's
 deployed API. Each row shows the effective mode or batch jobs, the status with the first blocking problem and its
-prerequisite, the host (executor pool, owner host, session containers, or shared worker) with a cost note that says
-when the host is always on, and the client transports with whether policy allows them and the host provides them.
+prerequisite, the host (executor pool, owner host, session containers, or shared worker) with a cost note (always-on
+compute for owner hosts and the shared worker; idle stop and start-up waits for session containers), and the client
+transports with whether policy allows them and the host provides them.
 Harness versions saved in the workspace that the service has not loaded, or has loaded with different content, are
 listed above the rows: **Reload harnesses** from Local run, or deploy, to apply them. The rows start no hosts and grant
 no connections.
 
 Connection actions copy a `pnpm host:connect --harness <name> --target <local|azure> --transport <direct|github>`
-launcher command for a ready harness whose transport is available: on an owner host the service reports for that
-harness, or on the local shared worker, which accepts direct connections only. Otherwise the action is disabled and
-says why: the row's problem and prerequisite, an unavailable transport, per-session containers the launcher cannot
-reach yet, or shared hosting on Azure, which is not qualified. Batch rows link to **Try it** instead.
+launcher command for a ready harness whose transport is available, following the launcher's routing: shared
+harnesses use the local shared worker, and isolated harnesses use [session containers](DEPLOYMENT.md#session-containers)
+over the transports they offer (direct WSS), otherwise the harness's owner host. For the shared worker and session
+containers, the launcher creates a conversation and prints the `--resume` command for returning to it; add
+`--cli <path>` to run a Copilot CLI that matches the hosting runtime. Otherwise the action is disabled and says why:
+the row's problem and prerequisite, an unavailable transport (session containers do not offer the GitHub relay), or a
+shared-worker or session-container connection on Azure, which is not qualified. Batch rows link to **Try it** instead.
 
 Choose local or the selected Azure target, select a node to inspect its responsibility and limitations, or
 expand the text connection map. The canvas groups components into color-coded responsibility zones, highlights
@@ -164,8 +168,9 @@ The preview does not deploy resources or modify settings, and planned nodes are 
 Native container-host inference is shown separately from the managed Foundry route.
 
 The connection card preserves existing container CLI launchers and shows the shared launcher when the
-local `session-host` resource is observed. Use the matching qualified CLI; service observation alone is
-not account/client readiness. The backend enforces local scheduling, budgets and one-shot container
+local `session-host` resource is observed. That launcher opens the `hybrid-coordinator` harness
+(`--destination shared`); run `pnpm host:connect --harness <name> --target local --transport direct` for another
+shared harness. Use the matching qualified CLI; service observation alone is not account/client readiness. The backend enforces local scheduling, budgets and one-shot container
 limits configured through [Aspire hybrid parameters](DEPLOYMENT.md#hybrid-controls).
 This page does not edit those settings or display live allocations yet. First-token measurements and
 cost estimates remain unavailable rather than fabricated; Azure and two-real-account qualification
@@ -210,7 +215,7 @@ The editor has one section per part of the harness contract:
 | Overview | Version, description, a summary, and what the platform does with the harness |
 | Prompt | Prompt mode (replace, append, or customize the Copilot foundation prompt section by section) and the instructions |
 | Model | Preferred model (from the policy-approved list), allowed models as an ordered fallback list, reasoning effort and context tier (options above the policy ceilings are disabled) |
-| Tools | Custom harness tool bindings from the execution profiles (**Delegated only** hides one from the coordinator), and **Built-in Copilot tools** in groups: files, shell, web, built-in agents |
+| Tools | Custom harness tool bindings from the execution profiles (**Delegated only** hides one from the coordinator), and **Built-in Copilot tools** in groups: files, shell, web, built-in agents. `shared:*` bindings run only in `shared` harnesses on the local hybrid worker; job submission and the demo host reject them |
 | Permissions | What happens when the agent asks to read or write a file, run a command or fetch a URL: deny, ask you (Copilot CLI defaults, where workspace reads and read-only commands run without a prompt), or allow (yolo), per kind with a default; whether the agent can ask you questions; how long a request waits |
 | Hosting | Batch jobs or conversations; for conversations the hosting mode and its settings, handoffs, the approval mode, and remote MCP servers from the operator's catalog, plus the running service's view of this version (see [Hosting, approvals and remote MCP](#hosting-approvals-and-remote-mcp)) |
 | Sub-agents | Read-only built-in agent status (controlled by the Tools tab), plus custom specialists: instructions, a subset of the tools, preloaded skills, model |
