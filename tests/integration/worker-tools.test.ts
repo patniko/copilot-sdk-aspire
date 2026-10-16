@@ -1,16 +1,20 @@
 import { randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, inject, it } from "vitest";
 import type { Tool, ToolInvocation } from "@github/copilot-sdk";
 import {
-  policyFor, SharedSessionDefinition, SharedSessionLimits, SharedWorkerLimits, WORKER_TOOLS, type HarnessDefinition,
+  policyFor, SharedSessionDefinition, SharedSessionLimits, SharedWorkerLimits, WORKER_CONTAINER_FEATURES, WORKER_TOOLS, type HarnessDefinition,
 } from "@copilot-agent/contracts";
-import { migrate, SessionFileStore, SharedStore, WorkerStore, type SharedTurn } from "@copilot-agent/job-store";
+import { AllocationStore, migrate, SessionFileStore, SharedStore, WorkerStore, type SharedTurn } from "@copilot-agent/job-store";
 import type { WorkerRegistry } from "@copilot-agent/service-defaults";
-import type { SharedActivationPlan } from "../../src/session-host/src/admission.js";
+import { SHARED_WORKER_DEPLOYMENT, type SharedActivationPlan } from "../../src/session-host/src/admission.js";
 import type { SharedActivationContext } from "../../src/session-host/src/runtime.js";
+import { sharedToolset } from "../../src/session-host/src/toolkit.js";
 import { workerTools, type SharedFileService } from "../../src/session-host/src/worker-tools.js";
 import { conversation, coordinator, snapshot, workerRegistry } from "../fixtures/workers.js";
+import { sharedAdmission } from "./fixtures/shared-harness.js";
 
 let pool: pg.Pool;
 let shared: SharedStore;
@@ -18,7 +22,9 @@ let files: SessionFileStore;
 let workers: WorkerStore;
 let registry: WorkerRegistry;
 const sessions: string[] = [];
-const limits = SharedWorkerLimits.parse({ activeTurns: 16, activeTurnsPerPrincipal: 16, activeTurnsPerHarness: 16, queuedTurns: 64 });
+const limits = SharedWorkerLimits.parse({
+  activeTurns: 16, activeTurnsPerPrincipal: 16, activeTurnsPerHarness: 16, queuedTurns: 64, executionContainers: 32, containersPerPrincipal: 16,
+});
 const FEATURES = ["approval-modes", "crafted-workers", "inherited-authority", "shared-storage"] as const;
 const analyst = conversation("repo-analyst");
 const lead = coordinator("lead", { harnesses: ["repo-analyst"], sizes: ["small", "medium"], sharedStorage: "session", crafting: { template: "general" } });
@@ -29,7 +35,7 @@ beforeAll(async () => {
   await migrate(pool);
   shared = new SharedStore(pool);
   files = new SessionFileStore(pool);
-  workers = new WorkerStore(pool, shared);
+  workers = new WorkerStore(pool, shared, new AllocationStore(pool, shared));
   registry = await workerRegistry([analyst, lead, solo]);
 });
 afterEach(async () => {
@@ -68,17 +74,20 @@ async function setup(definition: HarnessDefinition = lead, options: { files?: Sh
     harness: { name: definition.name, version: definition.version, digest: snapshot(definition).digest },
     definition, model: "fixture", policy: policyFor(source.policies, definition.name), delegation: [],
   } as unknown as SharedActivationPlan;
-  const context = { lease, signal: new AbortController().signal } as unknown as SharedActivationContext;
-  const tools = workerTools(plan, (await shared.get(principal, record.id))!, context, () => turn as SharedTurn, {
-    workers, registry: async () => source, features: FEATURES, deploymentLimit: 1000, ...(options.files ? { files: options.files } : {}),
-  });
+  const context = { lease, signal: new AbortController().signal, stateDirectory: join(tmpdir(), `worker-tools-${record.id}`) } as unknown as SharedActivationContext;
+  const session = (await shared.get(principal, record.id))!;
+  const deps = {
+    workers, registry: async () => source, features: FEATURES, deploymentLimit: 1000, containers: { limits, startupSeconds: 60 },
+    ...(options.files ? { files: options.files } : {}),
+  };
+  const tools = workerTools(plan, session, context, () => turn as SharedTurn, deps);
   const byName = new Map(tools.map((entry) => [entry.tool.name, entry]));
   const call = async (name: string, args: unknown, invocation: Partial<ToolInvocation> = {}) => {
     const entry = byName.get(name);
     if (!entry) throw new Error(`No tool ${name}.`);
-    return (entry.tool as Tool).handler(args, { sessionId: record.id, toolCallId: randomUUID(), toolName: name, arguments: args, ...invocation });
+    return (entry.tool as Tool).handler!(args, { sessionId: record.id, toolCallId: randomUUID(), toolName: name, arguments: args, ...invocation });
   };
-  return { record, principal, lease, tools, byName, call };
+  return { record, principal, lease, tools, byName, call, plan, context, session, turn: turn as SharedTurn, deps };
 }
 
 describe("coordinator worker tools", () => {
@@ -122,15 +131,15 @@ describe("coordinator worker tools", () => {
     expect(await c.call(WORKER_TOOLS.send, { worker: "analysis", message: "Focus on src/.", delivery: "immediate" }))
       .toMatchObject({ accepted: true, worker: "analysis", seq: 2, delivery: "immediate" });
     expect(await c.call(WORKER_TOOLS.send, { worker: id, message: "Then summarize." })).toMatchObject({ seq: 3, delivery: "enqueue" });
-    await workers.turnStarted(id);
+    await workers.turnStarted(id, "turn-1");
     expect(await c.call(WORKER_TOOLS.interrupt, { worker: "analysis" })).toEqual({ interrupted: true, worker: "analysis", state: "working" });
-    await workers.turnFinished(id, { result: `Summary: ${"s".repeat(3000)}` });
+    await workers.turnFinished(id, "turn-1", { result: `Summary: ${"s".repeat(3000)}` });
     expect(await c.call(WORKER_TOOLS.get, { worker: "analysis" })).toMatchObject({ state: "idle", result: { truncated: false } });
     const listed = await c.call(WORKER_TOOLS.list, {}) as { workers: Array<{ result: { text: string; truncated: boolean } }> };
     expect(listed.workers[0]!.result).toMatchObject({ truncated: true });
     expect(listed.workers[0]!.result.text).toHaveLength(1000);
     expect(await c.call(WORKER_TOOLS.wait, {})).toMatchObject({ waiting: [{ name: "analysis", state: "idle" }], instruction: expect.stringMatching(/End your turn/) });
-    expect(await c.call(WORKER_TOOLS.archive, { worker: "analysis" })).toEqual({ archived: true, worker: "analysis", state: "stopped", capacityReleased: true });
+    expect(await c.call(WORKER_TOOLS.archive, { worker: "analysis" })).toEqual({ archived: true, worker: "analysis", state: "stopped", capacityReleased: false });
     await expect(c.call(WORKER_TOOLS.send, { worker: "analysis", message: "More." })).rejects.toThrow(/has stopped/);
     await expect(c.call(WORKER_TOOLS.get, { worker: "ghost" })).rejects.toThrow(/No worker/);
   });
@@ -141,8 +150,9 @@ describe("coordinator worker tools", () => {
     });
     const c = await setup(solo, { policy: answering });
     const created = await c.call(WORKER_TOOLS.create, { name: "analysis", harness: "repo-analyst", task: "Map it." }) as Record<string, any>;
-    const question = await workers.createInputRequest(created.worker.id, "q-1", { kind: "question", question: "Which folder?", allowFreeform: true }, 600);
-    const permission = await workers.createInputRequest(created.worker.id, "p-1", { kind: "permission", permission: { type: "shell", command: "rm -rf build" } }, 600);
+    await workers.turnStarted(created.worker.id, "turn-1");
+    const question = await workers.createInputRequest(created.worker.id, "turn-1", "q-1", { kind: "question", question: "Which folder?", allowFreeform: true });
+    const permission = await workers.createInputRequest(created.worker.id, "turn-1", "p-1", { kind: "permission", permission: { type: "shell", command: "rm -rf build" } });
     await expect(c.call(WORKER_TOOLS.answer, { requestId: permission.id, answer: "approved" })).rejects.toThrow(/Only a person/);
     expect(await c.call(WORKER_TOOLS.answer, { requestId: question.id, answer: "src" })).toEqual({ answered: true, worker: "analysis", state: "answered" });
   });
@@ -155,5 +165,32 @@ describe("coordinator worker tools", () => {
     expect(await c.call(WORKER_TOOLS.readFile, { path: "plan/notes.md" })).toMatchObject({ data: "# Plan", encoding: "utf-8", truncated: false });
     await expect(c.call(WORKER_TOOLS.readFile, { path: "../etc/passwd" })).rejects.toThrow(/Invalid arguments/);
     await expect(c.call(WORKER_TOOLS.writeFile, { path: "big.txt", content: "x".repeat(33 * 1024) })).rejects.toThrow(/Invalid arguments/);
+  });
+});
+
+describe("orchestrator coordinators on the shared worker", () => {
+  const withWorkers = { ...SHARED_WORKER_DEPLOYMENT, workerContainers: { features: [...WORKER_CONTAINER_FEATURES] } };
+  const clashing = (hosting: Record<string, unknown>) => ({
+    tools: [{ name: WORKER_TOOLS.create, kind: "host", description: "Named like a worker tool.", binding: "shared:get-job" }], hosting,
+  });
+
+  it("are admitted in orchestrator mode only with worker containers, and reserve the worker tool names", async () => {
+    const admitted = await sharedAdmission(registry, { deployment: withWorkers }).admit("owner", { harness: "solo", label: "" });
+    expect(admitted.harness).toMatchObject({ name: "solo", mode: "orchestrator" });
+    await expect(sharedAdmission(registry).admit("owner", { harness: "solo", label: "" })).rejects.toMatchObject({ code: "hosting_unavailable" });
+    const clash = coordinator("clash", { harnesses: ["repo-analyst"] }, clashing({ mode: "orchestrator", workers: { harnesses: ["repo-analyst"] } }));
+    await expect(sharedAdmission(await workerRegistry([analyst, clash]), { deployment: withWorkers }).admit("owner", { harness: "clash", label: "" }))
+      .rejects.toMatchObject({ code: "policy_rejected", details: { path: "tools.0.name" } });
+    const plain = conversation("plain-chat", clashing({ mode: "shared" }));
+    expect((await sharedAdmission(await workerRegistry([plain]), { deployment: withWorkers }).admit("owner", { harness: "plain-chat", label: "" })).harness)
+      .toMatchObject({ mode: "shared" });
+  });
+
+  it("join the coordinator's tool set, which needs the worker configuration", async () => {
+    const c = await setup(solo);
+    const toolset = await sharedToolset(c.plan, c.session, c.context, () => c.turn, { workers: c.deps });
+    expect(toolset.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([WORKER_TOOLS.create, WORKER_TOOLS.wait, "get_task_list"]));
+    expect(toolset.rules.get(WORKER_TOOLS.create)).toEqual({});
+    await expect(sharedToolset(c.plan, c.session, c.context, () => c.turn, {})).rejects.toThrow(/Orchestrator workers are not configured/);
   });
 });

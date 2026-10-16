@@ -123,7 +123,8 @@ documented defaults rather than the base policy's values.
   lowercase name and discards input that looks like a credential instead of keeping it in the browser draft; the
   hosting process [resolves the name](SECURITY.md#shared-placement-egress-and-remote-mcp).
 - **Hosting**: allowed modes and client transports, promotion approval, the container size catalog and default size,
-  worker limits including inherited human authority, and crafting templates.
+  worker limits including inherited human authority and whether coordinators may answer worker questions, and
+  crafting templates.
 
 Policy validation also warns about settings that cannot take effect, such as a permission handler no profile
 provides, shared modes without the direct transport, inherited authority without the assisted mode, or a crafting

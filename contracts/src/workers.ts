@@ -8,7 +8,7 @@ import {
   TOOL_NAME,
   type ToolRequest,
 } from "./harness.js";
-import { CONVERSATION_PROFILE } from "./hosting.js";
+import { CONVERSATION_PROFILE, type HostingFeature } from "./hosting.js";
 import { InputRequestState } from "./jobs.js";
 import {
   ContainerSize,
@@ -69,6 +69,19 @@ export const CRAFTED_INSTRUCTIONS_MAX = 20_000;
 export const MIN_WORKER_TOKENS = 1000;
 /** The version every crafted definition carries; crafted definitions are never published. */
 export const CRAFTED_WORKER_VERSION = "1.0.0-crafted";
+/**
+ * The runtime's bounds on inherited human authority (`setInheritedHumanAuthority`): at most this many messages, and at
+ * most this many characters in total. The platform keeps the newest messages that fit, counted as UTF-8 bytes, which
+ * is never less than the runtime's own count.
+ */
+export const INHERITED_AUTHORITY_MAX_MESSAGES = 256;
+export const INHERITED_AUTHORITY_MAX_CHARACTERS = 1_048_576;
+
+/**
+ * Harness features orchestrator worker containers implement (docs/HOSTING-MODES-PLAN.md, section 7.4). A coordinator
+ * that needs another feature from its workers is `hosting_unavailable`.
+ */
+export const WORKER_CONTAINER_FEATURES = ["approval-modes", "crafted-workers", "inherited-authority", "shared-storage"] as const satisfies readonly HostingFeature[];
 
 /** A worker, by id or by its name within the coordinator session. */
 export const WorkerReference = z.string().min(1).max(64);
@@ -268,6 +281,77 @@ export interface WorkerEvent {
   at: string;
   detail: Record<string, unknown>;
 }
+
+// Internal protocol between a worker's container and the dispatcher. Every route authenticates the container's
+// allocation-scoped credential, which is bound to exactly one worker.
+
+/** Where a worker's container mounts its coordinator session's shared volume. */
+export const WORKER_SHARED_MOUNT = "/shared";
+
+/** What a worker's container runs: one admitted worker session under its coordinator. */
+export const WorkerContainerSpec = z
+  .object({
+    workerId: z.string().uuid(),
+    /** The coordinator's application session. */
+    sessionId: z.string().uuid(),
+    allocationId: z.string().uuid(),
+    name: z.string().regex(SLUG),
+    githubUserId: z.number().int().positive().safe(),
+    harness: z.object({ definition: HarnessDefinition, digest: z.string().min(1).max(200) }).strict(),
+    model: z.string().min(1).max(200),
+    maxTurnSeconds: z.number().int().min(1).max(3600),
+    heartbeatSeconds: z.number().int().min(2).max(60),
+    approvalMode: z.enum(APPROVAL_MODES),
+    judgeModel: z.string().min(1).max(200).optional(),
+    /** The worker's assisted judge receives the coordinator's recorded human messages through authority grants. */
+    inheritAuthority: z.boolean(),
+    /** The source the container stamps on coordinator messages (`agent-<coordinatorId>`): never human authority. */
+    messageSource: z.string().regex(/^agent-[0-9a-f-]{36}$/),
+    sharedVolume: z.object({ path: z.literal(WORKER_SHARED_MOUNT), readOnly: z.boolean() }).strict().optional(),
+  })
+  .strict();
+export type WorkerContainerSpec = z.infer<typeof WorkerContainerSpec>;
+
+/** Runtime turn and request identities a worker's container chooses; repeated reports with one identity change nothing. */
+const RuntimeId = z.string().regex(/^[A-Za-z0-9_.:-]{1,128}$/);
+
+export const WorkerControl = z
+  .object({
+    state: z.enum(WORKER_STATES),
+    interrupt: z.boolean(),
+    messages: z.array(z.object({
+      id: z.string().uuid(), seq: z.number().int().positive(), delivery: z.enum(WORKER_DELIVERIES), content: z.string(),
+    }).strict()).max(16),
+    /** The newest authority grant the container has not applied yet. */
+    authority: z.object({ id: z.string().uuid() }).strict().optional(),
+  })
+  .strict();
+export type WorkerControl = z.infer<typeof WorkerControl>;
+
+export const WorkerDeliveredReport = z.object({ ids: z.array(z.string().uuid()).min(1).max(16) }).strict();
+export const WorkerTurnStartReport = z.object({ turnId: RuntimeId }).strict();
+export const WorkerTurnFinishReport = z
+  .object({ turnId: RuntimeId, result: z.string().max(1_000_000).optional(), interrupted: z.boolean().optional() })
+  .strict();
+export const WorkerFailureReport = z.object({ message: z.string().min(1).max(1000) }).strict();
+export const WorkerInputCreation = z.object({ turnId: RuntimeId, runtimeRequestId: RuntimeId, request: InputRequestBody }).strict();
+export const WorkerInputPoll = z
+  .object({ state: InputRequestState, response: InputResponseBody.optional(), answeredBy: z.enum(WORKER_ANSWERERS).optional() })
+  .strict();
+export type WorkerInputPoll = z.infer<typeof WorkerInputPoll>;
+export const WorkerAuthorityGrant = z
+  .object({
+    id: z.string().uuid(),
+    sourceSessionId: z.string().uuid(),
+    messages: z.array(z.string()).max(INHERITED_AUTHORITY_MAX_MESSAGES)
+      .refine((messages) => authorityLength(messages) <= INHERITED_AUTHORITY_MAX_CHARACTERS, "The authority messages are too long."),
+  })
+  .strict();
+export type WorkerAuthorityGrant = z.infer<typeof WorkerAuthorityGrant>;
+/** What the runtime accepted from an authority grant (`setInheritedHumanAuthority`). */
+export const WorkerAuthorityApplied = z
+  .object({ messageCount: z.number().int().min(0).max(10_000), overLimitMessageCount: z.number().int().min(0).max(10_000) })
+  .strict();
 
 /** What a coordinator harness may do with workers under its effective policy. */
 export interface WorkerCeilings {
@@ -505,9 +589,10 @@ export interface AuthorityEventLike {
  * (docs/HOSTING-MODES-PLAN.md, section 3). Only the root agent's user messages without a source, or with source `user`,
  * count. System continuations, inter-agent prompts, hidden injections, and autopilot continuations carry no authority.
  * Messages are never shortened, because the runtime sends a request covered only by an oversized message down the
- * ordinary approval path; keeping only the newest `maximum` messages can only narrow the authority.
+ * ordinary approval path. Only the newest messages within the runtime's bounds are kept, which can only narrow the
+ * authority.
  */
-export function humanAuthorityMessages(events: readonly AuthorityEventLike[], maximum = 50): string[] {
+export function humanAuthorityMessages(events: readonly AuthorityEventLike[]): string[] {
   const messages = events.flatMap((event) => {
     if (event.type !== "user.message" || event.agentId) return [];
     const data = event.data ?? {};
@@ -515,5 +600,18 @@ export function humanAuthorityMessages(events: readonly AuthorityEventLike[], ma
     if (data.isAutopilotContinuation === true || typeof data.content !== "string") return [];
     return [data.content];
   });
-  return maximum > 0 ? messages.slice(-maximum) : [];
+  const kept: string[] = [];
+  let length = 0;
+  for (let index = messages.length - 1; index >= 0 && kept.length < INHERITED_AUTHORITY_MAX_MESSAGES; index--) {
+    length += authorityLength([messages[index]!]);
+    if (length > INHERITED_AUTHORITY_MAX_CHARACTERS) break;
+    kept.unshift(messages[index]!);
+  }
+  return kept;
+}
+
+const ENCODER = new TextEncoder();
+/** The size of authority messages in UTF-8 bytes: at least their length in characters by any count. */
+export function authorityLength(messages: readonly string[]): number {
+  return messages.reduce((total, message) => total + ENCODER.encode(message).length, 0);
 }

@@ -5,8 +5,8 @@ import {
   type HarnessSnapshot, SharedSessionDefinition, SharedSessionLimits, SharedWorkerLimits, WorkerDefinitionExport, WorkerInputRequestView, WorkerView,
 } from "@copilot-agent/contracts";
 import {
-  JobStore, migrate, SessionFileStore, SharedStore, StoreError, WorkerStore,
-  type JobEventListener, type NewWorker, type SessionFileLease, type SharedSessionRecord,
+  AllocationStore, JobStore, migrate, SessionFileStore, SharedStore, StoreError, WorkerStore,
+  type JobEventListener, type NewWorker, type SessionFileLease, type SharedSessionRecord, type WorkerContainerOptions,
 } from "@copilot-agent/job-store";
 import { Admission, ApiKeyAuthenticator, type Logger } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../src/agent-api/src/server.js";
@@ -20,7 +20,10 @@ let workers: WorkerStore;
 let app: ReturnType<typeof buildApi>;
 const sessions: string[] = [];
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-const limits = SharedWorkerLimits.parse({ activeTurns: 16, activeTurnsPerPrincipal: 16, activeTurnsPerHarness: 16, queuedTurns: 64 });
+const limits = SharedWorkerLimits.parse({
+  activeTurns: 16, activeTurnsPerPrincipal: 16, activeTurnsPerHarness: 16, queuedTurns: 64, executionContainers: 32, containersPerPrincipal: 16,
+});
+const containers: WorkerContainerOptions = { limits, startupSeconds: 60 };
 const capacity = { maxPerSession: 6, maxConcurrent: 4, maxPerPrincipal: 4, deployment: 10_000 };
 const keys = { owner: "owner-key-0123456789abcdefghijkl", stranger: "stranger-key-0123456789abcdefghi" };
 const runner = conversation("test-runner");
@@ -31,7 +34,7 @@ function worker(name: string, changes: Partial<NewWorker> = {}): NewWorker {
     operationKey: `call-${name}`, argumentsHash: hash(name), name, source: "listed",
     harness: { name: runner.name, version: runner.version, digest: snapshot(runner).digest }, definition: runner,
     size: "small", resources: { cpus: 0.5, memoryMiB: 1024 }, sharedVolume: "none", approvalMode: "manual", inheritHumanAuthority: false,
-    coordinatorAnswers: false, model: "fixture", tokenBudget: 10_000, maxTurnSeconds: 600, idleSeconds: 60, lifetimeSeconds: 3600,
+    coordinatorAnswers: false, model: "fixture", tokenBudget: 10_000, maxTurnSeconds: 600, inputTimeoutSeconds: 300, idleSeconds: 60, lifetimeSeconds: 3600,
     task: `Task for ${name}.`, ...changes,
   };
 }
@@ -45,7 +48,7 @@ async function coordinator(principal = "owner") {
   const lease = await files.acquire(session.id, principal, "worker");
   const queued = await shared.enqueueTurn(lease, randomUUID(), "user", limits);
   await shared.startTurn(lease, queued.id, limits);
-  return { session, principal, lease, admit: (name: string, changes: Partial<NewWorker> = {}) => workers.admit(lease, queued.id, worker(name, changes), capacity) };
+  return { session, principal, lease, admit: (name: string, changes: Partial<NewWorker> = {}) => workers.admit(lease, queued.id, worker(name, changes), capacity, containers) };
 }
 
 const call = async (method: "GET" | "POST", url: string, key = keys.owner, payload?: unknown) => {
@@ -58,7 +61,7 @@ beforeAll(async () => {
   await migrate(pool);
   shared = new SharedStore(pool);
   files = new SessionFileStore(pool);
-  workers = new WorkerStore(pool, shared);
+  workers = new WorkerStore(pool, shared, new AllocationStore(pool, shared));
   const registry = await workerRegistry([]);
   app = buildApi({
     store: new JobStore(pool), listener: {} as JobEventListener,
@@ -100,7 +103,8 @@ describe("worker API", () => {
   it("hides other principals' sessions, workers, and requests", async () => {
     const c = await coordinator();
     const { view } = await c.admit("tests");
-    const request = await workers.createInputRequest(view.id, "perm-1", { kind: "permission", permission: { type: "write", path: "README.md" } }, 600);
+    await workers.turnStarted(view.id, "turn-1");
+    const request = await workers.createInputRequest(view.id, "turn-1", "perm-1", { kind: "permission", permission: { type: "write", path: "README.md" } });
     for (const url of [
       `/v1/sessions/${c.session.id}/workers`, `/v1/sessions/${c.session.id}/workers/tests`, `/v1/sessions/${c.session.id}/workers/tests/definition`,
       `/v1/sessions/${c.session.id}/input-requests`, `/v1/sessions/not-a-uuid/workers`,
@@ -116,7 +120,8 @@ describe("worker API", () => {
   it("queues worker requests for a person and records the answer", async () => {
     const c = await coordinator();
     const { view } = await c.admit("tests");
-    const request = await workers.createInputRequest(view.id, "perm-1", { kind: "permission", permission: { type: "shell", command: "npm test" } }, 600);
+    await workers.turnStarted(view.id, "turn-1");
+    const request = await workers.createInputRequest(view.id, "turn-1", "perm-1", { kind: "permission", permission: { type: "shell", command: "npm test" } });
     const pending = await call("GET", "/v1/worker-input-requests?state=pending&limit=500");
     expect((pending.body.requests as unknown[]).map((entry) => WorkerInputRequestView.parse(entry)))
       .toContainEqual(expect.objectContaining({ id: request.id, sessionId: c.session.id, worker: "tests", state: "pending" }));
@@ -160,8 +165,8 @@ describe("worker inbox pump", () => {
     const c = await coordinator();
     for (const name of ["one", "two"]) {
       const { view } = await c.admit(name);
-      await workers.turnStarted(view.id);
-      await workers.turnFinished(view.id, { result: `Result of ${name}.` });
+      await workers.turnStarted(view.id, "turn-1");
+      await workers.turnFinished(view.id, "turn-1", { result: `Result of ${name}.` });
     }
     const fake = host(c.principal, () => c.lease);
     const pump = new WorkerInboxPump(fake.value, workers, logger);
@@ -185,15 +190,24 @@ describe("worker inbox pump", () => {
     expect(fake.prompts.filter((entry) => entry.id === c.session.id)).toHaveLength(1);
   });
 
-  it("sends a batch whose delivery outcome is unknown to review", async () => {
+  it("retries a failed delivery with the same batch marker", async () => {
     const c = await coordinator();
     const { view } = await c.admit("tests");
-    await workers.turnStarted(view.id);
-    await workers.turnFinished(view.id, { result: "Done." });
+    await workers.turnStarted(view.id, "turn-1");
+    await workers.turnFinished(view.id, "turn-1", { result: "Done." });
     const fake = host(c.principal, () => c.lease);
+    const pump = new WorkerInboxPump(fake.value, workers, logger);
     fake.fail(new Error("The runtime connection dropped."));
-    await new WorkerInboxPump(fake.value, workers, logger).tick();
-    expect((await pool.query("SELECT state,last_error FROM worker_inbox WHERE session_id=$1", [c.session.id])).rows)
-      .toEqual([{ state: "needs_review", last_error: "Delivery outcome may be unknown; read the workers explicitly." }]);
+    await pump.tick();
+    const failed = (await pool.query<{ state: string; batch_id: string; attempts: number }>(
+      "SELECT state,batch_id,attempts FROM worker_inbox WHERE session_id=$1", [c.session.id])).rows;
+    expect(failed).toEqual([{ state: "pending", batch_id: expect.any(String), attempts: 1 }]);
+    fake.fail();
+    await pump.tick();
+    expect(fake.prompts.filter((entry) => entry.id === c.session.id)).toEqual([]);
+    await pool.query("UPDATE worker_inbox SET delivery_until=clock_timestamp() WHERE session_id=$1", [c.session.id]);
+    await pump.tick();
+    expect(fake.prompts.filter((entry) => entry.id === c.session.id).map((entry) => entry.notificationId)).toEqual([`workers-${failed[0]!.batch_id}`]);
+    expect((await pool.query("SELECT state FROM worker_inbox WHERE session_id=$1", [c.session.id])).rows).toEqual([{ state: "delivered" }]);
   });
 });

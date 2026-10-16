@@ -5,7 +5,7 @@ import {
   ArtifactPath, type HostingFeature, policyFor, WORKER_TOOLS, workerCeilings, WorkerCreation, WorkerMessageRequest,
   WorkerReference, type WorkerView,
 } from "@copilot-agent/contracts";
-import { StoreError, type SharedSessionRecord, type SharedTurn, type WorkerStore } from "@copilot-agent/job-store";
+import { StoreError, type SharedSessionRecord, type SharedTurn, type WorkerContainerOptions, type WorkerStore } from "@copilot-agent/job-store";
 import { canonicalJson, HttpError, planWorker, sha256Hex, type WorkerRegistry } from "@copilot-agent/service-defaults";
 import type { SharedActivationPlan } from "./admission.js";
 import type { SharedActivationContext } from "./runtime.js";
@@ -27,6 +27,8 @@ export interface WorkerToolDependencies {
   features: readonly HostingFeature[];
   /** The deployment-wide ceiling on workers holding capacity. */
   deploymentLimit: number;
+  /** How workers' containers are allocated. */
+  containers: WorkerContainerOptions;
   /** Required for coordinators that give their workers a shared volume. */
   files?: SharedFileService;
 }
@@ -126,10 +128,10 @@ export function workerTools(
           const existing = await deps.workers.find(lease, invocation.toolCallId, argumentsHash);
           if (existing) return { accepted: true, worker: summary(existing), message: "This tool call already started the worker." };
           const registry = await deps.registry();
-          const { capacity, inputTimeoutSeconds: _timeout, ...planned } = planWorker(registry,
+          const { capacity, ...planned } = planWorker(registry,
             { definition: plan.definition, policy: policyFor(registry.policies, plan.harness.name) }, args, { features: deps.features });
           const admitted = await deps.workers.admit(lease, currentTurn().id, { ...planned, operationKey: invocation.toolCallId, argumentsHash },
-            { ...capacity, deployment: deps.deploymentLimit });
+            { ...capacity, deployment: deps.deploymentLimit }, deps.containers);
           return {
             accepted: true, worker: summary(admitted.view),
             message: "The worker starts in its own container and reports back to this conversation. End your turn or continue with other work; do not poll.",

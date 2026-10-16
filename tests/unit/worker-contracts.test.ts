@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  CRAFTED_WORKER_VERSION, craftWorkerDefinition, CraftedWorkerSpec, DEFAULT_WORKER_POLICY, effectiveHostingPolicy, humanAuthorityMessages,
-  toolKindOfBinding, workerBackstop, workerCapacityProblem, workerCeilings, WorkerCreation, workerDepthProblems, WorkerMessageRequest,
+  authorityLength, CRAFTED_WORKER_VERSION, craftWorkerDefinition, CraftedWorkerSpec, DEFAULT_WORKER_POLICY, effectiveHostingPolicy, humanAuthorityMessages,
+  INHERITED_AUTHORITY_MAX_CHARACTERS, INHERITED_AUTHORITY_MAX_MESSAGES, toolKindOfBinding, workerBackstop, workerCapacityProblem, workerCeilings,
+  WorkerAuthorityGrant, WorkerCreation, workerDepthProblems, WorkerMessageRequest,
   type CraftingTemplate, type ExecutionPolicy,
 } from "@copilot-agent/contracts";
 import { conversation, coordinator, MODEL, TEMPLATE } from "../fixtures/workers.js";
@@ -195,10 +196,17 @@ describe("inherited human authority", () => {
     expect(humanAuthorityMessages(events)).toEqual(["  Fix the parser and run the tests.  ", "yes, push the branch"]);
   });
 
-  it("never shortens a message and keeps only the newest when bounded", () => {
+  it("never shortens a message and keeps only the newest within the runtime's bounds", () => {
     const long = "x".repeat(20_000);
     expect(humanAuthorityMessages([message(long)])).toEqual([long]);
-    expect(humanAuthorityMessages([message("one"), message("two"), message("three")], 2)).toEqual(["two", "three"]);
-    expect(humanAuthorityMessages([message("one")], 0)).toEqual([]);
+    const many = Array.from({ length: INHERITED_AUTHORITY_MAX_MESSAGES + 4 }, (_, index) => message(`m${index}`));
+    const kept = humanAuthorityMessages(many);
+    expect(kept).toHaveLength(INHERITED_AUTHORITY_MAX_MESSAGES);
+    expect([kept[0], kept.at(-1)]).toEqual(["m4", `m${INHERITED_AUTHORITY_MAX_MESSAGES + 3}`]);
+    const half = "é".repeat(INHERITED_AUTHORITY_MAX_CHARACTERS / 4);
+    expect(authorityLength([half])).toBe(INHERITED_AUTHORITY_MAX_CHARACTERS / 2);
+    expect(humanAuthorityMessages([message("oldest"), message(half), message(half), message("newest")])).toEqual([half, "newest"]);
+    expect(WorkerAuthorityGrant.safeParse({ id: crypto.randomUUID(), sourceSessionId: crypto.randomUUID(), messages: [half, half, "x"] }).success)
+      .toBe(false);
   });
 });

@@ -55,6 +55,26 @@ describe("session container Docker arguments", () => {
       "copilot.hybrid.namespace": "ns-12345678", "copilot.hybrid.managed": "volume", "copilot.hybrid.session": sessionId, "copilot.hybrid.purpose": "session",
     });
   });
+
+  it("runs an orchestrator worker as the worker, labeled with its coordinator, with its private and the shared volume", () => {
+    const workerId = randomUUID();
+    const worker = allocation({
+      purpose: "worker", workerId,
+      volumes: [
+        { purpose: "worker", sessionId: workerId, target: "/data", readOnly: false, name: `hybrid-local-0123456789-worker-${workerId}` },
+        { purpose: "shared", sessionId, target: "/shared", readOnly: false, name: `hybrid-local-0123456789-shared-${sessionId}` },
+      ],
+    });
+    const { args, env } = sessionContainerArguments("local-0123456789", worker, credentials, "http://a:1", "http://b:2", "linux");
+    expect(env).toMatchObject({ SESSION_CONTAINER_SESSION_ID: workerId, SESSION_CONTAINER_PURPOSE: "worker" });
+    expect(args).toEqual(expect.arrayContaining([
+      "--label", `copilot.hybrid.session=${sessionId}`, "--label", `copilot.hybrid.worker=${workerId}`,
+      `type=volume,src=hybrid-local-0123456789-worker-${workerId},dst=/data`, `type=volume,src=hybrid-local-0123456789-shared-${sessionId},dst=/shared`,
+    ]));
+    const session = sessionContainerArguments("local-0123456789", allocation(), credentials, "http://a:1", "http://b:2", "linux");
+    expect(session.env.SESSION_CONTAINER_PURPOSE).toBeUndefined();
+    expect(session.args.some((arg) => arg.startsWith("copilot.hybrid.worker="))).toBe(false);
+  });
 });
 
 describe("session container contracts", () => {

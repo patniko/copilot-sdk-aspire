@@ -114,7 +114,7 @@ function view(overrides: Partial<HarnessHostingView>): HarnessHostingView {
     ceilings: {
       modes: ["isolated"], transports: ["direct", "github"], approvalModes: ["manual"], permissionHandlers: [],
       sizes: { small: { cpus: 0.5, memoryMiB: 1024 } }, defaultSize: "small",
-      workers: { maxConcurrentPerSession: 4, maxPerSession: 16, maxPerPrincipal: 8, idleSeconds: 900, maxLifetimeSeconds: 3600, allowInheritedAuthority: false },
+      workers: { maxConcurrentPerSession: 4, maxPerSession: 16, maxPerPrincipal: 8, idleSeconds: 900, maxLifetimeSeconds: 3600, allowInheritedAuthority: false, allowCoordinatorAnswers: false },
       promotion: { approval: ["ask"] }, craftingTemplates: [], mcpServers: [],
     },
     ...overrides,

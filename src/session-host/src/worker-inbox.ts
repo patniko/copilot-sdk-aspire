@@ -59,10 +59,12 @@ export function workerInboxPrompt(events: readonly WorkerEvent[]): string {
 }
 
 /**
- * Delivers the coordinator inbox (docs/HOSTING-MODES-PLAN.md, section 7.4) as bounded continuations, never by polling
- * inside a turn. It follows the completion pump: at-least-once claims fenced by the activation epoch, with a runtime
- * history marker per batch so a redelivered batch is recognized. Busy or exhausted sessions wait; their events go to
- * review when continuations or the aggregate budget run out.
+ * Maintains orchestrator workers and delivers the coordinator inbox (docs/HOSTING-MODES-PLAN.md, section 7.4). Each tick
+ * applies the backstops, returns capacity for retired worker containers, and delivers inbox events as bounded
+ * continuations, never by polling inside a turn. Delivery follows the completion pump: claims fenced by the activation
+ * epoch, with a runtime-history marker per batch so a redelivered batch is recognized and every failure can be retried.
+ * Busy or exhausted sessions wait; their events go to review when continuations or the aggregate budget run out, or
+ * after repeated failures.
  */
 export class WorkerInboxPump {
   #timer?: NodeJS.Timeout;
@@ -79,12 +81,19 @@ export class WorkerInboxPump {
   start(): void {
     this.#timer = setInterval(() => {
       if (this.#running || this.#stopping) return;
-      this.#running = this.tick().catch((error) => this.logger.error({ err: error }, "worker inbox processing failed"))
+      this.#running = this.tick().catch((error) => this.logger.error({ err: error }, "worker maintenance failed"))
         .finally(() => { this.#running = undefined; });
     }, 1_000);
   }
 
   async tick(): Promise<void> {
+    // Backstops and retired containers stop workers and add inbox events, so they run before delivery.
+    for (const entry of await this.workers.sweep()) {
+      this.logger.info({ worker: entry.id, session: entry.sessionId, reason: entry.reason }, "worker stopped by a backstop");
+    }
+    for (const entry of await this.workers.reconcileAllocations()) {
+      this.logger.warn({ worker: entry.id, session: entry.sessionId }, "worker container stopped while the worker was running");
+    }
     await this.workers.reconcileInbox();
     for (const { sessionId, principal } of await this.workers.inboxSessions()) {
       if (this.#stopping) return;
@@ -103,10 +112,12 @@ export class WorkerInboxPump {
         await this.workers.finishInbox(lease, batch.batchId, "delivered");
       } catch (error) {
         const code = error instanceof StoreError ? error.code : "delivery_failed";
-        this.logger.warn({ session: sessionId, batch: batch?.batchId, code }, "worker inbox delivery deferred or requires review");
+        this.logger.warn({ session: sessionId, batch: batch?.batchId, code }, "worker inbox delivery deferred");
+        // A busy conversation defers the batch; any other failure is retried after a delay, which the batch marker makes
+        // safe whether or not the runtime accepted the continuation. The ledger sends a batch to review after its attempt limit.
         if (lease && batch) {
-          await this.workers.finishInbox(lease, batch.batchId, code === "quota_exceeded" ? "pending" : "needs_review",
-            error instanceof StoreError ? error.code : "Delivery outcome may be unknown; read the workers explicitly.").catch(() => undefined);
+          await this.workers.finishInbox(lease, batch.batchId, code === "quota_exceeded" ? "deferred" : "failed",
+            error instanceof StoreError ? error.code : "Delivery failed; it will be retried.").catch(() => undefined);
         }
       }
     }

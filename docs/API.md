@@ -222,9 +222,9 @@ Container sessions have no delegated jobs, so their jobs route returns an empty 
 
 An `orchestrator` coordinator's workers are child sessions of a shared conversation, each with its own harness, size,
 and container ([plan, section 7.4](HOSTING-MODES-PLAN.md#74-mode-4-orchestrator-shared-brain-container-workers)).
-The worker ledger, its request queue, and the routes below are implemented. Workers are created only by a
-coordinator's worker tools, which are not available yet, so the lists stay empty until that part of stage 4 lands.
-The routes exist when `agent-api` is connected to the shared worker. Implemented in
+The worker ledger, its request queue, the coordinator's worker tools, and the routes below are implemented. Worker
+containers are not available yet, so no deployment enables orchestrator hosting and the lists stay empty until that
+part of stage 4 lands. The routes exist when `agent-api` is connected to the shared worker. Implemented in
 [worker-routes.ts](../src/agent-api/src/worker-routes.ts) and the [worker ledger](../src/job-store/src/workers.ts),
 with contracts in [workers.ts](../contracts/src/workers.ts).
 
@@ -249,16 +249,18 @@ The ledger enforces these rules:
 
 - Workers, their definitions, and their requests belong to the conversation's principal; other principals receive
   `404`.
-- A worker holds capacity from creation until its container is confirmed gone (`capacityReleased`), so starting,
-  running, and stopping workers all count against the coordinator harness's per-conversation and per-principal
-  ceilings and the deployment's ceiling.
+- A worker holds capacity from creation until the execution controller retires its container allocation
+  (`capacityReleased`), so starting, running, and stopping workers all count against the coordinator harness's
+  per-conversation and per-principal ceilings and the deployment's ceiling. Its allocation is requested when it is
+  created and also counts against the deployment's execution-container limits.
 - A worker reserves part of the conversation's aggregate token budget, always leaving the coordinator one turn's
   budget, and its usage is charged to the conversation when its capacity is released.
 - A worker stops at its maximum lifetime, when its reservation is used up, or after its idle time, and all of a
-  conversation's workers stop when it closes. A stopped worker keeps its record and volumes; nothing is deleted
-  automatically.
-- Worker approvals and questions wait for a person until they expire (the worker harness's `timeoutSeconds`,
-  default 600). A coordinator never answers a permission request. When the coordinator's policy sets
+  conversation's workers stop when it closes. A worker whose container stops while it is running has failed. A
+  stopped worker keeps its record and volumes; nothing is deleted automatically.
+- Worker approvals and questions come from the worker's current turn and wait for a person until they expire (the
+  worker harness's `permissions.timeoutSeconds`, default 600, never past the worker's lifetime). A request ends when
+  its turn ends. A coordinator never answers a permission request. When the coordinator's policy sets
   `hosting.workers.allowCoordinatorAnswers`, it may answer questions, shown as `answeredBy: "coordinator"`; answers
   through this API show `answeredBy: "principal"`.
 - A crafted worker's definition is recorded and never published. The configurator's **Import** dialog opens a
