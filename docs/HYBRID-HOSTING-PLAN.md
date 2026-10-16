@@ -8,6 +8,10 @@ Date: 2026-10-11
 demonstrator and its acceptance gates. It does not add supported deployment modes, CLI options, or security
 guarantees. The current guides remain authoritative until the corresponding implementation is delivered.
 
+**Follow-on proposal (2026-10-15):** the [per-harness hosting modes plan](HOSTING-MODES-PLAN.md) builds on this
+record to make hosting selectable per harness. Its explicit, one-way promotion is a new proposal; it does not
+change this record's exclusion of transparent runtime migration.
+
 ## 1. Purpose and agreed scope
 
 Demonstrate an alternative to running every agent conversation in a container: keep the main agent loop on

@@ -13,6 +13,8 @@ This plan preserves rationale and historical verification; the current guides ow
 The follow-on [CLI-first hybrid hosting demonstrator plan](HYBRID-HOSTING-PLAN.md) proposes a shared
 in-process main loop, on-demand container delegation, both CLI connection destinations, and a visual
 topology page. It is a separate, not-yet-implemented expansion of the original scope below.
+The later [per-harness hosting modes plan](HOSTING-MODES-PLAN.md) proposes making that placement selectable
+per harness; it is likewise a proposal, not a current feature.
 
 ## 1. Product goal
 

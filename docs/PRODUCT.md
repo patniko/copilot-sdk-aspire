@@ -130,6 +130,12 @@ an agreed schedule or a description of shipped functionality; the
 [recommended sequence](PRODUCT-OVERVIEW.md#recommended-product-decomposition-and-delivery-sequence) owns the
 detailed acceptance outcomes.
 
+A separate [hosting modes proposal](HOSTING-MODES-PLAN.md) would let each conversation harness choose an isolated
+container, a shared multi-tenant runtime, a shared runtime with one-way promotion into a container, or a shared
+coordinator that manages container workers, reachable from Copilot CLI and the GitHub Copilot app over GitHub relay
+and direct WSS. It also proposes handoffs and compares the design with OpenAI's Agents API. None of these modes is
+supported until its stage lands with evidence.
+
 ## Acceptance criteria for changes
 
 These are review criteria, not claims that quality or operational metrics are already collected:

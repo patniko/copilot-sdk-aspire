@@ -206,6 +206,11 @@ snapshot, but that is not a snapshot of every executable dependency or of the en
 [registry](../src/service-defaults/src/registry.ts), [admission](../src/service-defaults/src/admission.ts),
 [deployment guide](DEPLOYMENT.md).
 
+**Proposed per-harness placement (October 15, 2026):** the [hosting modes plan](HOSTING-MODES-PLAN.md) proposes
+letting each conversation harness run in an isolated container, a shared multi-tenant runtime, a shared runtime
+with one-way promotion into a container, or a shared coordinator with container workers. It is a proposal; the
+answer above remains the current behavior.
+
 ## 2. What is an instance, and can several run concurrently?
 
 ### Use this vocabulary
