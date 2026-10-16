@@ -1,11 +1,19 @@
 import {
   applyPolicyOverride,
   type BuiltinToolGroup,
+  CONVERSATION_PROFILE,
   DEFAULT_INPUT_TIMEOUT_SECONDS,
+  effectiveApprovalModes,
   ExecutionPolicy,
   HARNESS_OVERRIDABLE_POLICY_FIELDS,
   HarnessDefinition,
+  type HarnessMcpServer,
   HarnessPolicyOverride,
+  HostingConfig,
+  hostedProfileViolations,
+  hostingPolicyViolations,
+  hostingReferenceViolations,
+  type HostingTarget,
   isInteractive,
   modelOptionViolations,
   permissionModeFor,
@@ -26,8 +34,10 @@ export interface ValidationContext {
   /** Fields replaced by an operator override for this harness, if one exists. */
   policyOverride?: string[];
   profiles: ProfileSummary[];
-  /** All harness documents in the repository, for duplicate detection. */
+  /** All harness documents in the repository, for duplicate detection and worker or handoff targets. */
   all: HarnessDocument[];
+  /** The effective policy of another harness, for worker and handoff targets. Defaults to `policy`. */
+  policyFor?: (harness: string) => ExecutionPolicy;
   /** Committed harness.json + instructions for this folder, if any. */
   committed?: { manifest: string; instructions?: string; skills?: Record<string, string> };
 }
@@ -36,6 +46,26 @@ const RESERVED_TOOLS = new Set(["submit_result"]);
 
 function issue(level: Issue["level"], path: string, message: string, fix?: Issue["fix"]): Issue {
   return fix ? { level, path, message, fix } : { level, path, message };
+}
+
+function versionParts(version: unknown): number[] {
+  return String(version ?? "").split(/[.-]/).slice(0, 3).map((part) => Number.parseInt(part, 10) || 0);
+}
+
+/** The latest document for a harness name, with its effective policy, as a worker or handoff target. */
+function hostingTarget(name: string, context: ValidationContext): HostingTarget | undefined {
+  const latest = context.all
+    .filter((document) => document.manifest.name === name)
+    .sort((a, b) => {
+      const [left, right] = [versionParts(a.manifest.version), versionParts(b.manifest.version)];
+      return (right[0]! - left[0]!) || (right[1]! - left[1]!) || (right[2]! - left[2]!);
+    })[0];
+  if (!latest) return undefined;
+  const hosting = HostingConfig.safeParse(latest.manifest.hosting);
+  return {
+    definition: { interaction: latest.manifest.interaction, ...(hosting.success ? { hosting: hosting.data } : {}) },
+    policy: context.policyFor?.(name) ?? context.policy,
+  };
 }
 
 /** The exact API definition candidate: manifest fields plus inline instructions and skills. */
@@ -105,6 +135,7 @@ export function validateHarness(document: HarnessDocument, context: ValidationCo
     agents?: Array<{ name: string; reasoningEffort?: string }>;
     builtinTools?: BuiltinToolGroup[];
     permissions?: PermissionsConfig;
+    mcpServers?: HarnessMcpServer[];
   };
   if (modelShape.model) {
     for (const violation of modelOptionViolations({ model: modelShape.model, agents: modelShape.agents }, context.policy)) {
@@ -112,10 +143,21 @@ export function validateHarness(document: HarnessDocument, context: ValidationCo
     }
   }
   for (const violation of toolPolicyViolations(
-    { builtinTools: modelShape.builtinTools, permissions: modelShape.permissions },
+    { builtinTools: modelShape.builtinTools, permissions: modelShape.permissions, mcpServers: modelShape.mcpServers },
     context.policy,
   )) {
     issues.push(issue("error", violation.path, violation.message));
+  }
+  // Hosting, conversation-profile, and target checks need a schema-valid definition, as admission does.
+  if (parsed.success) {
+    const definition = parsed.data;
+    const conversationProfile = context.profiles.find((profile) => profile.id === CONVERSATION_PROFILE);
+    const problems = [
+      ...hostingPolicyViolations(definition, context.policy),
+      ...(definition.interaction === "conversation" && conversationProfile ? hostedProfileViolations(definition, conversationProfile) : []),
+      ...hostingReferenceViolations(definition, (name) => hostingTarget(name, context)),
+    ];
+    for (const problem of problems) issues.push(issue("error", problem.path, problem.message));
   }
   if (modelShape.builtinTools?.length) {
     const modes = permissionModesUsed(modelShape.permissions);
@@ -580,7 +622,42 @@ export function validatePolicy(raw: unknown, profiles: ProfileSummary[]): { poli
   if (policy.leaseSeconds < 15) {
     issues.push(issue("warning", "leaseSeconds", "Short leases can expire during slow network calls and cause duplicate attempts."));
   }
+  issues.push(...hostingPolicyWarnings(policy, profiles));
   return { policy, issues };
+}
+
+/** Hosting and approval settings that parse but cannot take effect as written. */
+function hostingPolicyWarnings(policy: ExecutionPolicy, profiles: ProfileSummary[]): Issue[] {
+  const issues: Issue[] = [];
+  const approvalModes = effectiveApprovalModes(policy);
+  const handlers = policy.permissionHandlers ?? [];
+  if (approvalModes.includes("custom") && handlers.length === 0) {
+    issues.push(issue("warning", "approvalModes", "The custom approval mode is allowed, but no permission handler is."));
+  }
+  handlers.forEach((handler, index) => {
+    if (!profiles.some((profile) => profile.permissionHandlers?.includes(handler))) {
+      issues.push(issue("warning", `permissionHandlers.${index}`, `No execution profile provides the '${handler}' permission handler.`));
+    }
+  });
+  for (const [name, template] of Object.entries(policy.hosting?.crafting?.templates ?? {})) {
+    const path = `hosting.crafting.templates.${name}`;
+    template.models.forEach((model, index) => {
+      if (!policy.allowedModels.includes(model)) {
+        issues.push(issue("warning", `${path}.models.${index}`, `Model '${model}' is not an allowed model, so crafted workers cannot use it.`));
+      }
+    });
+    template.approvalModes.forEach((mode, index) => {
+      if (!approvalModes.includes(mode)) {
+        issues.push(issue("warning", `${path}.approvalModes.${index}`, `The '${mode}' approval mode is not allowed, so crafted workers cannot use it.`));
+      }
+    });
+    template.builtinTools.forEach((group, index) => {
+      if (!(policy.builtinTools ?? []).includes(group)) {
+        issues.push(issue("warning", `${path}.builtinTools.${index}`, `The '${group}' built-in tools are not allowed, so crafted workers cannot use them.`));
+      }
+    });
+  }
+  return issues;
 }
 
 /**
