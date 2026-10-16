@@ -1779,6 +1779,18 @@ only (including the judge), with one real account. The shared worker's own assis
 `AUTO_APPROVAL` flag in its environment, which this machine's user environment supplies; a packaged shared worker
 without it refuses assisted sessions (not changed in this stage).
 
+Follow-up, 2026-10-16, on the integration branch at `087e0f9`: in the real-model demo the `hybrid-orchestrator`
+coordinator named shared files as its workers see them (`/shared/plan.txt`), which `read_shared_file` refused until
+the model retried. The coordinator's shared-file tools now accept the workers' mount prefix and pass the
+volume-relative path to the file service. What follows the prefix must still be a portable relative path, so
+traversal, other absolute paths, and look-alike prefixes stay refused. Custom permission handlers see the same
+volume-relative path, and the tool and parameter descriptions name both forms; the example instructions and their
+pinned digests are unchanged. Evidence: `tests\integration\worker-tools.test.ts` (9 tests; the new case fails on the
+previous tool code), the full baseline (`pnpm test:unit` 722 passed, 1 skipped; `pnpm test:integration` 148 passed,
+30 opt-in skipped), and the worker gate, whose coordinator now lists `/shared`, reads `/shared/beta-….txt`, and checks
+each read's content, which passed in 58 s with 38 synthetic requests on
+`copilot-session-container:patniko-orchestrator-workers` `sha256:84a93b32…` rebuilt from `087e0f9`.
+
 ### Stage 5: promotion
 
 Recorded 2026-10-16 on branch `patniko-stage-5-promotion`. Commits:

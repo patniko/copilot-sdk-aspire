@@ -3,13 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
 import { afterAll, afterEach, beforeAll, describe, expect, inject, it } from "vitest";
-import type { Tool, ToolInvocation } from "@github/copilot-sdk";
+import type { PermissionRequest, Tool, ToolInvocation } from "@github/copilot-sdk";
 import {
   policyFor, SharedSessionDefinition, SharedSessionLimits, SharedWorkerLimits, WORKER_CONTAINER_FEATURES, WORKER_TOOLS, type HarnessDefinition,
 } from "@copilot-agent/contracts";
 import { AllocationStore, migrate, SessionFileStore, SharedStore, WorkerStore, type SharedTurn } from "@copilot-agent/job-store";
 import type { WorkerRegistry } from "@copilot-agent/service-defaults";
 import { SHARED_WORKER_DEPLOYMENT, type SharedActivationPlan } from "../../src/session-host/src/admission.js";
+import { workspaceDraftsHandler } from "../../src/session-host/src/permission-handlers.js";
+import { SharedPermissionPolicy } from "../../src/session-host/src/permissions.js";
 import type { SharedActivationContext } from "../../src/session-host/src/runtime.js";
 import { sharedToolset } from "../../src/session-host/src/toolkit.js";
 import { workerTools, type SharedFileService } from "../../src/session-host/src/worker-tools.js";
@@ -49,13 +51,20 @@ afterAll(async () => { await pool.end(); });
 const refusedWith = (pattern: RegExp) => ({ resultType: "failure", textResultForLlm: expect.stringMatching(pattern) });
 class FakeFiles implements SharedFileService {
   readonly contents = new Map<string, Buffer>();
-  async list() { return [...this.contents.keys()].map((name) => ({ name, type: "file" as const })); }
+  /** Every operation that reached the file service, with the path it was given. */
+  readonly calls: string[] = [];
+  async list(_session: string, path: string | undefined) {
+    this.calls.push(`list:${path ?? "(top)"}`);
+    return [...this.contents.keys()].map((name) => ({ name, type: "file" as const }));
+  }
   async read(_session: string, path: string) {
+    this.calls.push(`read:${path}`);
     const content = this.contents.get(path);
     if (!content) throw new Error("The shared file was not found.");
     return content;
   }
   async write(_session: string, path: string, content: Buffer) {
+    this.calls.push(`write:${path}`);
     this.contents.set(path, content);
     return { size: content.length, etag: "etag" };
   }
@@ -196,6 +205,58 @@ describe("coordinator worker tools", () => {
     expect(await c.call(WORKER_TOOLS.readFile, { path: "../etc/passwd" })).toEqual(refusedWith(/Invalid arguments/));
     expect(await c.call(WORKER_TOOLS.readFile, { path: "missing.md" })).toEqual(refusedWith(/not found/));
     expect(await c.call(WORKER_TOOLS.writeFile, { path: "big.txt", content: "x".repeat(33 * 1024) })).toEqual(refusedWith(/Invalid arguments/));
+  });
+
+  it("accept paths as workers see them under /shared, as the volume-relative path, and nothing outside the volume", async () => {
+    const service = new FakeFiles();
+    const c = await setup(lead, { files: service });
+    expect(await c.call(WORKER_TOOLS.writeFile, { path: "/shared/plan.txt", content: "Plan" })).toEqual({ size: 4, etag: "etag" });
+    expect(await c.call(WORKER_TOOLS.readFile, { path: "/shared/plan.txt" })).toMatchObject({ data: "Plan", encoding: "utf-8" });
+    expect(await c.call(WORKER_TOOLS.readFile, { path: "plan.txt" })).toMatchObject({ data: "Plan" });
+    await c.call(WORKER_TOOLS.writeFile, { path: "/shared/alpha/report.md", content: "Done" });
+    for (const path of ["/shared", "/shared/", "/shared/alpha"]) await c.call(WORKER_TOOLS.listFiles, { path });
+    expect(service.calls).toEqual([
+      "write:plan.txt", "read:plan.txt", "read:plan.txt", "write:alpha/report.md", "list:(top)", "list:(top)", "list:alpha",
+    ]);
+
+    // The mount prefix is only removed; what remains must still be a portable path inside the volume.
+    const outside = [
+      "/shared/../etc/passwd", "/shared/./plan.txt", "/shared//plan.txt", "/shared/alpha/../../x", "/sharedx/plan.txt", "/SHARED/plan.txt",
+      "/etc/passwd", "/data/worker.json", "/", "shared/../../plan.txt", "/shared", "/shared/",
+    ];
+    for (const path of outside) {
+      expect(await c.call(WORKER_TOOLS.readFile, { path }), path).toEqual(refusedWith(/^Invalid arguments at path: Use a path inside the shared volume/));
+    }
+    expect(await c.call(WORKER_TOOLS.writeFile, { path: "/shared/../escape.txt", content: "x" })).toEqual(refusedWith(/inside the shared volume/));
+    expect(await c.call(WORKER_TOOLS.listFiles, { path: "/shared/.." })).toEqual(refusedWith(/inside the shared volume/));
+    expect(await c.call(WORKER_TOOLS.listFiles, { path: "/" })).toEqual(refusedWith(/inside the shared volume/));
+    expect(service.calls).toHaveLength(7);
+
+    // Custom permission handlers see the volume-relative path the call touches, whichever form the model used.
+    for (const name of [WORKER_TOOLS.listFiles, WORKER_TOOLS.readFile, WORKER_TOOLS.writeFile]) {
+      const target = c.byName.get(name)!.rule.target!;
+      expect(target({ path: "/shared/drafts/plan.md" })).toBe("drafts/plan.md");
+      expect(target({ path: "drafts/plan.md" })).toBe("drafts/plan.md");
+    }
+    const drafts = new SharedPermissionPolicy({
+      harness: "lead", sessionId: c.record.id, principal: c.principal, definition: { permissions: { default: "ask" } },
+      approval: { mode: "custom", initial: "manual", available: ["manual"], handler: "workspace-drafts" },
+      rules: new Map([...c.byName].map(([name, entry]) => [name, entry.rule])), builtins: new Set(), handler: workspaceDraftsHandler,
+    });
+    const write = (path: string) => drafts.handle(
+      { kind: "custom-tool", toolName: WORKER_TOOLS.writeFile, toolDescription: "Fixture.", args: { path, content: "x" } } as PermissionRequest,
+      { sessionId: c.record.id },
+    );
+    expect(await write("/shared/drafts/plan.md")).toEqual({ kind: "approve-once" });
+    expect(await write("drafts/plan.md")).toEqual({ kind: "approve-once" });
+    expect(await write("/shared/final/plan.md")).toMatchObject({ kind: "reject" });
+
+    // The model is told both forms.
+    for (const name of [WORKER_TOOLS.listFiles, WORKER_TOOLS.readFile, WORKER_TOOLS.writeFile]) {
+      const tool = c.byName.get(name)!.tool;
+      expect(tool.description).toContain("/shared/");
+      expect(JSON.stringify(tool.parameters)).toContain("/shared/");
+    }
   });
 });
 
