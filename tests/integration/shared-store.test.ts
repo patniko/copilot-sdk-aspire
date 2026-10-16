@@ -26,14 +26,39 @@ afterEach(async () => {
   ids.length = 0;
 });
 afterAll(async () => { await pool.end(); });
-async function create(principal = randomUUID()) {
-  const session = await store.create(principal, 1, "fixture", definition, 100);
+async function create(principal = randomUUID(), admitted = definition) {
+  const session = await store.create(principal, 1, "fixture", admitted, 100);
   ids.push(session.id);
   const lease = await files.acquire(session.id, principal, "fixture-worker");
   return { session, lease, principal };
 }
 
 describe("durable shared session admission", () => {
+  it("keeps a harness within its own active and queued turn ceilings so other harnesses still start", async () => {
+    const harnessed = (name: string) => SharedSessionDefinition.parse({
+      model: "synthetic", limits: definition.limits, harness: { name, version: "1.0.0", digest: `sha256:${"a".repeat(64)}`, mode: "shared" },
+    });
+    const perHarness = SharedWorkerLimits.parse({
+      activeTurns: 2, activeTurnsPerPrincipal: 2, queuedTurns: 10, activeTurnsPerHarness: 1, queuedTurnsPerHarness: 1,
+    });
+    const [first, second, third] = [await create(undefined, harnessed("busy")), await create(undefined, harnessed("busy")), await create(undefined, harnessed("busy"))];
+    const quiet = await create(undefined, harnessed("quiet"));
+    expect((await store.get(quiet.principal, quiet.session.id))?.view).toMatchObject({
+      mode: "shared", placement: "shared", harness: { name: "quiet" }, segment: { generation: 1, ahpSessionId: quiet.session.id },
+    });
+    const running = await store.enqueueTurn(first.lease, "op", "user", perHarness);
+    expect(await store.startTurn(first.lease, running.id, perHarness)).toMatchObject({ state: "running" });
+    const waiting = await store.enqueueTurn(second.lease, "op", "user", perHarness);
+    expect(await store.startTurn(second.lease, waiting.id, perHarness)).toBeUndefined();
+    await expect(store.enqueueTurn(third.lease, "op", "user", perHarness)).rejects.toMatchObject({ code: "quota_exceeded", message: expect.stringContaining("this harness") });
+    // The busy harness is at its ceiling, so the FIFO skips its queued turn and the later quiet turn starts.
+    const later = await store.enqueueTurn(quiet.lease, "op", "user", perHarness);
+    expect(await store.startTurn(quiet.lease, later.id, perHarness)).toMatchObject({ state: "running" });
+    await store.finishTurn(first.lease, running.id);
+    expect(await store.startTurn(second.lease, waiting.id, perHarness)).toMatchObject({ state: "running" });
+    for (const [lease, turn] of [[second.lease, waiting], [quiet.lease, later]] as const) await store.finishTurn(lease, turn.id);
+  });
+
   it("binds retained configuration and visibility to the principal and enforces creation quotas", async () => {
     const { session, principal } = await create();
     expect((await store.get(principal, session.id))?.definition).toEqual(definition);
