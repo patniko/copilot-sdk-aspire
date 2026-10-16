@@ -6,6 +6,7 @@ import {
 } from "@copilot-agent/job-store";
 import type { Logger } from "@copilot-agent/service-defaults";
 import { DockerExecutionAdapter, type ExecutionAdapter, type ObservedContainer } from "./docker.js";
+import { SharedFileError, type SharedFileOperation, type SharedFileResult } from "./shared-files.js";
 
 export interface ControllerOptions {
   allocations: AllocationStore;
@@ -227,6 +228,26 @@ export class ExecutionController {
     }
     await this.options.allocations.retired(lease, allocation.id);
     this.options.logger.info({ allocation: allocation.id, session: allocation.sessionId, reason }, "session allocation retired; volume retained");
+  }
+
+  /**
+   * The controller-side shared file service (docs/HOSTING-MODES-PLAN.md, decision D10): one bounded operation on an
+   * open orchestrator conversation's shared worker volume, run in a short-lived helper container from the session
+   * image. A conversation that has not written or started a shared worker yet has an empty volume.
+   */
+  async sharedFiles(sessionId: string, operation: SharedFileOperation): Promise<SharedFileResult> {
+    const lease = this.#lease;
+    if (!lease || !this.#sessionImage || this.#stopping || this.#lifetime.signal.aborted) {
+      throw new SharedFileError("unavailable", "The shared file service is not available.");
+    }
+    const volume = await this.options.allocations.sharedVolume(lease, sessionId, operation.kind === "write");
+    if (!volume) {
+      if (operation.kind === "list" && !operation.path) return { entries: [] };
+      throw new SharedFileError("not_found", operation.kind === "list" ? "The directory was not found." : "The file was not found.");
+    }
+    await this.#adapter.ensureNamedVolume(volume);
+    await this.options.allocations.volumeObserved(lease, volume.name);
+    return this.#adapter.sharedFiles(this.#sessionImage, volume, operation);
   }
 
   async stop(): Promise<void> {

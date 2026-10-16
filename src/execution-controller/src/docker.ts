@@ -1,7 +1,10 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type { BoundVolume, ExecutionAllocation, JobAllocation, SessionAllocation } from "@copilot-agent/job-store";
+import {
+  SHARED_FILE_READ_LIMIT, SHARED_FILES_SCRIPT, SharedFileError, sharedFileReply, type SharedFileOperation, type SharedFileResult,
+} from "./shared-files.js";
 
 const exec = promisify(execFile);
 const Container = z.object({
@@ -29,6 +32,10 @@ export interface ExecutionAdapter {
   managed(): Promise<ObservedContainer[]>;
   ingress(container: ObservedContainer): Promise<{ host: string; port: number } | undefined>;
   ensureVolume(volume: BoundVolume, allocation: SessionAllocation): Promise<void>;
+  /** Creates a volume the ledger recorded, or checks an existing one's labels. */
+  ensureNamedVolume(volume: BoundVolume): Promise<void>;
+  /** One bounded operation on a coordinator session's shared worker volume, in a short-lived helper container. */
+  sharedFiles(image: string, volume: BoundVolume, operation: SharedFileOperation): Promise<SharedFileResult>;
   /** Names of volumes labeled with this namespace. */
   volumes(): Promise<string[]>;
 }
@@ -156,6 +163,10 @@ export class DockerExecutionAdapter implements ExecutionAdapter {
 
   async ensureVolume(volume: BoundVolume, allocation: SessionAllocation): Promise<void> {
     if (!(allocation.volumes as BoundVolume[]).some((entry) => entry.name === volume.name)) throw new Error("The volume is not bound to this allocation.");
+    await this.ensureNamedVolume(volume);
+  }
+
+  async ensureNamedVolume(volume: BoundVolume): Promise<void> {
     const labels = volumeLabels(this.namespace, volume);
     const read = async () => {
       const json = await this.command(["volume", "inspect", volume.name, "--format", "{{json .Labels}}"], {}, true);
@@ -169,6 +180,31 @@ export class DockerExecutionAdapter implements ExecutionAdapter {
     if (!observed || Object.entries(labels).some(([key, value]) => observed![key] !== value)) {
       throw new Error("Refusing to mount a volume whose namespace or session labels do not match.");
     }
+  }
+
+  async sharedFiles(image: string, volume: BoundVolume, operation: SharedFileOperation): Promise<SharedFileResult> {
+    const args = sharedFileArguments(this.namespace, image, volume, operation);
+    const output = await new Promise<string>((resolve, reject) => {
+      const env: NodeJS.ProcessEnv = {};
+      for (const [key, value] of Object.entries(process.env)) {
+        if (/^(PATH|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|SYSTEMROOT|TEMP|TMP|DOCKER_HOST|DOCKER_CONTEXT|DOCKER_CONFIG)$/i.test(key)) env[key] = value;
+      }
+      const child = spawn("docker", args, { env, windowsHide: true, signal: this.signal, timeout: 60_000, stdio: ["pipe", "pipe", "ignore"] });
+      const chunks: Buffer[] = [];
+      let size = 0;
+      child.stdout.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > SHARED_FILE_READ_LIMIT * 2) child.kill();
+        else chunks.push(chunk);
+      });
+      child.once("error", () => reject(new SharedFileError("unavailable", "The shared file service could not start its helper.")));
+      child.once("close", (code) => {
+        if (code !== 0) reject(new SharedFileError("unavailable", "The shared file helper failed."));
+        else resolve(Buffer.concat(chunks).toString("utf8"));
+      });
+      child.stdin.end(operation.kind === "write" ? operation.content : undefined);
+    });
+    return sharedFileReply(operation, output);
   }
 
   async volumes(): Promise<string[]> {
@@ -229,4 +265,23 @@ function containerUrl(value: string): string {
   if (url.username || url.password || !["http:", "https:"].includes(url.protocol)) throw new Error("Invalid container service URL.");
   if (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) url.hostname = "host.docker.internal";
   return url.href.replace(/\/$/, "");
+}
+
+/**
+ * The Docker arguments for one shared-file helper: no network, a read-only image filesystem, every capability
+ * dropped except those that hand the volume's root to the execution user before the script drops to it, and only the
+ * shared volume mounted (read-only unless writing). Nothing from the controller's environment reaches it.
+ */
+export function sharedFileArguments(namespace: string, image: string, volume: BoundVolume, operation: SharedFileOperation): string[] {
+  if (volume.purpose !== "shared" || !/^sha256:[a-f0-9]{64}$/.test(image)) throw new Error("Shared file helpers mount only a shared volume with a resolved image.");
+  const write = operation.kind === "write";
+  return [
+    "container", "run", "--rm", "--interactive", "--network", "none", "--read-only", "--tmpfs", "/tmp:size=1m",
+    "--label", `copilot.hybrid.namespace=${namespace}`, "--label", "copilot.hybrid.managed=files",
+    "--cpus", "0.5", "--memory", "128m", "--pids-limit", "32", "--security-opt", "no-new-privileges", "--cap-drop", "ALL",
+    ...(write ? ["CHOWN", "SETUID", "SETGID"] : ["SETUID", "SETGID"]).flatMap((capability) => ["--cap-add", capability]),
+    "--mount", `type=volume,src=${volume.name},dst=/shared${write ? "" : ",readonly"}`,
+    "--entrypoint", "node", image, "-e", SHARED_FILES_SCRIPT, operation.kind, operation.path ?? "",
+    ...(write && operation.ifMatch ? [operation.ifMatch] : []),
+  ];
 }

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { Tool, ToolInvocation } from "@github/copilot-sdk";
+import type { Tool, ToolInvocation, ToolResultObject } from "@github/copilot-sdk";
 import {
   ArtifactPath, type HostingFeature, policyFor, WORKER_TOOLS, workerCeilings, WorkerCreation, WorkerMessageRequest,
   WorkerReference, type WorkerView,
@@ -46,23 +46,31 @@ const WriteFile = z.object({ path: ArtifactPath, content: z.string().max(READ_LI
 const pathOf = (args: unknown) => (args && typeof args === "object" && "path" in args && typeof args.path === "string" ? args.path : undefined);
 const schema = (value: z.ZodType) => z.toJSONSchema(value, { io: "input" });
 
+/** A refusal the coordinator's model should read and act on. */
+class ToolRefusal extends Error {}
+
 function parse<T>(value: z.ZodType<T>, input: unknown): T {
   const parsed = value.safeParse(input);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
-    throw new Error(`Invalid arguments${issue ? ` at ${issue.path.join(".") || "(root)"}: ${issue.message}` : "."}`);
+    throw new ToolRefusal(`Invalid arguments${issue ? ` at ${issue.path.join(".") || "(root)"}: ${issue.message}` : "."}`);
   }
   return parsed.data;
 }
 
-/** Policy and ledger refusals become tool failures the model can read and act on, never a halted turn. */
-function refusal(error: unknown): Error {
+/**
+ * Policy, ledger, and argument refusals become `failure` results the model reads and can act on. The runtime reports a
+ * thrown error only as a generic failure, and `rejected` would halt the turn as if a person had stopped it.
+ */
+function refusal(error: unknown): ToolResultObject | undefined {
+  let text: string | undefined;
   if (error instanceof HttpError) {
     const path = (error.details as { path?: unknown } | undefined)?.path;
-    return new Error(`${error.message}${typeof path === "string" ? ` (argument: ${path})` : ""}`);
+    text = `${error.message}${typeof path === "string" ? ` (argument: ${path})` : ""}`;
+  } else if (error instanceof StoreError || error instanceof ToolRefusal) {
+    text = error.message;
   }
-  if (error instanceof StoreError) return new Error(error.message);
-  return error instanceof Error ? error : new Error(String(error));
+  return text === undefined ? undefined : { resultType: "failure", textResultForLlm: text };
 }
 
 /** A worker as the coordinator's tools report it; `full` keeps the whole latest result. */
@@ -105,13 +113,30 @@ export function workerTools(
   if (!ceilings) return [];
   const lease = context.lease;
   const rootOnly = (invocation: ToolInvocation) => {
-    if (invocation.sessionId !== session.id || invocation.agentId) throw new Error("Only the coordinator's root agent can manage workers.");
+    if (invocation.sessionId !== session.id || invocation.agentId) throw new ToolRefusal("Only the coordinator's root agent can manage workers.");
   };
-  const run = async <T>(action: () => Promise<T>): Promise<T> => {
-    try { return await action(); } catch (error) { throw refusal(error); }
+  const run = async <T>(action: () => Promise<T>): Promise<T> => action();
+  const tool = (name: string, description: string, parameters: z.ZodType, handler: NonNullable<Tool["handler"]>, rule: SharedTool["rule"] = {}): SharedTool => ({
+    rule,
+    tool: {
+      name, description, parameters: schema(parameters),
+      handler: async (args, invocation) => {
+        try { return await handler(args, invocation); }
+        catch (error) {
+          const failure = refusal(error);
+          if (failure) return failure;
+          throw error;
+        }
+      },
+    },
+  });
+  /**
+   * Inherited authority comes only from the person's recorded messages in this conversation's runtime history, never
+   * from tool arguments, and is recorded for the worker before its first task can rely on it.
+   */
+  const grant = async (view: WorkerView) => {
+    if (view.inheritsHumanAuthority && view.state !== "stopped") await deps.workers.grantAuthority(lease, view.id, await context.humanMessages());
   };
-  const tool = (name: string, description: string, parameters: z.ZodType, handler: Tool["handler"], rule: SharedTool["rule"] = {}): SharedTool =>
-    ({ rule, tool: { name, description, parameters: schema(parameters), handler } });
 
   const tools: SharedTool[] = [
     tool(WORKER_TOOLS.create,
@@ -126,12 +151,16 @@ export function workerTools(
         const argumentsHash = sha256Hex(canonicalJson(args));
         return run(async () => {
           const existing = await deps.workers.find(lease, invocation.toolCallId, argumentsHash);
-          if (existing) return { accepted: true, worker: summary(existing), message: "This tool call already started the worker." };
+          if (existing) {
+            await grant(existing);
+            return { accepted: true, worker: summary(existing), message: "This tool call already started the worker." };
+          }
           const registry = await deps.registry();
           const { capacity, ...planned } = planWorker(registry,
             { definition: plan.definition, policy: policyFor(registry.policies, plan.harness.name) }, args, { features: deps.features });
           const admitted = await deps.workers.admit(lease, currentTurn().id, { ...planned, operationKey: invocation.toolCallId, argumentsHash },
             { ...capacity, deployment: deps.deploymentLimit }, deps.containers);
+          await grant(admitted.view);
           return {
             accepted: true, worker: summary(admitted.view),
             message: "The worker starts in its own container and reports back to this conversation. End your turn or continue with other work; do not poll.",
@@ -145,6 +174,8 @@ export function workerTools(
         rootOnly(invocation);
         const args = parse(WorkerMessageRequest, value);
         return run(async () => {
+          // The worker reads its authority before the message that may rely on it.
+          if (ceilings.inheritHumanAuthority) await deps.workers.refreshAuthority(lease, await context.humanMessages());
           const sent = await deps.workers.send(lease, invocation.toolCallId, sha256Hex(canonicalJson(args)), args.worker, args.message, args.delivery);
           return { accepted: true, worker: sent.worker.name, seq: sent.message.seq, delivery: sent.message.delivery, state: sent.worker.state };
         });
@@ -155,7 +186,7 @@ export function workerTools(
         const args = parse(Worker, value);
         return run(async () => {
           const view = await deps.workers.get(session.principal, session.id, args.worker);
-          if (!view) throw new Error("No worker with that name or id belongs to this conversation.");
+          if (!view) throw new ToolRefusal("No worker with that name or id belongs to this conversation.");
           return summary(view, true);
         });
       }),
@@ -217,19 +248,23 @@ export function workerTools(
     const files = deps.files;
     if (!files) throw new Error("Shared worker storage needs the controller's shared file service.");
     const signal = () => context.signal;
+    // The file service's refusals (missing files, conflicts, limits) are for the model to act on.
+    const shared = <T>(operation: Promise<T>): Promise<T> => operation.catch((error: unknown) => {
+      throw new ToolRefusal(error instanceof Error ? error.message : "The shared file service failed.");
+    });
     tools.push(
       tool(WORKER_TOOLS.listFiles, "List a directory of this conversation's shared worker volume.", ListFiles,
         async (value, invocation) => {
           rootOnly(invocation);
           const args = parse(ListFiles, value);
-          return run(async () => ({ entries: await files.list(session.id, args.path, signal()) }));
+          return run(async () => ({ entries: await shared(files.list(session.id, args.path, signal())) }));
         }, { kind: "read", quietUnderAsk: true, target: pathOf }),
       tool(WORKER_TOOLS.readFile, "Read a bounded portion of a file in this conversation's shared worker volume (untrusted worker output).", ReadFile,
         async (value, invocation) => {
           rootOnly(invocation);
           const args = parse(ReadFile, value);
           return run(async () => {
-            const content = await files.read(session.id, args.path, signal());
+            const content = await shared(files.read(session.id, args.path, signal()));
             return { ...preview(content, args.offset, args.length), etag: createHash("sha256").update(content).digest("base64url") };
           });
         }, { kind: "read", quietUnderAsk: true, target: pathOf }),
@@ -239,7 +274,7 @@ export function workerTools(
         async (value, invocation) => {
           rootOnly(invocation);
           const args = parse(WriteFile, value);
-          return run(async () => files.write(session.id, args.path, Buffer.from(args.content, "utf8"), args.ifMatch, signal()));
+          return run(async () => shared(files.write(session.id, args.path, Buffer.from(args.content, "utf8"), args.ifMatch, signal())));
         }, { kind: "write", target: pathOf }),
     );
   }

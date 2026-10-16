@@ -196,7 +196,8 @@ Content-Type: application/json
 
 { "kind": "question", "answer": "Use Python 3.12." }
 
-### Orchestrator workers of a shared conversation (needs the shared worker; set SHARED_SESSION_ID in http/.env)
+### Orchestrator workers of an orchestrator conversation
+# With orchestrator-workers enabled, create one with POST /v1/sessions { "harness": "hybrid-orchestrator" } and set SHARED_SESSION_ID in http/.env
 # @name workers
 GET {{baseUrl}}/v1/sessions/{{$dotenv SHARED_SESSION_ID}}/workers
 Authorization: Bearer {{apiKey}}
