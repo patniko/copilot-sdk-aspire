@@ -199,7 +199,8 @@ child.on("message", (value: unknown) => {
     }
     void post(request.operation, {
       epoch: lease.epoch, sessionId: request.sessionId,
-      ...(request.operation === "session" ? { resume: request.resume, ...(request.ahpSessionId ? { ahpSessionId: request.ahpSessionId } : {}) } : {}),
+      ...(request.operation === "session" ? { resume: request.resume } : {}),
+      ...(request.operation === "catalog" ? { ahpSessionId: request.ahpSessionId } : {}),
     })
       .then((result) => { if (!stopping && child?.connected) child.send({ kind: "response", id: message.id, result }); })
       .catch((error: unknown) => {

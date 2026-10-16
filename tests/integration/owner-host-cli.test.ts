@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -85,10 +85,14 @@ describe.skipIf(!enabled)("real Copilot CLI on a per-harness owner host", () => 
       expect(sessions.map((entry) => entry.id)).toEqual([session!.id]);
       expect(sessions[0]!.inputTokens).toBeGreaterThan(0);
     } catch (error) {
-      let diagnostic = `${transcript.join("\n----\n")}\n----\n${cli?.output ?? ""}`;
-      for (const container of fixture.containers) diagnostic += `\n--- host ${container.slice(0, 12)}\n${fixture.logs(container)}`;
+      let diagnostic = "";
+      for (const container of fixture.containers) diagnostic += `--- host ${container.slice(0, 12)}\n${fixture.logs(container)}\n`;
+      const sessions = await fixture.store.list(fixture.key(harness)).catch(() => []);
+      diagnostic += `--- hosted sessions: ${sessions.length}; model requests: ${fixture.requests.length}\n`;
+      diagnostic += `${transcript.join("\n----\n")}\n----\n${cli?.output ?? ""}`;
       diagnostic = diagnostic.split(credential).join("[redacted]");
-      throw new Error(`Owner host CLI qualification failed:\n${diagnostic.slice(-12_000)}`, { cause: error });
+      if (process.env.OWNER_HOST_CLI_TRANSCRIPT) await writeFile(process.env.OWNER_HOST_CLI_TRANSCRIPT, diagnostic);
+      throw new Error(`Owner host CLI qualification failed:\n${diagnostic.slice(0, 3000)}\n...\n${diagnostic.slice(-6000)}`, { cause: error });
     } finally {
       try { await cli?.stop(); }
       finally {

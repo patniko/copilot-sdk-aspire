@@ -187,6 +187,7 @@ export class OwnerHostFixture {
   /** Removes only what this fixture created. Mission Control environments are deleted by the caller's client. */
   async close(): Promise<void> {
     for (const container of this.containers) {
+      if (process.env.OWNER_HOST_TEST_LOGS === "1") process.stderr.write(`--- host ${container.slice(0, 12)}\n${this.logs(container)}\n`);
       spawnSync("docker", ["rm", "-f", container], { stdio: "ignore" });
     }
     for (const volume of this.volumes.values()) spawnSync("docker", ["volume", "rm", volume], { stdio: "ignore" });

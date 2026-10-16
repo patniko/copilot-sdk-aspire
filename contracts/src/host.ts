@@ -8,7 +8,7 @@ export type HostTransport = z.infer<typeof HostTransport>;
 
 const HOST_HARNESS = /^[a-z][a-z0-9-]{1,62}$/;
 const GITHUB_LOGIN = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/;
-/** A session identity as the runtime spells it, for example in `copilot --resume <id>`. */
+/** A client-visible AHP session identity (`ahp-session:/<id>`), as passed to `copilot --resume <id>`. */
 export const AHP_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const UUID_SPELLING = /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
@@ -95,8 +95,8 @@ export const OwnerHostDescriptors = z.array(OwnerHostDescriptor).max(9).superRef
 /** Body of `POST /v1/hosts/{harness}/connection`. */
 export const HostConnectionRequest = z.object({
   transport: z.enum(HOSTING_TRANSPORTS).optional(),
-  /** A retained managed session to resume, in either UUID spelling; returned as `ahpSessionId` once verified. */
-  sessionId: z.string().refine((id) => canonicalSessionId(id) !== undefined, "Use the session's UUID.").optional(),
+  /** A retained managed session to resume: its ledger ID or its AHP session ID. Returned as `ahpSessionId` once verified. */
+  sessionId: z.string().regex(AHP_SESSION_ID).optional(),
 }).strict();
 export type HostConnectionRequest = z.infer<typeof HostConnectionRequest>;
 
@@ -137,8 +137,9 @@ export type HostLease = z.infer<typeof HostLease>;
 
 
 /**
- * The canonical hosted-session identity for a runtime session ID. Hosts choose their own session IDs (currently
- * UUIDs without hyphens); grants, the ledger, and the API use the hyphenated form. Non-UUID identities are refused.
+ * The canonical hosted-session (ledger) identity for a runtime session ID. A host mints its own runtime session IDs
+ * (currently UUIDs without hyphens), separately from the client's AHP session URI; grants, the ledger, and the API
+ * use the hyphenated form. Non-UUID identities are refused.
  */
 export function canonicalSessionId(id: string): string | undefined {
   if (!UUID_SPELLING.test(id)) return undefined;
@@ -148,7 +149,7 @@ export function canonicalSessionId(id: string): string | undefined {
 
 export const HostedSession = z.object({
   id: z.string().uuid(),
-  /** The runtime's own spelling of this session's identity, used to resume it from a client. */
+  /** The client-visible AHP session ID, once the host has attributed its catalog entry; clients resume with it. */
   ahpSessionId: z.string().regex(AHP_SESSION_ID).optional(),
   harness: z.object({ definition: HarnessDefinition, digest: z.string() }).strict(),
   model: z.string(),
@@ -160,10 +161,9 @@ export const HostedSession = z.object({
 export type HostedSession = z.infer<typeof HostedSession>;
 
 export const HostControlRequest = z.discriminatedUnion("operation", [
-  z.object({
-    operation: z.literal("session"), sessionId: z.string().uuid(), resume: z.boolean(),
-    ahpSessionId: z.string().regex(AHP_SESSION_ID).optional(),
-  }).strict(),
+  z.object({ operation: z.literal("session"), sessionId: z.string().uuid(), resume: z.boolean() }).strict(),
+  /** Records the client-visible AHP session ID of a session the host created. */
+  z.object({ operation: z.literal("catalog"), sessionId: z.string().uuid(), ahpSessionId: z.string().regex(AHP_SESSION_ID) }).strict(),
   z.object({ operation: z.literal("token"), sessionId: z.string().uuid() }).strict(),
   z.object({ operation: z.literal("close"), sessionId: z.string().uuid() }).strict(),
 ]);

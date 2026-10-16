@@ -75,9 +75,8 @@ export function registerHostRoutes(app: FastifyInstance, deps: HostDependencies)
     return { harness: host.snapshot, profiles: deps.profiles, ...admitHostedHarness(host.snapshot, deps.profiles, host.policy) };
   };
   const epochSchema = z.object({ epoch: z.string().uuid() }).strict();
-  const sessionSchema = epochSchema.extend({
-    sessionId: z.string().uuid(), resume: z.boolean(), ahpSessionId: z.string().regex(AHP_SESSION_ID).optional(),
-  });
+  const sessionSchema = epochSchema.extend({ sessionId: z.string().uuid(), resume: z.boolean() });
+  const catalogSchema = epochSchema.extend({ sessionId: z.string().uuid(), ahpSessionId: z.string().regex(AHP_SESSION_ID) });
   const tokenSchema = epochSchema.extend({ sessionId: z.string().uuid() });
 
   const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
@@ -145,10 +144,16 @@ export function registerHostRoutes(app: FastifyInstance, deps: HostDependencies)
     const defaults = managed(host);
     const session = await perform(() => deps.store.session(host.id, body.epoch, body.sessionId, body.resume, {
       harness: defaults.harness, model: defaults.model, tokenBudget: defaults.tokenBudget,
-    }, body.ahpSessionId));
+    }));
     const current = admitHostedHarness(session.harness, defaults.profiles, host.policy);
     if (current.model !== session.model) throw new HttpError(403, "host_policy_rejected", "The retained session model is no longer approved.");
     return session;
+  });
+  app.post("/internal/host/catalog", async (request) => {
+    const host = hostOf(request);
+    const body = parse(catalogSchema, request.body);
+    managed(host);
+    return { recorded: await perform(() => deps.store.recordCatalogIdentity(host.id, body.epoch, body.sessionId, body.ahpSessionId)) };
   });
   app.post("/internal/host/token", async (request) => {
     const host = hostOf(request);

@@ -20,9 +20,10 @@ CREATE TABLE owner_hosts (
 -- the migration cannot know that harness. Sessions of an unadopted legacy host keep a NULL host_harness.
 ALTER TABLE hosted_sessions ADD COLUMN host_harness text;
 CREATE INDEX hosted_sessions_by_host ON hosted_sessions (host_harness, owner, created_at DESC);
--- Hosts choose their own session identities; the id column keeps the canonical UUID that grants carry, and
--- ahp_session_id the runtime's exact spelling, which clients pass to resume.
+-- A host mints the runtime session ID (the canonical UUID in id, which grants carry) separately from the
+-- client-visible AHP session ID that clients resume; the host records the latter once it appears in its catalog.
 ALTER TABLE hosted_sessions ADD COLUMN ahp_session_id text CHECK (ahp_session_id ~ '^[A-Za-z0-9_-]{1,128}$');
+CREATE UNIQUE INDEX hosted_sessions_by_ahp_identity ON hosted_sessions (host_harness, ahp_session_id) WHERE ahp_session_id IS NOT NULL;
 
 -- Connection tickets live for 60 seconds; outstanding ones are discarded rather than guessed onto a harness.
 DELETE FROM hosted_connection_tickets;

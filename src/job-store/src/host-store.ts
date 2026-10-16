@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type pg from "pg";
-import { HostedSession, type CapabilityIntrospection, type HarnessSnapshot, type HostLease } from "@copilot-agent/contracts";
+import { canonicalSessionId, HostedSession, type CapabilityIntrospection, type HarnessSnapshot, type HostLease } from "@copilot-agent/contracts";
 import { StoreError } from "./store.js";
 
 /** One owner host: the harness it serves and the GitHub owner it is bound to. Every operation checks both. */
@@ -83,13 +83,10 @@ export class HostStore {
     await this.pool.query("UPDATE owner_hosts SET lease_until = now() WHERE harness = $1 AND owner = $2 AND epoch = $3", [...keyOf(host), epoch]);
   }
 
-  /**
-   * Admits a new session or reopens a retained one. `id` is the canonical UUID; `ahpSessionId` records the runtime's
-   * own spelling of it the first time the host reports one.
-   */
+  /** Admits a new session or reopens a retained one; `id` is the canonical UUID of the host-minted runtime session. */
   async session(host: HostKey, epoch: string, id: string, resume: boolean, defaults: {
     harness: HarnessSnapshot; model: string; tokenBudget: number;
-  }, ahpSessionId?: string): Promise<HostedSession> {
+  }): Promise<HostedSession> {
     const [harness, owner] = keyOf(host);
     return this.#tx(async (client) => {
       await this.#lease(client, host, epoch);
@@ -100,15 +97,11 @@ export class HostStore {
           throw new StoreError("quota_exceeded", `Close a retained session before creating another (maximum ${MAX_OPEN_SESSIONS}).`);
         }
         const inserted = await client.query(
-          `INSERT INTO hosted_sessions (id, owner, host_harness, harness, model, token_budget, ahp_session_id)
-           VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT DO NOTHING`,
-          [id, owner, harness, JSON.stringify(defaults.harness), defaults.model, defaults.tokenBudget, ahpSessionId ?? null],
+          `INSERT INTO hosted_sessions (id, owner, host_harness, harness, model, token_budget)
+           VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,
+          [id, owner, harness, JSON.stringify(defaults.harness), defaults.model, defaults.tokenBudget],
         );
         if (!inserted.rowCount) throw new StoreError("invalid_state", "The session already exists; resume it instead.");
-      } else if (ahpSessionId) {
-        await client.query(
-          "UPDATE hosted_sessions SET ahp_session_id = $4 WHERE id = $1 AND owner = $2 AND host_harness = $3 AND ahp_session_id IS NULL",
-          [id, owner, harness, ahpSessionId]);
       }
       const rows = await client.query<SessionRow>(
         "SELECT * FROM hosted_sessions WHERE id = $1 AND owner = $2 AND host_harness = $3", [id, owner, harness]);
@@ -187,10 +180,31 @@ export class HostStore {
     return result.rowCount === 1;
   }
 
-  async find(host: HostKey, id: string): Promise<HostedSession | undefined> {
+  /**
+   * Records the client-visible AHP session ID of a session this host created, once, under the current lease.
+   * An ID already attributed to another session of the host is refused.
+   */
+  async recordCatalogIdentity(host: HostKey, epoch: string, id: string, ahpSessionId: string): Promise<boolean> {
     const [harness, owner] = keyOf(host);
+    return this.#tx(async (client) => {
+      await this.#lease(client, host, epoch);
+      const result = await client.query(
+        `UPDATE hosted_sessions SET ahp_session_id = $4
+         WHERE id = $1 AND owner = $2 AND host_harness = $3 AND (ahp_session_id IS NULL OR ahp_session_id = $4)
+           AND NOT EXISTS (SELECT 1 FROM hosted_sessions other WHERE other.host_harness = $3 AND other.ahp_session_id = $4 AND other.id <> $1)`,
+        [id, owner, harness, ahpSessionId],
+      );
+      return result.rowCount === 1;
+    });
+  }
+
+  /** A session of this host by its ledger ID (either UUID spelling) or by its client-visible AHP session ID. */
+  async find(host: HostKey, idOrAhpSessionId: string): Promise<HostedSession | undefined> {
+    const [harness, owner] = keyOf(host);
+    const canonical = canonicalSessionId(idOrAhpSessionId);
     const result = await this.pool.query<SessionRow>(
-      "SELECT * FROM hosted_sessions WHERE id = $1 AND owner = $2 AND host_harness = $3", [id, owner, harness]);
+      `SELECT * FROM hosted_sessions WHERE owner = $2 AND host_harness = $3 AND (ahp_session_id = $1 OR id = $4::uuid)
+       ORDER BY (ahp_session_id = $1) DESC NULLS LAST LIMIT 1`, [idOrAhpSessionId, owner, harness, canonical ?? null]);
     return result.rows[0] ? toSession(result.rows[0]) : undefined;
   }
 

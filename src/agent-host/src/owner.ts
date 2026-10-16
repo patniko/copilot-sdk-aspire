@@ -91,14 +91,14 @@ async function start(config: OwnerConfiguration): Promise<void> {
   await client.start();
   const owner = client;
 
-  /** `runtimeId` is the runtime's own spelling; grants, control requests, and close signals use the canonical UUID. */
+  /** `runtimeId` is the host-minted runtime session ID; grants, control requests, and close signals use its canonical UUID. */
   async function materialize(runtimeId: string, selected: Omit<SessionConfig, "onPermissionRequest">, resume: boolean): Promise<CopilotSession> {
     if (selected.gitHubToken) secrets.add(selected.gitHubToken);
     if (stopping) throw new Error("The host is stopping.");
     const id = canonicalSessionId(runtimeId);
     if (!id) throw new Error("The host requires UUID session identities.");
     if (sessions.has(id)) return sessions.get(id)!;
-    const admitted = HostedSession.parse(await control({ operation: "session", sessionId: id, resume, ahpSessionId: runtimeId }));
+    const admitted = HostedSession.parse(await control({ operation: "session", sessionId: id, resume }));
     if (selected.model && selected.model !== admitted.model) throw new Error("The requested model is not admitted by the host.");
     const cwd = await realpath(selected.workingDirectory ?? workspacePath);
     const fromRoot = relative(workspacePath, cwd);
@@ -170,8 +170,12 @@ async function start(config: OwnerConfiguration): Promise<void> {
     createSession: async ({ config: selected, signal }) => {
       signal.throwIfAborted();
       if (!selected.sessionId) throw new Error("AHP did not supply a session identity.");
+      const before = await catalogResources();
       try {
-        return await materialize(selected.sessionId, selected, false);
+        const session = await materialize(selected.sessionId, selected, false);
+        const id = canonicalSessionId(selected.sessionId);
+        if (before && id) void attributeCatalogEntry(id, before);
+        return session;
       } catch (error) {
         process.send!({ kind: "diagnostic", message: safeError("Session creation failed.", error) });
         throw error;
@@ -190,6 +194,40 @@ async function start(config: OwnerConfiguration): Promise<void> {
     onExit: () => { if (!stopping) fail("The AHP hosting task stopped."); },
   }));
   process.send!({ kind: "ready", environmentId: host.environmentId });
+}
+
+type CatalogListing = { sessions: Array<{ resource: string }> };
+const attributed = new Set<string>();
+
+/** The host's catalog resources, when the runtime SDK can list them (the local runtime SDK can; 1.0.16 cannot). */
+async function catalogResources(): Promise<Set<string> | undefined> {
+  const list = (host as unknown as { listSessions?: () => Promise<CatalogListing> } | undefined)?.listSessions;
+  if (!list || !host) return undefined;
+  try {
+    return new Set((await list.call(host)).sessions.map((session) => session.resource));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The host catalogs a client-created session under the client's AHP URI, not the runtime session ID the factory
+ * receives. Attribute the one catalog entry that appears after a creation to that session; with zero or several
+ * candidates, record nothing rather than guess. Clients can still resume through the CLI's session list.
+ */
+async function attributeCatalogEntry(id: string, before: Set<string>): Promise<void> {
+  for (let attempt = 0; attempt < 40 && !stopping; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const now = await catalogResources();
+    if (!now) return;
+    const fresh = [...now].filter((resource) => !before.has(resource) && !attributed.has(resource));
+    if (fresh.length > 1) return;
+    const ahpSessionId = /^ahp-session:\/([A-Za-z0-9_-]{1,128})$/.exec(fresh[0] ?? "")?.[1];
+    if (!ahpSessionId) continue;
+    attributed.add(fresh[0]!);
+    await control({ operation: "catalog", sessionId: id, ahpSessionId }).catch(() => undefined);
+    return;
+  }
 }
 
 async function close(ids: string[]): Promise<void> {

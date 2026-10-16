@@ -157,9 +157,10 @@ export function registerHostRoutes(app: FastifyInstance, deps: HostApiDependenci
     }
     let ahpSessionId: string | undefined;
     if (parsed.data.sessionId && status.execution === "managed") {
-      const session = await deps.store.find(key, canonicalSessionId(parsed.data.sessionId)!);
+      const session = await deps.store.find(key, parsed.data.sessionId);
       if (!session || session.closed) throw new HttpError(404, "not_found", "Hosted session not found.");
-      ahpSessionId = session.ahpSessionId ?? session.id;
+      // Only the client-visible AHP session ID resumes a session; the ledger ID identifies the runtime session.
+      ahpSessionId = session.ahpSessionId;
     }
     const base = { harness: host.harness, transport, execution: status.execution, ...(ahpSessionId ? { ahpSessionId } : {}) };
     if (transport === "github") {

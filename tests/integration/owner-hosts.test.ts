@@ -117,15 +117,26 @@ describe("owner host API", () => {
     const harness = harnesses.get("review-agent")![0]!;
     const id = randomUUID();
     const runtimeId = id.replaceAll("-", "");
-    await store.session(reviewHost, lease.epoch, id, false, { harness, model: "grok-4.6", tokenBudget: 1000 }, runtimeId);
-    // Either UUID spelling finds the session; resume uses the runtime's own spelling.
-    const resume = await app.inject({ method: "POST", url: "/v1/hosts/review-agent/connection", headers: as(devKey), payload: { transport: "github", sessionId: runtimeId } });
-    expect(resume.json()).toMatchObject({ ahpSessionId: runtimeId, environmentId: "review-environment" });
-    const canonical = await app.inject({ method: "POST", url: "/v1/hosts/review-agent/connection", headers: as(devKey), payload: { transport: "direct", sessionId: id } });
-    expect(canonical.json()).toMatchObject({ ahpSessionId: runtimeId, transport: "direct" });
+    const ahpSessionId = randomUUID();
+    await store.session(reviewHost, lease.epoch, id, false, { harness, model: "grok-4.6", tokenBudget: 1000 });
+    // Before the host attributes its catalog entry, the session exists but has no resumable client identity.
+    const unattributed = await app.inject({ method: "POST", url: "/v1/hosts/review-agent/connection", headers: as(devKey), payload: { transport: "github", sessionId: runtimeId } });
+    expect(unattributed.statusCode).toBe(200);
+    expect(unattributed.json().ahpSessionId).toBeUndefined();
+    expect(await store.recordCatalogIdentity(reviewHost, lease.epoch, id, ahpSessionId)).toBe(true);
+    // The ledger ID in either spelling, or the AHP session ID, finds it; resume always uses the AHP session ID.
+    for (const sessionId of [runtimeId, id, ahpSessionId]) {
+      const resume = await app.inject({ method: "POST", url: "/v1/hosts/review-agent/connection", headers: as(devKey), payload: { transport: "github", sessionId } });
+      expect(resume.json()).toMatchObject({ ahpSessionId, environmentId: "review-environment" });
+    }
+    const other = randomUUID();
+    await store.session(reviewHost, lease.epoch, other, false, { harness, model: "grok-4.6", tokenBudget: 1000 });
+    expect(await store.recordCatalogIdentity(reviewHost, lease.epoch, other, ahpSessionId)).toBe(false);
+    await expect(store.recordCatalogIdentity(reviewHost, randomUUID(), other, randomUUID())).rejects.toThrow(/lease was lost/);
     const unknown = await app.inject({ method: "POST", url: "/v1/hosts/review-agent/connection", headers: as(devKey), payload: { transport: "github", sessionId: randomUUID() } });
     expect(unknown.statusCode).toBe(404);
-    expect((await app.inject({ method: "GET", url: "/v1/hosts/review-agent/sessions", headers: as(devKey) })).json().sessions.map((s: { id: string; ahpSessionId?: string }) => [s.id, s.ahpSessionId])).toEqual([[id, runtimeId]]);
+    const listed = (await app.inject({ method: "GET", url: "/v1/hosts/review-agent/sessions", headers: as(devKey) })).json().sessions as Array<{ id: string; ahpSessionId?: string }>;
+    expect(listed.map((s) => [s.id, s.ahpSessionId]).sort()).toEqual([[id, ahpSessionId], [other, undefined]].sort());
     expect((await app.inject({ method: "POST", url: `/v1/hosts/review-agent/sessions/${runtimeId}/close`, headers: as(devKey) })).json()).toEqual({ closed: true });
     expect((await app.inject({ method: "POST", url: "/v1/hosts/review-agent/connection", headers: as(devKey), payload: { sessionId: id } })).statusCode).toBe(404);
     expect((await app.inject({ method: "POST", url: "/v1/hosts/review-agent/connection", headers: as(devKey), payload: { transport: "relay" } })).statusCode).toBe(400);
