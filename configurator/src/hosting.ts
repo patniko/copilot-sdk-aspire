@@ -1,5 +1,6 @@
 import type { DemoHostSettings } from "@copilot-agent/contracts";
-import type { AzureStatus, LocalStackStatus, TryTarget } from "../server/types";
+import type { AzureStatus, HarnessHostingView, HostingHostsView, LocalStackStatus, TryTarget } from "../server/types";
+import { describeProblem, TRANSPORT_INFO } from "./hostingText";
 
 export type HostingArchitecture = "current" | "hybrid";
 export type HostingNodeId = "cli" | "entry" | "shared" | "dispatcher" | "scheduler" | "executors" | "transport" | "container" | "session-fs" | "ledger" | "gateway" | "foundry" | "copilot";
@@ -153,4 +154,82 @@ export function hostingPlacement(node: HostingNode, target: TryTarget): string {
   if (node.id === "cli") return "User's machine or API caller";
   if (node.id === "transport") return "Configured AHP connection path";
   return "External model service";
+}
+
+/** One way to connect Copilot CLI to a harness: a copyable launcher command, or the reason it is unavailable. */
+export interface HarnessConnection {
+  transport: "direct" | "github";
+  label: string;
+  command?: string;
+  disabledReason?: string;
+}
+
+/** What hosts a harness in one deployment, what keeps costing while idle, and how Copilot CLI connects. */
+export interface HarnessHostRow {
+  host: string;
+  hostDetail: string;
+  costNote?: string;
+  connections: HarnessConnection[];
+}
+
+/** The existing launcher; it reaches the deployment's demo agent host, which serves one harness. */
+export function launcherCommand(target: TryTarget, transport: "direct" | "github"): string {
+  return `pnpm host:connect --target ${target} --transport ${transport}`;
+}
+
+export function harnessHostRow(view: HarnessHostingView, hosts: HostingHostsView, target: TryTarget, demoHost?: DemoHostSettings): HarnessHostRow {
+  if (view.interaction === "batch") {
+    return {
+      host: hosts.executor ? "Executor pool" : "No executor",
+      hostDetail: "Runs as jobs through the jobs API, with no client transport.",
+      connections: [],
+    };
+  }
+  let host: string;
+  let hostDetail: string;
+  let costNote: string | undefined;
+  const ownerHost = hosts.isolatedHosts.find((entry) => entry.harness === view.harness);
+  if (view.placement === "container") {
+    if (ownerHost) {
+      host = "Owner host";
+      hostDetail = "A dedicated container for this harness, connectable by its owner only.";
+      costNote = "Always on: an owner host runs, and costs compute, for as long as it is deployed, whether or not anyone is connected.";
+    } else if (hosts.sessionContainers) {
+      host = "Session containers";
+      hostDetail = "A container per session, stopped when idle and resumed from its volume.";
+      costNote = "No idle compute; each new or resumed session waits for a container to start.";
+    } else {
+      host = "No host";
+      hostDetail = "No isolated host or session containers serve this harness here.";
+    }
+  } else if (hosts.sharedWorker) {
+    host = "Shared worker";
+    hostDetail = "One in-process runtime shared with other harnesses' sessions.";
+    costNote =
+      view.mode === "promotable"
+        ? "The shared worker is always on; a promoted session adds one container."
+        : view.mode === "orchestrator"
+          ? "The shared worker is always on; each worker adds container time."
+          : "The shared worker is always on and shared; sessions add no containers.";
+  } else {
+    host = "No shared worker";
+    hostDetail = "This deployment has no harness-driven shared worker.";
+  }
+  const blocking = view.problems[0];
+  const connections = view.transports.map((transport): HarnessConnection => {
+    const label = TRANSPORT_INFO[transport.transport].label;
+    const problem = blocking ?? transport.problem;
+    if (problem || !transport.available) {
+      return { transport: transport.transport, label, disabledReason: problem ? describeProblem(problem) : `${label} is not available.` };
+    }
+    if (view.placement === "container" && ownerHost && demoHost?.harness === view.harness) {
+      return { transport: transport.transport, label, command: launcherCommand(target, transport.transport) };
+    }
+    return {
+      transport: transport.transport,
+      label,
+      disabledReason: "The launcher connects only to the demo agent host today; per-harness connections need the launcher's --harness option.",
+    };
+  });
+  return { host, hostDetail, ...(costNote ? { costNote } : {}), connections };
 }

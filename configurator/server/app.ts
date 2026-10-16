@@ -2,6 +2,8 @@ import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import {
+  effectiveApprovalModes,
+  effectiveHostingPolicy,
   type ExecutionPolicy,
   HarnessDefinition,
   HarnessPolicyOverride,
@@ -16,6 +18,15 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { z, ZodError } from "zod";
 import { AuthoringError, AuthoringRequest, AuthoringService, type DraftGenerator } from "./authoring.js";
 import { GitHubAuthError, GitHubDeviceAuth } from "./github-auth.js";
+import {
+  type ConfiguredDeployment,
+  configuredDeployment,
+  configuredOverview,
+  harnessHostingDetail,
+  hostingAvailability,
+  hostingLookup,
+  serviceOverview,
+} from "./hosting.js";
 import { mapPlannerPlan } from "./import.js";
 import { bumpPatch, compareVersions, Repo, RepoError } from "./repo.js";
 import { deployEnvironment, Settings, SettingsError } from "./settings.js";
@@ -29,6 +40,8 @@ import type {
   HarnessDetail,
   HarnessDocument,
   HarnessSummary,
+  HostingAvailabilityInfo,
+  HostingPageInfo,
   Issue,
   PolicyOverrideStatus,
   ProfileSummary,
@@ -63,6 +76,8 @@ export interface AppOptions {
   githubOAuthClientId?: string;
   /** Injectable model transport; production uses the local server-side Copilot SDK. */
   authoringGenerator?: DraftGenerator;
+  /** Injectable read of the running agent-api's hosting view; production forwards `GET /v1/hosting`. */
+  hostingViewFetcher?: (target: TryTarget) => Promise<{ status: number; body: unknown }>;
 }
 
 const SLUG = /^[a-z][a-z0-9-]{1,62}$/;
@@ -196,6 +211,13 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   const harnessNamesOf = (documents: HarnessDocument[]) => [...new Set(documents.map((d) => d.manifest.name).filter((n) => typeof n === "string"))];
 
   async function context(document: HarnessDocument, all?: HarnessDocument[]): Promise<ValidationContext> {
+    return (await validationInputs(document, all)).context;
+  }
+
+  async function validationInputs(
+    document: HarnessDocument,
+    all?: HarnessDocument[],
+  ): Promise<{ context: ValidationContext; policies: PolicySet; documents: HarnessDocument[] }> {
     const [policies, profiles, documents] = await Promise.all([policySet(), repo.listProfiles(), all ?? repo.listHarnesses()]);
     const override = policies.overrides.get(document.manifest.name);
     let committed: ValidationContext["committed"];
@@ -226,16 +248,21 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       }
     }
     return {
-      policy: policyFor(policies, document.manifest.name),
-      ...(override ? { policyOverride: Object.keys(override.overrides) } : {}),
-      profiles,
-      all: documents,
-      committed,
+      context: {
+        policy: policyFor(policies, document.manifest.name),
+        ...(override ? { policyOverride: Object.keys(override.overrides) } : {}),
+        profiles,
+        all: documents,
+        committed,
+        lookup: hostingLookup(documents, policies),
+      },
+      policies,
+      documents,
     };
   }
 
   async function detail(document: HarnessDocument): Promise<HarnessDetail> {
-    const ctx = await context(document);
+    const { context: ctx, policies, documents } = await validationInputs(document);
     return {
       document,
       issues: validateHarness(document, ctx),
@@ -244,7 +271,30 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       digest: harnessDigest(document),
       decisions: decisions(document, ctx),
       requiredCapabilities: requiredCapabilitiesOf(document),
+      hosting: harnessHostingDetail({ name: document.manifest.name, policy: ctx.policy, profiles: ctx.profiles, documents, policies }),
     };
+  }
+
+  /**
+   * Local run and the selected Azure target, described from their settings. Reading settings can fail (for example
+   * without the Aspire CLI); the evaluation then assumes no demo agent host and says so.
+   */
+  async function configuredDeployments(): Promise<{ deployments: ConfiguredDeployment[]; note?: string }> {
+    try {
+      const info = await settings.read();
+      const target = info.targets.find((entry) => entry.name === info.selectedTarget);
+      return {
+        deployments: [
+          { target: "local", label: "Local workstation", deployment: configuredDeployment(info.local.demoHost) },
+          ...(target ? [{ target: "azure" as const, label: `Azure · ${target.name}`, deployment: configuredDeployment(target.demoHost) }] : []),
+        ],
+      };
+    } catch (error) {
+      return {
+        deployments: [{ target: "local", label: "Local workstation", deployment: configuredDeployment(undefined) }],
+        note: `Deployment settings could not be read (${(error as Error).message}); this assumes no demo agent host.`,
+      };
+    }
   }
 
   async function workspace(): Promise<WorkspaceInfo> {
@@ -303,6 +353,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       policy,
       policyIssues,
       policyOverrides,
+      policyDefaults: { hosting: effectiveHostingPolicy({}), approvalModes: effectiveApprovalModes({}) },
       changes: { items: changes.items },
     };
   }
@@ -390,6 +441,18 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   app.post("/api/harnesses/validate", async (request) => {
     const { document } = DocumentBody.parse(request.body);
     return detail(document as unknown as HarnessDocument);
+  });
+
+  // Where a draft can run in the configured deployments; separate from validation because it reads deployment settings.
+  app.post("/api/harnesses/availability", async (request): Promise<HostingAvailabilityInfo> => {
+    const document = DocumentBody.parse(request.body).document as unknown as HarnessDocument;
+    const parsed = HarnessDefinition.safeParse(definitionOf(document));
+    if (!parsed.success) return { availability: [] };
+    const [{ context: ctx }, { deployments, note }] = await Promise.all([validationInputs(document), configuredDeployments()]);
+    return {
+      availability: hostingAvailability({ definition: parsed.data, policy: ctx.policy, profiles: ctx.profiles, lookup: ctx.lookup, deployments }),
+      ...(note ? { note } : {}),
+    };
   });
 
   app.put("/api/harnesses/:folder", async (request) => {
@@ -638,6 +701,26 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   );
   app.get("/api/status/local", async () => status.local());
   app.get("/api/status/azure", async () => status.azure(await settings.target(undefined)));
+
+  // Per-harness hosting for one target: the running agent-api's own view when requested and available, otherwise an
+  // evaluation of the saved workspace against the target's settings with the same contract functions.
+  const fetchHostingView = options.hostingViewFetcher ?? ((target: TryTarget) => tryService.forward(target, "GET", "/v1/hosting"));
+  app.get("/api/hosting", async (request): Promise<HostingPageInfo> => {
+    const query = z
+      .object({ target: z.enum(["local", "azure"]).default("local"), service: z.enum(["0", "1"]).default("0") })
+      .parse(request.query);
+    const { deployments, note: settingsNote } = await configuredDeployments();
+    const configured = deployments.find((entry) => entry.target === query.target);
+    if (!configured) throw new RepoError(409, "Select an Azure deployment target on the Deploy page first.");
+    const [documents, profiles, policies] = await Promise.all([repo.listHarnesses(), repo.listProfiles(), policySet()]);
+    const evaluated = configuredOverview({ documents, policies, profiles, deployment: configured.deployment });
+    if (query.service === "1") {
+      const service = await serviceOverview(() => fetchHostingView(query.target));
+      if (service.overview) return { target: query.target, source: "service", overview: service.overview, invalid: evaluated.invalid };
+      return { target: query.target, source: "configuration", note: service.note, ...evaluated };
+    }
+    return { target: query.target, source: "configuration", ...(settingsNote ? { note: settingsNote } : {}), ...evaluated };
+  });
 
   // Reachability only: the response body is discarded and only the status code leaves the server.
   app.post("/api/check-url", async (request) => {

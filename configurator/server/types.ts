@@ -1,7 +1,39 @@
 // Types shared by the configurator server and UI. Type-only imports keep the UI bundle free of server code.
-import type { AgentDefinition, DemoHostSettings, ExecutionPolicy, HarnessDefinition, HarnessPolicyOverride, SkillDefinition, ToolRequest } from "@copilot-agent/contracts";
+import type {
+  AgentDefinition,
+  DemoHostSettings,
+  EffectiveHostingPolicy,
+  ExecutionPolicy,
+  HarnessDefinition,
+  HarnessHostingView,
+  HarnessPolicyOverride,
+  HostingCeilings,
+  HostingHostsView,
+  HostingMode,
+  HostingOverview,
+  HostingPlacement,
+  HostingProblem,
+  HostingStatus,
+  HostingTransportView,
+  SkillDefinition,
+  ToolRequest,
+} from "@copilot-agent/contracts";
 
-export type { ExecutionPolicy, HarnessPolicyOverride, SkillDefinition };
+export type {
+  EffectiveHostingPolicy,
+  ExecutionPolicy,
+  HarnessHostingView,
+  HarnessPolicyOverride,
+  HostingCeilings,
+  HostingHostsView,
+  HostingMode,
+  HostingOverview,
+  HostingPlacement,
+  HostingProblem,
+  HostingStatus,
+  HostingTransportView,
+  SkillDefinition,
+};
 
 /**
  * harness.json on disk: the harness contract with `instructionsFile` in place of inline instructions
@@ -72,6 +104,10 @@ export interface ProfileSummary {
   firstParty: boolean;
   toolBindings: string[];
   capabilities: string[];
+  /** Host bindings this profile marks safe to run inside a shared worker's process. */
+  inProcessBindings?: string[];
+  /** Custom permission handlers (reviewed integrator code) this profile provides. */
+  permissionHandlers?: string[];
 }
 
 export interface BindingInfo {
@@ -93,7 +129,16 @@ export interface WorkspaceInfo {
   policyIssues: Issue[];
   /** Operator overrides in policy/harnesses/, with the fields they replace. */
   policyOverrides: Array<{ harness: string; fields: string[]; errors: number }>;
+  /** Values that apply when optional policy fields are omitted, so the Policy page can show them. */
+  policyDefaults: PolicyDefaults;
   changes: { items: string[] };
+}
+
+export interface PolicyDefaults {
+  /** Hosting ceilings of a policy without a `hosting` block. */
+  hosting: EffectiveHostingPolicy;
+  /** Approval modes of a policy without `approvalModes`. */
+  approvalModes: string[];
 }
 
 /** One harness's override and the effective policy it produces (the base policy when there is none). */
@@ -122,6 +167,76 @@ export interface HarnessDetail {
   decisions: Decision[];
   /** Runner capabilities this harness needs beyond the protocol baseline. */
   requiredCapabilities: string[];
+  /** What the Hosting section may offer under the effective policy, and where the harness can run. */
+  hosting?: HarnessHostingDetail;
+}
+
+/** An operator MCP catalog entry as harness authors see it: the server's URL and secret reference stay on the Policy page. */
+export interface McpCatalogEntry {
+  server: string;
+  description?: string;
+  tools: string[];
+}
+
+/** Another workspace harness (its latest version) as a candidate worker or handoff target. */
+export interface HostingTargetSummary {
+  name: string;
+  version: string;
+  description: string;
+  interaction: "batch" | "conversation";
+  /** The hosting mode the target declares. */
+  mode: HostingMode;
+  /** Whether the target's effective policy allows its own mode (required for handoff targets). */
+  modeAllowed: boolean;
+  /** Whether the target's effective policy allows isolated hosting (required for workers). */
+  isolatedAllowed: boolean;
+}
+
+/** How a harness evaluates against one configured deployment: Local run or the selected Azure target. */
+export interface HostingAvailability {
+  target: TryTarget;
+  /** "Local workstation" or "Azure · <target name>". */
+  label: string;
+  status: HostingStatus;
+  placement: HostingPlacement;
+  /** In admission order: the first problem blocks hosting. */
+  problems: HostingProblem[];
+  transports: HostingTransportView[];
+  /** Deployment prerequisites each mode would lack here, given the harness's other settings. */
+  modes: Array<{ mode: HostingMode; missing: HostingProblem[] }>;
+}
+
+export interface HarnessHostingDetail {
+  /** Effective operator ceilings for this harness (base policy plus its override). */
+  ceilings: HostingCeilings;
+  /** Catalog servers this harness may request, with their approved tools. */
+  mcpCatalog: McpCatalogEntry[];
+  /** Models the effective policy approves; judge models must also be among the harness's allowed models. */
+  allowedModels: string[];
+  /** Custom permission handlers the TypeScript conversation profile provides. */
+  profileHandlers: string[];
+  /** Other harnesses that can be listed as workers or handoff targets. */
+  targets: HostingTargetSummary[];
+}
+
+/** Where a harness draft can run in the configured deployments (`POST /api/harnesses/availability`). */
+export interface HostingAvailabilityInfo {
+  /** Empty while the definition does not validate against the contract. */
+  availability: HostingAvailability[];
+  /** Set when deployment settings could not be read and the evaluation assumes no demo agent host. */
+  note?: string;
+}
+
+/** The Hosting page's per-harness view for one deployment target. */
+export interface HostingPageInfo {
+  target: TryTarget;
+  /** "service": reported by the running agent-api; "configuration": evaluated from workspace files and target settings. */
+  source: "service" | "configuration";
+  /** Why the running service's view is not shown, when it was requested. */
+  note?: string;
+  overview: HostingOverview;
+  /** Latest harness versions that do not validate and therefore cannot be evaluated. */
+  invalid: Array<{ harness: string; version: string; folder: string }>;
 }
 
 export interface Decision {

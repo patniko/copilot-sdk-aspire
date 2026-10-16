@@ -342,7 +342,7 @@ export function Toggle({ checked, onChange, label, description, help, disabled }
       <label className={clsx("flex items-start gap-2", disabled ? "cursor-not-allowed opacity-70" : "cursor-pointer")}>
         <input
           type="checkbox"
-          className="mt-[3px] h-4 w-4 accent-[var(--bgColor-accent-emphasis)]"
+          className="mt-[3px] h-4 w-4 shrink-0 accent-[var(--bgColor-accent-emphasis)]"
           checked={checked}
           disabled={disabled}
           onChange={(e) => onChange(e.target.checked)}

@@ -1,11 +1,14 @@
-import type { ExecutionPolicy, Issue } from "../../../server/types";
+import type { EffectiveHostingPolicy, ExecutionPolicy, Issue } from "../../../server/types";
 
 /** Policy cards and the fields a harness override replaces when that card is overridden. */
 export const GROUPS = {
   agents: ["allowedProfiles", "allowedModels"],
   limits: ["maxDurationSeconds", "maxInferenceTokensPerJob", "retry"],
   tools: ["builtinTools", "permissionModes"],
+  approvals: ["approvalModes", "permissionHandlers"],
+  mcp: ["mcpServers"],
   model: ["maxReasoningEffort", "allowLongContext"],
+  hosting: ["hosting"],
   controls: ["requirements", "acknowledgedGaps"],
 } as const satisfies Record<string, ReadonlyArray<keyof ExecutionPolicy>>;
 export type Group = keyof typeof GROUPS;
@@ -41,9 +44,20 @@ export function overridesFrom(policy: ExecutionPolicy, groups: Group[]): Overrid
     result.builtinTools ??= [];
     result.permissionModes ??= [];
   }
+  if (groups.includes("approvals")) {
+    result.approvalModes ??= ["manual"];
+    result.permissionHandlers ??= [];
+  }
+  if (groups.includes("mcp")) {
+    result.mcpServers ??= {};
+  }
   if (groups.includes("model")) {
     result.maxReasoningEffort ??= "xhigh";
     result.allowLongContext ??= false;
+  }
+  // `hosting` is replaced whole, so an empty block means the documented defaults, not the base policy's values.
+  if (groups.includes("hosting")) {
+    result.hosting ??= {};
   }
   return result as Overrides;
 }
@@ -101,8 +115,12 @@ export function formatPolicyValue(field: keyof ExecutionPolicy, value: unknown):
   if (value === undefined) {
     if (field === "maxReasoningEffort") return "no cap";
     if (field === "allowLongContext") return "no";
+    if (field === "approvalModes") return "manual";
+    if (field === "hosting") return "defaults (isolated only)";
     return "none";
   }
+  if (field === "mcpServers" && value && typeof value === "object") return Object.keys(value).sort().join(", ") || "none";
+  if (field === "hosting" && value && typeof value === "object") return hostingSummary(value as HostingPolicy);
   if (typeof value === "boolean") return value ? "yes" : "no";
   if (field === "maxDurationSeconds") return `${value as number}s`;
   if (typeof value === "number") return value.toLocaleString("en-US");
@@ -113,6 +131,60 @@ export function formatPolicyValue(field: keyof ExecutionPolicy, value: unknown):
       .join(", ");
   }
   return String(value);
+}
+
+export type HostingPolicy = NonNullable<ExecutionPolicy["hosting"]>;
+export type ContainerSize = NonNullable<HostingPolicy["sizes"]>[string];
+export type CraftingTemplate = NonNullable<HostingPolicy["crafting"]>["templates"][string];
+export type McpServerPolicy = NonNullable<ExecutionPolicy["mcpServers"]>[string];
+
+function hostingSummary(hosting: HostingPolicy): string {
+  const parts = [
+    `modes ${(hosting.modes ?? ["isolated"]).join(", ")}`,
+    hosting.transports && `transports ${hosting.transports.join(", ")}`,
+    hosting.sizes && `sizes ${Object.keys(hosting.sizes).join(", ")}`,
+    hosting.defaultSize && `default size ${hosting.defaultSize}`,
+    hosting.workers && `worker limits ${Object.entries(hosting.workers).map(([k, v]) => `${k} ${String(v)}`).join(", ")}`,
+    hosting.promotion?.approval && `promotion ${hosting.promotion.approval.join(", ")}`,
+    hosting.crafting && `templates ${Object.keys(hosting.crafting.templates).join(", ") || "none"}`,
+  ];
+  return parts.filter(Boolean).join("; ");
+}
+
+/** The smallest size by memory, then CPUs, then name: the catalog default when the policy names none. */
+export function smallestSize(sizes: Readonly<Record<string, ContainerSize>>): string {
+  const order = Object.entries(sizes).sort(
+    ([nameA, a], [nameB, b]) => a.memoryMiB - b.memoryMiB || a.cpus - b.cpus || (nameA < nameB ? -1 : nameA > nameB ? 1 : 0),
+  );
+  return order[0]?.[0] ?? "";
+}
+
+/** Hosting ceilings with the documented defaults for omitted fields, for display and editing. */
+export function effectiveHosting(hosting: HostingPolicy | undefined, defaults: EffectiveHostingPolicy): EffectiveHostingPolicy {
+  const sizes = hosting?.sizes ?? defaults.sizes;
+  return {
+    modes: hosting?.modes ?? defaults.modes,
+    transports: hosting?.transports ?? defaults.transports,
+    sizes,
+    defaultSize: hosting?.defaultSize ?? smallestSize(sizes),
+    workers: { ...defaults.workers, ...hosting?.workers } as EffectiveHostingPolicy["workers"],
+    promotion: { approval: hosting?.promotion?.approval ?? defaults.promotion.approval },
+    crafting: { templates: hosting?.crafting?.templates ?? {} },
+  };
+}
+
+/** Renames a record key in place of its old position, so cards keep their order. */
+export function renameKey<T>(record: Record<string, T>, from: string, to: string): Record<string, T> {
+  return Object.fromEntries(Object.entries(record).map(([key, value]) => [key === from ? to : key, value]));
+}
+
+/** The first `${base}`, `${base}-2`, ... name not in use. */
+export function freeName(base: string, used: Iterable<string>): string {
+  const taken = new Set(used);
+  if (!taken.has(base)) return base;
+  let index = 2;
+  while (taken.has(`${base}-${index}`)) index++;
+  return `${base}-${index}`;
 }
 
 /** Fields of a card whose effective value differs from the base policy. */

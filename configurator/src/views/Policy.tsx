@@ -5,6 +5,7 @@ import { api, errorMessage } from "../api";
 import { Badge, Card, ChipsInput, Field, Flash, HelpButton, IssueList, NumberInput, PageHeader, SegmentedControl, Spinner, Toggle } from "../components/ui";
 import { clearDraft, readDraft, useDraftAutosave, useHistory, useRegisterEditorActions, type Draft } from "../history";
 import { useApp, useDebounced } from "../state";
+import { ApprovalsCard, HostingCeilingsCard, McpCatalogCard } from "./policy/cards";
 import {
   countIssues,
   differencesFromBase,
@@ -18,6 +19,7 @@ import {
   type Group,
   type PolicyDraft,
 } from "./policy/model";
+import { Locked, SubHeading } from "./policy/parts";
 
 const GAPS: Array<{ id: ExecutionPolicy["acknowledgedGaps"][number]; label: string; description: string }> = [
   {
@@ -33,15 +35,6 @@ const GAPS: Array<{ id: ExecutionPolicy["acknowledgedGaps"][number]; label: stri
 ];
 
 const BASE = "";
-
-/** Inherited settings are shown read-only in harness scope; a native disabled fieldset locks every nested control. */
-function Locked({ locked, children, className }: { locked: boolean; children: ReactNode; className?: string }) {
-  return (
-    <fieldset disabled={locked} className={[className, locked ? "opacity-70" : undefined].filter(Boolean).join(" ") || undefined}>
-      {children}
-    </fieldset>
-  );
-}
 
 /** Issues for one card, and in harness scope the settings that differ from the base policy. */
 function CardFooter({ issues, differences }: { issues: Issue[]; differences?: ReturnType<typeof differencesFromBase> }) {
@@ -61,15 +54,6 @@ function CardFooter({ issues, differences }: { issues: Issue[]; differences?: Re
         </div>
       )}
       {issues.length > 0 && <IssueList issues={issues} />}
-    </div>
-  );
-}
-
-function SubHeading({ children, hint }: { children: ReactNode; hint?: ReactNode }) {
-  return (
-    <div className="mb-3">
-      <h3 className="text-xs font-semibold uppercase tracking-wide fg-muted">{children}</h3>
-      {hint && <p className="text-xs fg-muted">{hint}</p>}
     </div>
   );
 }
@@ -518,6 +502,25 @@ export function PolicyView() {
         {footer("tools")}
       </Card>
 
+      <ApprovalsCard
+        policy={policy}
+        update={update}
+        locked={locked("approvals")}
+        title={cardTitle("Approval modes", "approvals")}
+        actions={overrideToggle("approvals")}
+        footer={footer("approvals")}
+        profiles={workspace.profiles}
+      />
+
+      <McpCatalogCard
+        policy={policy}
+        update={update}
+        locked={locked("mcp")}
+        title={cardTitle("Remote MCP servers", "mcp")}
+        actions={overrideToggle("mcp")}
+        footer={footer("mcp")}
+      />
+
       <Card title={cardTitle("Model options", "model")} subtitle="Ceilings for the model settings harnesses and sub-agents can request." actions={overrideToggle("model")}>
         <Locked locked={locked("model")}>
           <div className="grid gap-4 md:grid-cols-2">
@@ -560,6 +563,17 @@ export function PolicyView() {
         </Locked>
         {footer("model")}
       </Card>
+
+      <HostingCeilingsCard
+        policy={policy}
+        update={update}
+        locked={locked("hosting")}
+        title={cardTitle("Hosting", "hosting")}
+        actions={overrideToggle("hosting")}
+        footer={footer("hosting")}
+        defaults={workspace.policyDefaults.hosting}
+        bindings={workspace.bindings}
+      />
 
       <Card
         title={cardTitle("Required controls", "controls")}

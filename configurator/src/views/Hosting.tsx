@@ -5,6 +5,7 @@ import { CircleDot, GitBranch, ShieldCheck, TerminalSquare } from "../components
 import { Badge, Card, CopyButton, PageHeader } from "../components/ui";
 import { hostingObservation, hostingPlacement, hostingTopology, type HostingArchitecture, type HostingNodeId } from "../hosting";
 import { useApp } from "../state";
+import { HarnessHostingRows } from "./HostingHarnesses";
 
 export function HostingView() {
   const { settings, local, azure, azureError, setView } = useApp();
@@ -25,7 +26,7 @@ export function HostingView() {
       <PageHeader
         title="Your hosting architecture"
         leading={<GitBranch size={24} />}
-        description="Compare the default container pool with the experimental local hybrid path, including what is implemented locally and what remains an unqualified Azure proposal."
+        description="See where each harness runs and how Copilot CLI connects to it, and compare the default container pool with the experimental local hybrid path, including what is implemented locally and what remains an unqualified Azure proposal."
       />
       <section className="hosting-control-bar" aria-label="Topology controls">
         <div>
@@ -59,6 +60,7 @@ export function HostingView() {
             : "Resource state is observational, not live telemetry."}</span>
         </div>
       </section>
+      <HarnessHostingRows target={target} />
       <section className="hosting-architecture-shell" aria-label="Hosting architecture">
         <div className="hosting-architecture-heading">
           <div>
