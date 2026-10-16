@@ -340,8 +340,10 @@ export const help: Record<string, HelpTopic> = {
       { when: "History: full", then: "The target resumes the same session history." },
       { when: "History: summary", then: "The target receives a bounded summary written by this harness." },
       { when: "History: none", then: "The target receives only the transfer payload." },
+      { when: "History: default", then: "Full within one placement, a summary when the conversation moves between the shared worker and a container." },
+      { when: "Approval: ask a person", then: "The attached person approves each transfer in their client, whatever the session's approval mode." },
     ],
-    boundary: "A target must be a published conversation harness whose own mode its policy allows. A failed check leaves this harness in control.",
+    boundary: "A target must be a published conversation harness whose own mode its policy allows, and a conversation in a container never moves back to the shared worker. Every transfer rechecks current policy; a failed check leaves this harness in control.",
   },
   mcpServers: {
     title: "Remote MCP servers",
@@ -581,6 +583,18 @@ export const help: Record<string, HelpTopic> = {
     option: "hosting.promotion.approval",
     scope: "Operator policy",
     summary: "Whether a promotable harness's model-initiated promotion must ask a person, may run automatically, or either. Omitted means ask only.",
+  },
+  "policy.hosting.handoffs": {
+    title: "Handoff ceilings",
+    option: "hosting.handoffs",
+    scope: "Operator policy",
+    summary: "The approvals a harness's handoff targets may use (omitted means ask only) and the history policies they may pass (omitted means full, summary and none).",
+    effects: [
+      { when: "Ask a person", then: "The attached person approves each transfer in their client, in every approval mode; the safety judge and custom handlers cannot approve it." },
+      { when: "Automatic", then: "Targets that set approval to allow transfer without a prompt." },
+      { when: "History", then: "A harness whose target, or whose target's default, uses a history the policy omits fails validation." },
+    ],
+    boundary: "Only full history keeps the person's messages as approval authority; a summary is written by a model and carries none. Every handoff rechecks current policy before control moves.",
   },
   "policy.hosting.allowInheritedAuthority": {
     title: "Inherited human authority",

@@ -18,6 +18,8 @@ export interface SharedActivationContext {
   workspace: SessionWorkspace;
   /** Provider path for application state kept with the session's history, outside the user-visible workspace. */
   stateDirectory: string;
+  /** The runtime session this activation runs: the application session's ID unless a handoff started a fresh one. */
+  runtimeSessionId: string;
   /**
    * The person's own messages in this session's runtime history, exactly as sent and oldest first: the only source of
    * inherited human authority for an orchestrator's workers.
@@ -36,6 +38,18 @@ export interface SharedSessionOptions {
   principal: string;
   githubUserId: number;
   model: string;
+  /**
+   * The runtime session to create or resume, which clients attach to; defaults to `id`. Storage, leases, and the
+   * workspace stay keyed by the application session `id`.
+   */
+  runtimeSessionId?: string;
+  /**
+   * The application session's current segment generation; defaults to 1. A retained runtime session takes a new
+   * configuration only at a later segment, which a handoff with full history starts.
+   */
+  generation?: number;
+  /** Runs under the activation's storage lease before the runtime session opens, such as a handoff's storage preparation. */
+  prepare?: (lease: SessionFileLease) => Promise<void>;
   /** Shorthand for a replacing system message when `settings` is omitted. */
   instructions?: string;
   /** Harness-derived session settings; see `sharedSessionSettings`. */
@@ -63,6 +77,8 @@ const snapshot = z.object({
   schemaVersion: z.literal(2),
   configuration: z.string().min(1).max(500),
   githubUserId: z.number().int().positive(),
+  /** The segment that last configured the runtime session; absent means the first. */
+  generation: z.number().int().positive().safe().optional(),
 }).strict();
 const rejectAll: PermissionHandler = async () => ({ kind: "reject", feedback: "This shared session permits only its application tools." });
 
@@ -175,7 +191,10 @@ export class SharedSessionRuntime {
 
   async open(options: SharedSessionOptions): Promise<{ id: string; url: string; token: string; sessionUri: string; lease: SessionFileLease }> {
     if (this.#stopping) throw new Error("The shared runtime is stopping.");
-    if (!z.string().uuid().safeParse(options.id).success || !options.principal || !Number.isSafeInteger(options.githubUserId) || options.githubUserId < 1) {
+    const runtimeSessionId = options.runtimeSessionId ?? options.id;
+    const generation = options.generation ?? 1;
+    if (!z.string().uuid().safeParse(options.id).success || !options.principal || !Number.isSafeInteger(options.githubUserId) || options.githubUserId < 1
+      || !/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(runtimeSessionId) || !Number.isSafeInteger(generation) || generation < 1) {
       throw new Error("Invalid shared session identity.");
     }
     if (this.#activations.has(options.id) || this.#opening.has(options.id)) throw new Error("The shared session is already active.");
@@ -190,6 +209,7 @@ export class SharedSessionRuntime {
     try {
       lease = await this.files.acquire(options.id, options.principal, this.#worker);
       const activeLease = lease;
+      await options.prepare?.(activeLease);
       let renewing = false;
       heartbeat = setInterval(() => {
         if (renewing || lifetime.signal.aborted) return;
@@ -210,7 +230,7 @@ export class SharedSessionRuntime {
       const workspace = new SessionWorkspace(anchor, storage, lifetime.signal, (operation) => this.report(`session.fs.${operation}.failed`, options.id));
       const stateDirectory = join(this.root, "session-state");
       const context: SharedActivationContext = {
-        lease, signal: lifetime.signal, workspace, stateDirectory,
+        lease, signal: lifetime.signal, workspace, stateDirectory, runtimeSessionId,
         humanMessages: async () => {
           if (!session || lifetime.signal.aborted) throw new Error("The shared conversation is not active.");
           return humanAuthorityMessages(await session.getEvents());
@@ -221,12 +241,21 @@ export class SharedSessionRuntime {
       const current = snapshot.parse({
         schemaVersion: 2, githubUserId: options.githubUserId,
         configuration: options.configuration ?? `sha256:${createHash("sha256").update(`${options.model}\0${options.instructions ?? ""}`).digest("hex")}`,
+        ...(generation > 1 ? { generation } : {}),
       });
       const resume = await storage.exists(metadataPath);
+      // A handoff with full history continues the runtime session under the target's configuration at a later segment.
+      let reconfigured = false;
       if (resume) {
         const retained = snapshot.safeParse(JSON.parse(await storage.readFile(metadataPath)));
-        if (!retained.success || JSON.stringify(retained.data) !== JSON.stringify(current)) {
+        const retainedGeneration = retained.success ? retained.data.generation ?? 1 : 0;
+        if (!retained.success || retained.data.githubUserId !== current.githubUserId || retainedGeneration > generation
+          || (retainedGeneration === generation && retained.data.configuration !== current.configuration)) {
           throw new Error("The retained session configuration differs; create a new session rather than replacing its policy.");
+        }
+        if (retainedGeneration < generation) {
+          reconfigured = retained.data.configuration !== current.configuration;
+          await storage.writeFile(metadataPath, JSON.stringify(current));
         }
       } else {
         await storage.writeFile(metadataPath, JSON.stringify(current));
@@ -237,7 +266,7 @@ export class SharedSessionRuntime {
       if (!settings.systemMessage.content && settings.systemMessage.mode === "replace") throw new Error("A shared session needs instructions.");
       const config: SessionConfig = {
         ...settings,
-        sessionId: options.id,
+        sessionId: runtimeSessionId,
         workingDirectory: anchor,
         model: options.model,
         provider: typeof options.provider === "function" ? options.provider(context) : options.provider,
@@ -252,15 +281,19 @@ export class SharedSessionRuntime {
         hooks: options.hooks?.(context),
       };
       session = resume
-        ? await this.#client.resumeSession(options.id, { ...config, continuePendingWork: false })
+        ? await this.#client.resumeSession(runtimeSessionId, { ...config, continuePendingWork: false })
         : await this.#client.createSession(config);
       const original = session;
       session.on((event) => options.onEvent?.(context, event));
       const approval = options.approval;
       if (approval) {
-        // A new session starts in its harness's mode; a resumed one returns to the mode its history records. Either must
-        // hold before publication, because the AHP host adopts the mode in force when it publishes the session.
-        const mode = resume ? recordedApprovalMode(await session.getEvents(), approval.available) : approval.initial;
+        // A new session starts in its harness's mode; a resumed one returns to the mode its history records, clamped to
+        // current policy. A reconfigured session (a handoff with full history) starts in the new harness's mode instead
+        // of keeping the previous harness's. Either must hold before publication, because the AHP host adopts the mode
+        // in force when it publishes the session.
+        const mode = resume && !reconfigured
+          ? recordedApprovalMode(await session.getEvents(), approval.available)
+          : approval.initial;
         await applyApprovalMode(session.rpc.permissions, mode, approval.judgeModel);
       }
       const hostOptions: AhpHostOptions = {
@@ -276,7 +309,7 @@ export class SharedSessionRuntime {
         },
         createSession: async () => { throw new Error("Create shared conversations through the application; attach to the published session."); },
         resumeSession: async ({ sessionId }) => {
-          if (sessionId !== options.id || lifetime.signal.aborted) throw new Error("The requested shared conversation is unavailable.");
+          if (sessionId !== runtimeSessionId || lifetime.signal.aborted) throw new Error("The requested shared conversation is unavailable.");
           return original;
         },
         onExit: () => {
@@ -288,7 +321,7 @@ export class SharedSessionRuntime {
         },
       };
       host = await this.#client.startAhpHost(hostOptions);
-      const publication = await host.publishSession(options.id);
+      const publication = await host.publishSession(runtimeSessionId);
       if (!host.url || !host.token || lifetime.signal.aborted || this.#stopping) throw new Error("Shared host startup did not complete.");
       this.#activations.set(options.id, { lease, lifetime, host, session, heartbeat });
       this.report(resume ? "session.resumed" : "session.created", options.id);
@@ -334,6 +367,19 @@ export class SharedSessionRuntime {
     };
   }
 
+  /**
+   * Provider keys a handoff cutover rewrites in the session's namespace: the runtime state directory, and where a
+   * handoff that starts a fresh runtime session moves the previous segment's runtime state for retention.
+   */
+  handoffAreas(handoffId: string): { state: string; archive: string } {
+    if (!z.string().uuid().safeParse(handoffId).success) throw new Error("Invalid handoff identity.");
+    const conventions = process.platform === "win32" ? "windows" : "posix";
+    return {
+      state: providerKey(join(this.root, "session-state"), conventions).key,
+      archive: providerKey(join(this.root, "segment-history", handoffId), conventions).key,
+    };
+  }
+
   async sendSystem(id: string, prompt: string): Promise<string> {
     const activation = this.#activations.get(id);
     if (!activation || activation.close || activation.lifetime.signal.aborted) throw new Error("The shared conversation is not active.");
@@ -363,6 +409,18 @@ export class SharedSessionRuntime {
     if (!activation || activation.close) throw new Error("The shared conversation is not active.");
     return (await activation.session.getEvents()).some((event) =>
       event.type === "user.message" && event.data.source === "system" && event.data.content.includes(marker));
+  }
+
+  /**
+   * Who answered the latest permission request of one tool call, from the session's history: the runtime's decision
+   * source (`human_response` for a person) and whether it approved. Undefined when no request completed.
+   */
+  async permissionDecision(id: string, toolCallId: string): Promise<{ source?: string; approved: boolean } | undefined> {
+    const activation = this.#activations.get(id);
+    if (!activation || activation.close) throw new Error("The shared conversation is not active.");
+    const completed = (await activation.session.getEvents()).findLast((event) => event.type === "permission.completed" && event.data.toolCallId === toolCallId);
+    if (completed?.type !== "permission.completed") return undefined;
+    return { source: completed.data.decisionSource, approved: completed.data.result.kind.startsWith("approved") };
   }
 
   async #close(id: string, activation: Activation): Promise<void> {

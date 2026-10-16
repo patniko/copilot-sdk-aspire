@@ -88,6 +88,26 @@ describe("hosted admission checks in the harness editor", () => {
     });
     expect(errors(chat, [chat, coder])).toEqual([]);
   });
+
+  it("reports handoffs beyond the policy's ceilings, a default history it refuses, and a container target that cannot move back", () => {
+    const coder = conversation("coder");
+    const notes = conversation("notes", (d) => void (d.manifest.hosting = { mode: "shared" }));
+    const chat = conversation("chat", (d) => {
+      d.manifest.hosting = {
+        mode: "shared",
+        handoffs: [{ harness: "coder", description: "Code.", approval: "allow" }, { harness: "notes", description: "Notes." }],
+      };
+    });
+    const summariesOnly = { ...policy, hosting: { ...policy.hosting, handoffs: { history: ["summary" as const] } } };
+    expect(errors(chat, [chat, coder, notes], summariesOnly)).toEqual([
+      "hosting.handoffs.0.approval: The operator policy does not allow 'allow' approval for handoffs.",
+      expect.stringMatching(/^hosting\.handoffs\.1\.history: The default history for 'notes' \(full\)/),
+    ]);
+    const isolatedSource = conversation("builder", (d) => void (d.manifest.hosting = { mode: "isolated", handoffs: [{ harness: "notes", description: "Notes." }] }));
+    expect(errors(isolatedSource, [isolatedSource, notes])).toEqual([
+      expect.stringMatching(/^hosting\.handoffs\.0\.harness: .*never moves back to shared placement/),
+    ]);
+  });
 });
 
 describe("hosting decisions in the Live plan", () => {

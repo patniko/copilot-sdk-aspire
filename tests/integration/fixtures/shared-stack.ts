@@ -3,7 +3,7 @@ import type pg from "pg";
 import type { FastifyInstance } from "fastify";
 import WebSocket from "ws";
 import { SHARED_WORKER_FEATURES, SharedWorkerLimits } from "@copilot-agent/contracts";
-import { JobEventListener, JobStore, PlacementStore, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
+import { HandoffStore, JobEventListener, JobStore, PlacementStore, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
 import { Admission, ApiKeyAuthenticator, signSessionCapability } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../../src/agent-api/src/server.js";
 import { buildBroker } from "../../../src/connection-broker/src/broker.js";
@@ -20,6 +20,7 @@ import type { SharedEgress } from "../../../src/session-host/src/shared-egress.j
 
 export interface SharedStack {
   store: SharedStore;
+  handoffs: HandoffStore;
   service: SharedSessionService;
   host: FastifyInstance;
   /** The connection broker; CLI connections attach only through it. */
@@ -67,6 +68,7 @@ export async function sharedStack(options: {
   const controlKey = "synthetic-control-key-".repeat(2);
   const brokerKey = "synthetic-connection-broker-key-".repeat(2);
   const store = new SharedStore(options.pool);
+  const handoffs = new HandoffStore(options.pool, store);
   const grants: string[] = [];
   const apps: FastifyInstance[] = [];
   const gateway = buildGateway({
@@ -106,6 +108,7 @@ export async function sharedStack(options: {
     ...(options.egress ? { toolkit: { egress: options.egress } } : {}),
     permissionHandlers: options.permissionHandlers ?? PERMISSION_HANDLERS,
     ...(options.permissionHandlerTimeoutMs ? { permissionHandlerTimeoutMs: options.permissionHandlerTimeoutMs } : {}),
+    handoffs,
   });
   await service.start();
   const host = buildSharedHost(service, controlKey, brokerKey);
@@ -123,7 +126,7 @@ export async function sharedStack(options: {
     store: jobs, listener: new JobEventListener(options.pool), harnesses, console: false, maxOpenJobsPerPrincipal: 10,
     admission: new Admission({ harnesses, profiles, policies: options.registry.policies }),
     authenticator: new ApiKeyAuthenticator(Object.entries(options.apiKeys).map(([principal, key]) => `${principal}:${key}`).join(";")),
-    shared: { url: address(host), key: controlKey, brokerUrl: address(broker) },
+    shared: { url: address(host), key: controlKey, brokerUrl: address(broker) }, handoffs,
     hosting: {
       harnesses, profiles, policies: options.registry.policies,
       deployment: { isolatedHosts: [], sharedWorker: { transports: ["direct"], features: [...SHARED_WORKER_FEATURES] } },
@@ -131,7 +134,7 @@ export async function sharedStack(options: {
   });
   apps.push(api);
   return {
-    store, service, host, broker, api, grants,
+    store, handoffs, service, host, broker, api, grants,
     close: async () => {
       // Closing the worker's listener also stops the service.
       for (const app of apps.reverse()) await app.close();

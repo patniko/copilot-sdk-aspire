@@ -136,10 +136,12 @@ detailed acceptance outcomes.
 The [hosting modes plan](HOSTING-MODES-PLAN.md) lets each conversation harness choose an isolated container, a
 shared multi-tenant runtime, a shared runtime with one-way promotion into a container, or a shared coordinator that
 manages container workers. Its first delivery targets Copilot CLI over direct WSS, plus GitHub relay for isolated
-harness hosts; the GitHub Copilot app comes later. Stages 1 to 5 are implemented locally, as the hosting contract row
-under [supported today](#supported-today) describes. Handoffs (stage 6) have not landed yet; Azure delivery (stage 7)
-and the mode and OpenAI Agents API comparisons (stage 8) remain proposals
-([stage status](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates)).
+harness hosts; the GitHub Copilot app comes later. Stages 1 to 6 are implemented locally, as the hosting contract row
+under [supported today](#supported-today) describes. Handoffs work locally from conversations on the shared worker,
+to another harness there or into a target's own session container, with person approval, history policies and a
+handoff ledger ([stage 6 record](HOSTING-MODES-PLAN.md#stage-6-handoffs)); handoffs from conversations that run in a
+container are follow-up work. Azure delivery (stage 7) and the mode and OpenAI Agents API comparisons (stage 8)
+remain proposals ([stage status](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates)).
 
 ## Acceptance criteria for changes
 

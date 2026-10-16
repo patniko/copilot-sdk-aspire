@@ -188,9 +188,11 @@ Each session records a placement in the ledger: its kind (`shared`, or `containe
 [session containers](#session-containers)) and a generation that increases on every change
 ([contract](../contracts/src/placement.ts)). Tickets bind to the generation. When it changes, the broker ends
 attached clients with WebSocket close code `4301` (`moved`) after any frame in flight, and an upstream close is
-replaced with `moved` when the placement changed underneath it. [Promotion](#promotion) is the one code path that
-moves a session, one way from `shared` to `container`; while it moves, the ledger marks the placement `moving` and
-the broker closes shared routes the same way.
+replaced with `moved` when the placement changed underneath it. [Promotion](#promotion) moves a session one way from
+`shared` to `container`; while it moves, the ledger marks the placement `moving` and the broker closes shared routes the
+same way. A [handoff](API.md#handoffs) also changes it: the target's segment starts at the next generation, on the
+shared worker or, for a target that runs in its own session container, after the same one-way move with the target's
+harness ([plan](HOSTING-MODES-PLAN.md#75-handoffs-and-crafted-harnesses)).
 
 Delegation records, child jobs, input snapshots and aggregate budget reservations commit atomically.
 SDK tool-call identity deduplicates acceptance. Completion-driven turns cannot create nested delegations.
@@ -431,8 +433,9 @@ the move note maps.
 
 An application session is a sequence of segments: one harness snapshot at one placement, with the runtime session
 it runs. The first segment is implicit; each move records the next with its generation, placement, harness reference,
-runtime session, and start time, and the session view reports the current one. Handoffs (stage 6) can reuse the same
-move with a target harness, a fresh runtime session, or an opening note.
+runtime session, and start time, and the session view reports the current one. A [handoff](API.md#handoffs) to a
+target that runs in its own container reuses the same move with the target's harness and definition, a new runtime
+session unless it carries full history, and the handoff notice as the opening note.
 
 `pnpm host:connect` keeps the person's terminal attached across the move: it runs the CLI under a supervisor
 ([`cli-supervisor.ts`](../configurator/server/cli-supervisor.ts)) whose loopback relay spends one broker ticket per CLI

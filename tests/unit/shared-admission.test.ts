@@ -60,7 +60,9 @@ describe("shared admission", () => {
     expect(await failure(admission.admit("alice", { harness: "isolated", label: "" }))).toMatchObject({
       status: 409, code: "hosting_unavailable", details: { prerequisite: { kind: "host", name: "isolated-host" } },
     });
-    expect(await failure(admission.admit("alice", { harness: "handing-off", label: "" }))).toMatchObject({
+    expect((await admission.admit("alice", { harness: "handing-off", label: "" })).harness?.name).toBe("handing-off");
+    const withoutHandoffs = sharedAdmission(registry, { deployment: { isolatedHosts: [], sharedWorker: { transports: ["direct"], features: [] } } });
+    expect(await failure(withoutHandoffs.admit("alice", { harness: "handing-off", label: "" }))).toMatchObject({
       status: 409, code: "hosting_unavailable", details: { prerequisite: { kind: "feature", name: "handoffs" } },
     });
   });

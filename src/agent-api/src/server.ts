@@ -5,7 +5,7 @@ import {
   type HarnessSnapshot,
   type JobEventView,
 } from "@copilot-agent/contracts";
-import { JobEventListener, JobStore, StoreError, type DelegationStore, type WorkerStore } from "@copilot-agent/job-store";
+import { JobEventListener, JobStore, StoreError, type DelegationStore, type HandoffStore, type WorkerStore } from "@copilot-agent/job-store";
 import { ApiKeyAuthenticator, createService, HttpError, type HostingCatalog } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Admission } from "@copilot-agent/service-defaults";
@@ -32,6 +32,8 @@ export interface ApiDependencies {
   containers?: ContainerSessionService;
   execution?: "pool" | "dedicated";
   delegations?: DelegationStore;
+  /** The handoff ledger, for `GET /v1/sessions/{id}/handoffs`. */
+  handoffs?: HandoffStore;
   /** Orchestrator workers of shared conversations and their request queue. */
   workers?: WorkerStore;
   /** Published harnesses, profiles, policies, and deployment capabilities for the read-only `/v1/hosting` views. */
@@ -50,7 +52,7 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
 
   const principalOf = (request: FastifyRequest) => deps.authenticator.authenticate(request).id;
   if (deps.shared || deps.containers) {
-    registerSharedSessionRoutes(app, deps.shared, principalOf, deps.delegations, deps.hosting, deps.containers);
+    registerSharedSessionRoutes(app, deps.shared, principalOf, deps.delegations, deps.hosting, deps.containers, deps.handoffs);
   }
   if (deps.workers) registerWorkerRoutes(app, deps.workers, principalOf);
   if (deps.hosting) registerHostingRoutes(app, deps.hosting, principalOf);

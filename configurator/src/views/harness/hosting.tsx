@@ -545,6 +545,9 @@ function HandoffsSection({ draft, update, hosting, errorAt }: SectionProps) {
   const handoffs = draft.manifest.hosting?.handoffs ?? [];
   const targets = (hosting?.targets ?? []).filter((target) => target.name !== draft.manifest.name);
   const eligible = targets.filter((target) => target.interaction === "conversation" && target.modeAllowed);
+  const histories = hosting?.ceilings.handoffs.history ?? ["full", "summary", "none"];
+  const approvals = hosting?.ceilings.handoffs.approval ?? ["ask"];
+  const notAllowed = (allowed: boolean) => (allowed ? undefined : "Not allowed by the operator policy");
   const set = (mutate: (handoffs: Handoff[]) => Handoff[]) =>
     update((d) => {
       const current = d.manifest.hosting ?? { mode: "isolated" as const };
@@ -625,9 +628,9 @@ function HandoffsSection({ draft, update, hosting, errorAt }: SectionProps) {
                   }
                   options={[
                     { value: "", label: "Default" },
-                    { value: "full", label: "Full" },
-                    { value: "summary", label: "Summary" },
-                    { value: "none", label: "None" },
+                    { value: "full", label: "Full", disabled: !histories.includes("full"), title: notAllowed(histories.includes("full")) },
+                    { value: "summary", label: "Summary", disabled: !histories.includes("summary"), title: notAllowed(histories.includes("summary")) },
+                    { value: "none", label: "None", disabled: !histories.includes("none"), title: notAllowed(histories.includes("none")) },
                   ]}
                 />
               </div>
@@ -648,8 +651,8 @@ function HandoffsSection({ draft, update, hosting, errorAt }: SectionProps) {
                     )
                   }
                   options={[
-                    { value: "ask", label: "Ask a person" },
-                    { value: "allow", label: "Automatic" },
+                    { value: "ask", label: "Ask a person", disabled: !approvals.includes("ask"), title: notAllowed(approvals.includes("ask")) },
+                    { value: "allow", label: "Automatic", disabled: !approvals.includes("allow"), title: notAllowed(approvals.includes("allow")) },
                   ]}
                 />
               </div>
@@ -670,7 +673,10 @@ function HandoffsSection({ draft, update, hosting, errorAt }: SectionProps) {
           <span className="text-xs fg-muted">No other conversation harness can be a target: its policy must allow its own hosting mode.</span>
         )}
       </div>
-      <p className="hint">Default history: a summary across placements, full history within one placement. Only full history keeps the person's messages as authority.</p>
+      <p className="hint">
+        Default history: a summary across placements, full history within one placement. Only full history keeps the person's messages as authority.
+        A conversation in a container never moves back to the shared worker. With Ask a person, the person approves each transfer in their client.
+      </p>
     </Section>
   );
 }
