@@ -63,6 +63,8 @@ export class BrokeredConnection {
   #beginMove(): void {
     this.#state = "moving";
     this.events.moved();
+    // Client data is now discarded, so stop honoring backpressure from the abandoned placement.
+    this.client.resume();
     if (this.#toClientFrames.atBoundary) return this.#sendMoved();
     if (this.#upstreamGone) return this.terminate();
     this.#arm(() => this.terminate());
@@ -71,6 +73,7 @@ export class BrokeredConnection {
   #sendMoved(): void {
     this.#state = "closing";
     this.upstream.destroy();
+    this.client.resume();
     if (!this.client.destroyed) this.client.write(closeFrame(BROKER_MOVED_CLOSE.code, BROKER_MOVED_CLOSE.reason));
     this.#arm(() => this.client.destroy());
   }
