@@ -54,7 +54,7 @@ describe("shared deployment contracts", () => {
   });
 
   it("advertises the features and in-process bindings the shared worker implements", () => {
-    expect([...SHARED_WORKER_FEATURES].sort()).toEqual(["approval-modes", "custom-approval", "remote-mcp"]);
+    expect([...SHARED_WORKER_FEATURES].sort()).toEqual(["approval-modes", "custom-approval", "handoffs", "remote-mcp"]);
     expect(SHARED_WORKER_BINDINGS.every((binding) => binding.startsWith("shared:"))).toBe(true);
   });
 

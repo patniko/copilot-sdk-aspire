@@ -8,6 +8,7 @@ import {
 } from "@copilot-agent/contracts";
 import { canonicalJson, handoffToolName, hostingError, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
 import type { SharedConfiguration, SharedRegistry } from "./configuration.js";
+import type { HandoffOffer } from "./handoff-tools.js";
 
 /** What this worker offers to hosting evaluation; the shared worker does not know about other hosts. */
 export const SHARED_WORKER_DEPLOYMENT: HostingDeployment = Object.freeze({
@@ -190,6 +191,16 @@ export class SharedAdmission {
       },
     });
     return { target: { name: target.name, version: target.version, digest: snapshot.digest, mode }, placement, history, approval, definition };
+  }
+
+  /** The predefined targets an activation at `from` offers, with the approval and resolved history of each. */
+  async handoffOffers(definition: HarnessDefinition, from: PlacementKind): Promise<HandoffOffer[]> {
+    const registry = await this.options.configuration.current();
+    return (definition.hosting?.handoffs ?? []).map((entry) => {
+      const target = registry.harnesses.get(entry.harness)?.[0];
+      const to = target ? startingPlacement(hostingModeOf(target.definition)) : from;
+      return { harness: entry.harness, description: entry.description, approval: entry.approval ?? "ask", history: handoffHistoryFor(entry.history, from, to) };
+    });
   }
 
   /** Re-checks a retained session against the current policy before it activates. */

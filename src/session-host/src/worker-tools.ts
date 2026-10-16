@@ -105,7 +105,7 @@ export function workerTools(
   if (!ceilings) return [];
   const lease = context.lease;
   const rootOnly = (invocation: ToolInvocation) => {
-    if (invocation.sessionId !== session.id || invocation.agentId) throw new Error("Only the coordinator's root agent can manage workers.");
+    if (invocation.sessionId !== context.runtimeSessionId || invocation.agentId) throw new Error("Only the coordinator's root agent can manage workers.");
   };
   const run = async <T>(action: () => Promise<T>): Promise<T> => {
     try { return await action(); } catch (error) { throw refusal(error); }

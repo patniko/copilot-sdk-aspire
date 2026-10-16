@@ -43,6 +43,8 @@ export interface SharedSessionOptions {
    * configuration only at a later segment, which a handoff with full history starts.
    */
   generation?: number;
+  /** Runs under the activation's storage lease before the runtime session opens, such as a handoff's storage preparation. */
+  prepare?: (lease: SessionFileLease) => Promise<void>;
   /** Shorthand for a replacing system message when `settings` is omitted. */
   instructions?: string;
   /** Harness-derived session settings; see `sharedSessionSettings`. */
@@ -141,6 +143,7 @@ export class SharedSessionRuntime {
     try {
       lease = await this.files.acquire(options.id, options.principal, this.#worker);
       const activeLease = lease;
+      await options.prepare?.(activeLease);
       let renewing = false;
       heartbeat = setInterval(() => {
         if (renewing || lifetime.signal.aborted) return;
@@ -330,6 +333,18 @@ export class SharedSessionRuntime {
     if (!activation || activation.close) throw new Error("The shared conversation is not active.");
     return (await activation.session.getEvents()).some((event) =>
       event.type === "user.message" && event.data.source === "system" && event.data.content.includes(marker));
+  }
+
+  /**
+   * Who answered the latest permission request of one tool call, from the session's history: the runtime's decision
+   * source (`human_response` for a person) and whether it approved. Undefined when no request completed.
+   */
+  async permissionDecision(id: string, toolCallId: string): Promise<{ source?: string; approved: boolean } | undefined> {
+    const activation = this.#activations.get(id);
+    if (!activation || activation.close) throw new Error("The shared conversation is not active.");
+    const completed = (await activation.session.getEvents()).findLast((event) => event.type === "permission.completed" && event.data.toolCallId === toolCallId);
+    if (completed?.type !== "permission.completed") return undefined;
+    return { source: completed.data.decisionSource, approved: completed.data.result.kind.startsWith("approved") };
   }
 
   async #close(id: string, activation: Activation): Promise<void> {

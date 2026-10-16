@@ -4,9 +4,12 @@ import type { SharedApprovalPlan } from "./admission.js";
 import type { CustomPermissionDecision, CustomPermissionHandler, CustomPermissionRequest } from "./permission-handlers.js";
 
 export type ToolPermissionKind = CustomPermissionRequest["kind"];
-/** A pre-tool hook decision; no decision lets the runtime raise its normal permission request. */
+/**
+ * A pre-tool hook decision; no decision lets the runtime raise its normal permission request. `ask` makes the runtime
+ * raise a `hook` request even in `allow-all`, so a person decides.
+ */
 export interface PreToolDecision {
-  permissionDecision: "allow" | "deny";
+  permissionDecision: "allow" | "deny" | "ask";
   permissionDecisionReason?: string;
 }
 
@@ -17,6 +20,11 @@ export interface ToolRule {
   quietUnderAsk?: boolean;
   /** What a call targets (a workspace path, URL, or `server:tool`), for custom handlers. */
   target?: (args: unknown) => string | undefined;
+  /**
+   * A transfer tool: `allow` runs without a prompt within policy; `ask` always asks the attached person, in every
+   * approval mode, and neither the runtime judge nor a custom handler can approve it.
+   */
+  handoff?: { approval: "ask" | "allow"; prompt: string };
 }
 
 /**
@@ -76,6 +84,7 @@ export class SharedPermissionPolicy {
         ? undefined
         : { permissionDecision: "deny", permissionDecisionReason: "The tool is not admitted for this harness." };
     }
+    if (rule.handoff) return rule.handoff.approval === "allow" ? ALLOW : { permissionDecision: "ask", permissionDecisionReason: rule.handoff.prompt };
     if (!rule.kind) return ALLOW;
     const mode = ruleFor(this.context.definition, rule.kind);
     if (mode === "deny") return { permissionDecision: "deny", permissionDecisionReason: "Denied by the harness permission rules." };
@@ -90,6 +99,8 @@ export class SharedPermissionPolicy {
     const name = bare(request.toolName);
     const rule = this.context.rules.get(name);
     if (!rule) return reject("The tool is not admitted for this harness.");
+    // A handoff that needs a person goes to the attached client; nothing in this process answers for them.
+    if (rule.handoff) return rule.handoff.approval === "allow" ? { kind: "approve-once" } : { kind: "no-result" };
     if (!rule.kind) return { kind: "approve-once" };
     const mode = ruleFor(this.context.definition, rule.kind);
     if (mode === "deny") return reject("Denied by the harness permission rules.");

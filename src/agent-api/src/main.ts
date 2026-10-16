@@ -1,6 +1,6 @@
 import { SessionContainerSettings, SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits } from "@copilot-agent/contracts";
 import {
-  AllocationStore, DelegationStore, HostStore, JobEventListener, JobStore, SessionContainerStore, SessionDirectory, SharedStore, WorkerStore,
+  AllocationStore, DelegationStore, HandoffStore, HostStore, JobEventListener, JobStore, SessionContainerStore, SessionDirectory, SharedStore, WorkerStore,
   migrate,
 } from "@copilot-agent/job-store";
 import {
@@ -65,6 +65,7 @@ const app = buildApi({
   console: optionalEnv("CONSOLE_ENABLED", "true") !== "false",
   execution: execution === "on-demand" ? "dedicated" : "pool",
   delegations: new DelegationStore(pool, sharedStore, store),
+  handoffs: new HandoffStore(pool, sharedStore),
   hosting,
   ...(process.env.SHARED_WORKER_KEY ? { shared: {
     url: serviceUrl("session-host"), key: requireEnv("SHARED_WORKER_KEY"), brokerUrl: requireEnv("CONNECTION_BROKER_URL"),

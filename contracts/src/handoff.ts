@@ -129,3 +129,12 @@ export function handoffNotice(input: { id: string; source: string; target: strin
     JSON.stringify(data),
   ].join("\n");
 }
+
+/** The system message that tells the source a handoff it started did not complete; the source stays in control. */
+export function handoffFailureNotice(input: { id: string; target: string; code: HandoffErrorCode; message: string }): string {
+  return [
+    handoffNoticeMarker(input.id),
+    `The handoff to ${input.target} did not complete (${input.code}): ${input.message.slice(0, 500)}`,
+    "You remain in control of this conversation. Tell the person briefly, then continue with their request.",
+  ].join("\n");
+}

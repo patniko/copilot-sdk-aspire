@@ -74,7 +74,7 @@ async function setup(definition: HarnessDefinition = lead, options: { files?: Sh
     harness: { name: definition.name, version: definition.version, digest: snapshot(definition).digest },
     definition, model: "fixture", policy: policyFor(source.policies, definition.name), delegation: [],
   } as unknown as SharedActivationPlan;
-  const context = { lease, signal: new AbortController().signal, stateDirectory: join(tmpdir(), `worker-tools-${record.id}`) } as unknown as SharedActivationContext;
+  const context = { lease, signal: new AbortController().signal, stateDirectory: join(tmpdir(), `worker-tools-${record.id}`), runtimeSessionId: record.id } as unknown as SharedActivationContext;
   const session = (await shared.get(principal, record.id))!;
   const deps = {
     workers, registry: async () => source, features: FEATURES, deploymentLimit: 1000, containers: { limits, startupSeconds: 60 },

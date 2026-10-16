@@ -1,11 +1,16 @@
+import { randomUUID } from "node:crypto";
 import {
-  SharedPrincipalBindings, SharedWorkerLimits,
-  type ConnectionTicket, type HostingTransport, type SharedSessionCreation,
+  handoffFailureNotice, handoffNotice, handoffNoticeMarker, SharedPrincipalBindings, SharedWorkerLimits,
+  type ConnectionTicket, type HandoffPayload, type HostingTransport, type SharedSessionCreation,
 } from "@copilot-agent/contracts";
-import type { ManagedSettings } from "@github/copilot-sdk";
-import { SessionFileStore, SharedStore, StoreError, type SessionFileLease, type SharedSessionRecord, type SharedTurn } from "@copilot-agent/job-store";
-import { readServerKey, type AhpProxyTarget } from "@copilot-agent/service-defaults";
-import type { SharedActivationPlan, SharedAdmission, SharedApprovalPlan } from "./admission.js";
+import type { ManagedSettings, ToolInvocation } from "@github/copilot-sdk";
+import {
+  HandoffStore, SessionFileStore, SharedStore, StoreError,
+  type HandoffRecord, type HandoffRequest, type SessionFileLease, type SharedSessionRecord, type SharedTurn,
+} from "@copilot-agent/job-store";
+import { handoffToolName, readServerKey, type AhpProxyTarget } from "@copilot-agent/service-defaults";
+import { HandoffRefusal, type SharedActivationPlan, type SharedAdmission, type SharedApprovalPlan } from "./admission.js";
+import type { HandoffOffer } from "./handoff-tools.js";
 import { sharedSessionSettings } from "./harness-session.js";
 import { residencyVictim } from "./residency.js";
 import type { CustomPermissionHandler } from "./permission-handlers.js";
@@ -13,6 +18,9 @@ import { SharedPermissionPolicy, type ToolRule } from "./permissions.js";
 import { SharedSessionRuntime, type SharedActivationContext } from "./runtime.js";
 import { SharedTurnScheduler } from "./scheduler.js";
 import { sharedToolset, type SharedToolkitOptions } from "./toolkit.js";
+
+/** How long a transfer tool waits for the runtime to report who approved its permission request. */
+const DECISION_WAIT_MS = 3_000;
 
 interface Resident {
   context: SharedActivationContext;
@@ -23,6 +31,10 @@ interface Resident {
   policy?: SharedPermissionPolicy;
   connection?: Awaited<ReturnType<SharedSessionRuntime["open"]>>;
   closing?: Promise<void>;
+  /** The accepted handoff whose cutover follows this activation's current turn; no new turns start meanwhile. */
+  handoff?: string;
+  /** Who answered recent permission requests, by tool call: the runtime's `permission.completed` decision source. */
+  decisions: Map<string, { source?: string; approved: boolean }>;
 }
 export interface SharedServiceOptions {
   root: string;
@@ -40,6 +52,8 @@ export interface SharedServiceOptions {
   /** Handlers for the `custom` approval mode, by name. */
   permissionHandlers?: ReadonlyMap<string, CustomPermissionHandler>;
   permissionHandlerTimeoutMs?: number;
+  /** The handoff ledger; required for harnesses with handoff targets. */
+  handoffs?: HandoffStore;
 }
 
 /** Managed settings that keep the runtime from entering an approval mode the harness's policy does not allow. */
@@ -49,6 +63,17 @@ export function approvalManagedSettings(approval: SharedApprovalPlan): ManagedSe
     ...(approval.available.includes("assisted") ? {} : { disableAssistedPermissionsMode: true }),
   };
   return Object.keys(permissions).length ? { permissions } : undefined;
+}
+
+/** What the source's transfer tool returns for a recorded handoff; a refusal is a tool error and the source keeps control. */
+export function handoffOutcome(handoff: HandoffRecord): string {
+  if (handoff.state === "refused" || handoff.state === "failed") {
+    const error = handoff.view.error;
+    throw new Error(`Handoff refused (${error?.code ?? "handoff_failed"}): ${error?.message ?? "The handoff did not complete."} You remain in control of the conversation.`);
+  }
+  if (handoff.state === "committed") return `This conversation was already handed off to ${handoff.target.name}.`;
+  return `Handoff accepted: ${handoff.target.name} takes over this conversation when your turn ends (${handoff.history} history). `
+    + `Tell the person in one short sentence that ${handoff.target.name} will continue, then end your turn without calling more tools.`;
 }
 
 /**
@@ -63,6 +88,12 @@ export class SharedSessionService {
   readonly #opening = new Map<string, Promise<void>>();
   /** The harness of every opening or resident session: the per-harness residency reservations. */
   readonly #harnessOf = new Map<string, string>();
+  /** Handoff cutovers in progress, by handoff. */
+  readonly #cutovers = new Map<string, Promise<void>>();
+  /** Handoff notices being delivered, by session. */
+  readonly #notices = new Map<string, Promise<void>>();
+  /** Sessions whose handoff notice waits for the conversation to be idle, with their principal. */
+  readonly #noticeRetries = new Map<string, string>();
   #timer?: NodeJS.Timeout;
   #maintenance?: Promise<void>;
   #stopping = false;
@@ -149,10 +180,13 @@ export class SharedSessionService {
 
   /** Activates the session and issues a one-use ticket over `transport`; the API adds the broker URL. */
   async connection(principal: string, id: string, transport: HostingTransport = "direct"): Promise<ConnectionTicket> {
-    const row = await this.get(principal, id);
+    let row = await this.get(principal, id);
     if (row.view.closed) throw new StoreError("not_found", "The shared conversation is closed.");
     await this.options.admission.connectable(row.definition, transport, principal);
     await this.ensure(principal, id);
+    // A handoff may have started a new segment while the session activated; attach to the current one.
+    row = await this.get(principal, id);
+    this.#notify(principal, id);
     return { sessionId: id, ahpSessionId: row.view.segment.ahpSessionId, ...(await this.options.store.issueTicket(principal, id)) };
   }
 
@@ -180,15 +214,20 @@ export class SharedSessionService {
   async continueConversation(principal: string, id: string, notificationId: string, prompt: string): Promise<"delivered" | "already-delivered"> {
     await this.ensure(principal, id);
     const resident = this.#residents.get(id);
-    if (!resident || resident.closing || this.busy(id)) throw new StoreError("quota_exceeded", "The conversation is busy; completion delivery must wait.");
+    if (!resident || resident.closing || resident.handoff || this.busy(id)) throw new StoreError("quota_exceeded", "The conversation is busy; completion delivery must wait.");
     const marker = `shared-completion:${notificationId}`;
     if (await this.#runtime.hasSystemMessage(id, marker)) return "already-delivered";
+    await this.#system(resident, id, "completion", marker, `[${marker}]\n${prompt}`);
+    return "delivered";
+  }
+
+  /** Starts a system-originated turn with `prompt`; the turn settles when the runtime reports the session idle. */
+  async #system(resident: Resident, id: string, source: "completion" | "handoff", operationKey: string, prompt: string): Promise<void> {
     const signal = AbortSignal.any([resident.controller.signal, resident.context.signal]);
-    await this.#scheduler.acquire(resident.context.lease, signal, "completion", marker);
+    await this.#scheduler.acquire(resident.context.lease, signal, source, operationKey);
     try {
       signal.throwIfAborted();
-      await this.#runtime.sendSystem(id, `[${marker}]\n${prompt}`);
-      return "delivered";
+      await this.#runtime.sendSystem(id, prompt);
     } catch (error) {
       await this.#scheduler.finish(resident.context.lease, true);
       throw error;
@@ -197,7 +236,7 @@ export class SharedSessionService {
 
   async ensure(principal: string, id: string): Promise<void> {
     if (this.#stopping) throw new StoreError("invalid_state", "The shared service is stopping.");
-    const row = await this.get(principal, id);
+    let row = await this.get(principal, id);
     if (row.view.closed) throw new StoreError("not_found", "The shared conversation is closed.");
     if (row.placement !== "shared") throw new StoreError("not_found", "The conversation runs in a session container; connect through the application API.");
     const opening = this.#opening.get(id);
@@ -205,6 +244,14 @@ export class SharedSessionService {
     const resident = this.#residents.get(id);
     if (resident?.closing) await resident.closing;
     else if (resident?.connection && !resident.controller.signal.aborted) return;
+    // Finish a handoff a previous activation accepted before opening either harness.
+    const pending = await this.options.handoffs?.open(id);
+    if (pending) {
+      await this.#cutover(pending.id);
+      if (this.#residents.get(id)?.connection || this.#opening.has(id)) return this.#opening.get(id);
+      row = await this.get(principal, id);
+      if (row.view.closed) throw new StoreError("not_found", "The shared conversation is closed.");
+    }
     const operation = this.activate(row);
     this.#opening.set(id, operation);
     try { await operation; }
@@ -222,6 +269,13 @@ export class SharedSessionService {
   private async activate(row: SharedSessionRecord): Promise<void> {
     const plan = await this.options.admission.activation(row.definition, row.principal);
     const harness = plan.harness.name;
+    const handoffs = plan.definition.hosting?.handoffs?.length ? this.options.handoffs : undefined;
+    if (plan.definition.hosting?.handoffs?.length && !handoffs) throw new Error("Handoffs are not configured on this shared worker.");
+    const offers = handoffs ? await this.options.admission.handoffOffers(plan.definition, "shared") : [];
+    const offerByTool = new Map<string, HandoffOffer>();
+    const { segment } = row.view;
+    // The segment a handoff started prepares its storage once, under the activation's lease, before its runtime opens.
+    const started = segment.generation > 1 ? await this.options.handoffs?.forSegment(row.id, segment.generation) : undefined;
     for (;;) {
       const victim = this.#capacityVictim(row.id, harness);
       if (!victim) break;
@@ -232,7 +286,7 @@ export class SharedSessionService {
     const bind = (context: SharedActivationContext): Resident => {
       if (!activation) {
         if (this.#residents.has(row.id)) throw new Error("Another activation is already resident.");
-        activation = { context, record: row, harness, controller: new AbortController(), lastActivity: Date.now() };
+        activation = { context, record: row, harness, controller: new AbortController(), lastActivity: Date.now(), decisions: new Map() };
         this.#residents.set(row.id, activation);
       }
       if (this.#residents.get(row.id) !== activation || activation.context.lease.epoch !== context.lease.epoch
@@ -243,12 +297,19 @@ export class SharedSessionService {
     try {
       const connection = await this.#runtime.open({
         id: row.id, principal: row.principal, githubUserId: row.githubUserId, model: plan.model,
+        runtimeSessionId: segment.ahpSessionId, generation: segment.generation,
+        ...(started && !started.prepared
+          ? { prepare: async (lease: SessionFileLease) => { await this.options.handoffs!.prepareStorage(started.id, lease, this.#runtime.handoffAreas(started.id)); } }
+          : {}),
         configuration: `${plan.harness.digest}|${plan.model}`,
         settings: { ...settings, managedSettings: approvalManagedSettings(plan.approval) },
         approval: { initial: plan.approval.initial, available: plan.approval.available, ...(plan.approval.judgeModel ? { judgeModel: plan.approval.judgeModel } : {}) },
         tools: async (context) => {
           const resident = bind(context);
-          const toolset = await sharedToolset(plan, row, context, () => this.#scheduler.current(context.lease), this.options.toolkit ?? {});
+          const toolset = await sharedToolset(plan, row, context, () => this.#scheduler.current(context.lease), this.options.toolkit ?? {}, handoffs ? {
+            offers, run: (offer, payload, invocation) => this.#transfer(resident, row, plan, offer, payload, invocation),
+          } : undefined);
+          for (const offer of offers) offerByTool.set(handoffToolName(offer.harness), offer);
           resident.policy = this.#policy(plan, row, toolset.rules, new Set(settings.builtinTools));
           return toolset.tools;
         },
@@ -263,6 +324,8 @@ export class SharedSessionService {
             const resident = bind(context);
             const signal = AbortSignal.any([context.signal, resident.controller.signal]);
             signal.throwIfAborted();
+            // After an accepted handoff only the turn that accepted it may continue; the target takes the next one.
+            if (resident.handoff && !this.#scheduler.busy(row.id)) throw new Error("The conversation is moving to another harness.");
             resident.lastActivity = Date.now();
             const turn = await this.#scheduler.acquire(context.lease, signal);
             signal.throwIfAborted();
@@ -273,10 +336,19 @@ export class SharedSessionService {
           onPreToolUse: async ({ toolName }) => {
             const resident = bind(context);
             if (resident.controller.signal.aborted) return { permissionDecision: "deny", permissionDecisionReason: "The conversation is deactivating." };
+            if (resident.handoff) {
+              return { permissionDecision: "deny", permissionDecisionReason: "This conversation is being handed off; end your turn without calling more tools." };
+            }
             const policy = resident.policy;
             if (!policy) return { permissionDecision: "deny", permissionDecisionReason: "The conversation is not ready." };
             const decision = policy.preToolUse(toolName);
             if (decision?.permissionDecision === "deny") return decision;
+            // Do not ask a person to approve a handoff that current policy or this deployment would refuse.
+            const offer = offerByTool.get(toolName.replace(/^custom:/, ""));
+            if (offer) {
+              const refusal = await this.#handoffPrecheck(row, offer);
+              if (refusal) return { permissionDecision: "deny", permissionDecisionReason: refusal };
+            }
             try {
               await this.options.store.grant(context.lease, this.#scheduler.current(context.lease).id);
             } catch (error) {
@@ -294,9 +366,15 @@ export class SharedSessionService {
           if (["user.message", "assistant.message", "assistant.message_delta", "tool.execution_start", "tool.execution_complete"].includes(event.type)) {
             resident.lastActivity = Date.now();
           }
+          if (event.type === "permission.completed" && event.data.toolCallId) {
+            if (resident.decisions.size >= 64) resident.decisions.delete(resident.decisions.keys().next().value!);
+            resident.decisions.set(event.data.toolCallId, { source: event.data.decisionSource, approved: event.data.result.kind.startsWith("approved") });
+          }
           if (event.type === "session.idle" && !event.agentId) {
             resident.lastActivity = Date.now();
-            void this.#scheduler.finish(context.lease).catch(() => {
+            void this.#scheduler.finish(context.lease).then(() => {
+              if (resident.handoff) void this.#cutover(resident.handoff).catch(() => this.options.report("session.handoff_cutover_failed", row.id));
+            }, () => {
               this.options.report("session.turn_settlement_failed", row.id);
               void this.deactivate(row.id).catch(() => this.options.report("session.deactivation_failed", row.id));
             });
@@ -327,6 +405,175 @@ export class SharedSessionService {
       ...(this.options.permissionHandlerTimeoutMs ? { handlerTimeoutMs: this.options.permissionHandlerTimeoutMs } : {}),
       report: (event) => this.options.report(event, row.id),
     });
+  }
+
+  /** Why a handoff would be refused now, before a person is asked to approve it; undefined when it can go ahead. */
+  async #handoffPrecheck(row: SharedSessionRecord, offer: HandoffOffer): Promise<string | undefined> {
+    try {
+      await this.options.admission.handoff({ principal: row.principal, session: row.definition, from: "shared", target: offer.harness });
+      return undefined;
+    } catch (error) {
+      if (error instanceof HandoffRefusal) return `Handoff refused (${error.code}): ${error.message} You remain in control of the conversation.`;
+      throw error;
+    }
+  }
+
+  /**
+   * One transfer tool call (docs/HOSTING-MODES-PLAN.md, section 7.5). Repeated calls return the recorded outcome. The
+   * target is checked against current policy and this deployment, and with `ask` approval the call must have been
+   * approved by a person through the attached client, never by the runtime's judge, a policy, or a handler. Then the
+   * ledger records it: refused leaves the source in control; accepted moves control when this turn ends.
+   */
+  async #transfer(resident: Resident, row: SharedSessionRecord, plan: SharedActivationPlan, offer: HandoffOffer, payload: HandoffPayload, invocation: ToolInvocation): Promise<string> {
+    const handoffs = this.options.handoffs!;
+    const recorded = await handoffs.byRequest(row.id, invocation.toolCallId);
+    if (recorded) return handoffOutcome(recorded);
+    if (resident.handoff) throw new Error("This conversation is already being handed off; end your turn.");
+    let refusal: HandoffRequest["refusal"];
+    let checked: Awaited<ReturnType<SharedAdmission["handoff"]>> | undefined;
+    try {
+      checked = await this.options.admission.handoff({ principal: row.principal, session: row.definition, from: "shared", target: offer.harness });
+    } catch (error) {
+      if (!(error instanceof HandoffRefusal)) throw error;
+      refusal = { code: error.code, message: error.message, ...(error.prerequisite ? { prerequisite: error.prerequisite } : {}) };
+    }
+    let approvedBy: "person" | "policy" | undefined;
+    if (checked) {
+      if (checked.approval === "allow") approvedBy = "policy";
+      else if (await this.#approvedByPerson(resident, invocation.toolCallId)) approvedBy = "person";
+      else refusal = { code: "handoff_declined", message: "This handoff needs the approval of the person attached to the conversation, and no person approved it." };
+    }
+    const { handoff } = await handoffs.request({
+      principal: row.principal, sessionId: row.id, requestKey: invocation.toolCallId,
+      fromGeneration: row.view.segment.generation, fromPlacement: "shared", source: plan.harness,
+      target: checked ? checked.target : { name: offer.harness },
+      ...(checked ? { toPlacement: checked.placement } : {}),
+      history: checked?.history ?? offer.history, approval: checked?.approval ?? offer.approval,
+      ...(approvedBy && !refusal ? { approvedBy } : {}), payload,
+      ...(refusal ? { refusal } : {}),
+    });
+    this.options.report(`session.handoff_${handoff.state}`, row.id);
+    if (handoff.state === "accepted") resident.handoff = handoff.id;
+    return handoffOutcome(handoff);
+  }
+
+  /** Whether the runtime reports that a person approved this tool call's permission request. */
+  async #approvedByPerson(resident: Resident, toolCallId: string): Promise<boolean> {
+    const deadline = Date.now() + DECISION_WAIT_MS;
+    let decision = resident.decisions.get(toolCallId);
+    while (!decision && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      decision = resident.decisions.get(toolCallId);
+    }
+    decision ??= await this.#runtime.permissionDecision(resident.record.id, toolCallId).catch(() => undefined);
+    return decision?.approved === true && decision.source === "human_response";
+  }
+
+  /** Completes an accepted handoff once its turn has ended; concurrent callers share one cutover. */
+  #cutover(handoffId: string): Promise<void> {
+    let running = this.#cutovers.get(handoffId);
+    if (!running) {
+      running = this.#runCutover(handoffId).finally(() => this.#cutovers.delete(handoffId));
+      this.#cutovers.set(handoffId, running);
+    }
+    return running;
+  }
+
+  /**
+   * The same-placement cutover: re-check the pinned target under current policy, commit the target's segment in the
+   * ledger (the broker then closes attached clients with "moved"), close the source's activation, and open the
+   * target's, which prepares storage and receives the handoff notice as its first turn. A failed re-check fails the
+   * handoff and leaves the source in control.
+   */
+  async #runCutover(handoffId: string): Promise<void> {
+    const handoffs = this.options.handoffs;
+    const handoff = await handoffs?.byId(handoffId);
+    if (!handoffs || !handoff || handoff.state !== "accepted" || handoff.fromPlacement !== "shared") return;
+    const { sessionId: id, principal } = handoff;
+    // The turn that accepted the handoff is still running; its idle event starts the cutover again.
+    if (this.#scheduler.busy(id) && this.#residents.has(id)) return;
+    const row = await this.options.store.get(principal, id);
+    const release = async (code: Parameters<HandoffStore["fail"]>[1], message: string) => {
+      await handoffs.fail(handoffId, code, message);
+      this.options.report("session.handoff_failed", id);
+      const resident = this.#residents.get(id);
+      if (resident?.handoff === handoffId) resident.handoff = undefined;
+      if (row && !row.view.closed) this.#notify(principal, id);
+    };
+    if (!row || row.view.closed || row.placement !== "shared" || row.view.segment.generation !== handoff.fromGeneration) {
+      return release("session_changed", "The conversation closed or moved before the handoff completed.");
+    }
+    let checked: Awaited<ReturnType<SharedAdmission["handoff"]>>;
+    try {
+      checked = await this.options.admission.handoff({
+        principal, session: row.definition, from: "shared", target: handoff.target.name,
+        pinned: { version: handoff.target.version!, digest: handoff.target.digest! },
+      });
+    } catch (error) {
+      if (!(error instanceof HandoffRefusal)) throw error;
+      return release(error.code, error.message);
+    }
+    if (checked.placement !== "shared" || checked.history !== handoff.history) {
+      return release("handoff_unavailable", "The target can no longer start in this conversation's placement with the accepted history.");
+    }
+    const ahpSessionId = handoff.history === "full" ? row.view.segment.ahpSessionId : randomUUID();
+    try {
+      await handoffs.commitShared(handoffId, { definition: checked.definition, ahpSessionId });
+    } catch (error) {
+      if (error instanceof StoreError && error.code === "invalid_state") {
+        const resident = this.#residents.get(id);
+        if (resident?.handoff === handoffId) resident.handoff = undefined;
+        this.options.report("session.handoff_failed", id);
+        return;
+      }
+      throw error;
+    }
+    this.options.report("session.handoff_committed", id);
+    await this.deactivate(id);
+    if (this.#stopping) return;
+    await this.ensure(principal, id);
+    this.#notify(principal, id);
+  }
+
+  /** Delivers a pending handoff notice to the session in the background: the target's first turn, or a failure to the source. */
+  #notify(principal: string, id: string): void {
+    if (!this.options.handoffs || this.#notices.has(id) || this.#stopping) return;
+    const delivery = this.#deliverNotice(principal, id)
+      .then((delivered) => {
+        if (delivered) this.#noticeRetries.delete(id);
+        else this.#noticeRetries.set(id, principal);
+      }, () => {
+        this.#noticeRetries.set(id, principal);
+        this.options.report("session.handoff_notice_deferred", id);
+      })
+      .finally(() => this.#notices.delete(id));
+    this.#notices.set(id, delivery);
+  }
+
+  /** Delivers the session's pending handoff notice; false when it must wait because the conversation is busy. */
+  async #deliverNotice(principal: string, id: string): Promise<boolean> {
+    const handoffs = this.options.handoffs!;
+    const row = await this.get(principal, id);
+    if (row.view.closed || row.placement !== "shared") return true;
+    const generation = row.view.segment.generation;
+    const started = generation > 1 ? await handoffs.forSegment(id, generation) : undefined;
+    const pending = started && !started.notified ? started : await handoffs.unnotifiedFailure(id, generation);
+    if (!pending) return true;
+    if (this.busy(id)) return false;
+    await this.ensure(principal, id);
+    const resident = this.#residents.get(id);
+    if (!resident?.connection || resident.closing || resident.handoff || this.busy(id)) return false;
+    const marker = handoffNoticeMarker(pending.id);
+    if (!(await this.#runtime.hasSystemMessage(id, marker))) {
+      const notice = pending.state === "committed"
+        ? handoffNotice({ id: pending.id, source: pending.source.name, target: pending.target.name, history: pending.history, payload: pending.payload })
+        : handoffFailureNotice({
+          id: pending.id, target: pending.target.name, code: pending.view.error?.code ?? "handoff_failed", message: pending.view.error?.message ?? "",
+        });
+      await this.#system(resident, id, "handoff", `handoff:${pending.id}`, notice);
+    }
+    await handoffs.markNotified(pending.id);
+    return true;
   }
 
   async deactivate(id: string): Promise<void> {
@@ -367,6 +614,15 @@ export class SharedSessionService {
         await this.deactivate(resident.record.id);
       }
     }
+    // A handoff whose turn ended without its cutover (a lost activation or a restart) moves now, and notices that had to
+    // wait for a busy conversation are retried.
+    for (const handoff of await this.options.handoffs?.pending("shared") ?? []) {
+      if (this.#cutovers.has(handoff.id) || this.busy(handoff.sessionId)) continue;
+      void this.#cutover(handoff.id).catch(() => this.options.report("session.handoff_cutover_failed", handoff.sessionId));
+    }
+    for (const [id, principal] of this.#noticeRetries) {
+      if (!this.busy(id)) this.#notify(principal, id);
+    }
     this.#healthy = true;
   }
 
@@ -376,6 +632,7 @@ export class SharedSessionService {
     for (const resident of this.#residents.values()) resident.controller.abort(new Error("The shared service is stopping."));
     await Promise.allSettled([...this.#opening.values()]);
     await this.#maintenance;
+    await Promise.allSettled([...this.#cutovers.values(), ...this.#notices.values()]);
     try { await Promise.all([...this.#residents.keys()].map((id) => this.deactivate(id))); }
     finally { await this.#runtime.stop(); }
   }

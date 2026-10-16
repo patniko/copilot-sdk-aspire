@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { ConnectionTicket, SharedConnection, SharedConnectionRequest, SharedSessionClosure, SharedSessionCreation, SharedSessionView } from "@copilot-agent/contracts";
 import { harnessHostingView, hostingError, HttpError, type HostingCatalog } from "@copilot-agent/service-defaults";
-import type { DelegationStore } from "@copilot-agent/job-store";
+import type { DelegationStore, HandoffStore } from "@copilot-agent/job-store";
 import type { ContainerSessionService } from "./container-sessions.js";
 
 /** `url` and `key` reach the shared worker's control API; `brokerUrl` is the connection broker's public origin. */
@@ -38,6 +38,7 @@ export function registerSharedSessionRoutes(
   delegations?: DelegationStore,
   hosting?: HostingCatalog,
   containers?: ContainerSessionService,
+  handoffs?: HandoffStore,
 ): void {
   const catalog = hosting ?? containers?.catalog;
   const broker = deps ? brokerOrigin(deps.brokerUrl) : undefined;
@@ -123,6 +124,15 @@ export function registerSharedSessionRoutes(
     } else await control(principal, { operation: "get", id }, SharedSessionView);
     if (!delegations) throw new HttpError(503, "delegations_unavailable", "Delegation history is unavailable.");
     return { jobs: await delegations.list(principal, id) };
+  });
+  app.get("/v1/sessions/:id/handoffs", async (request) => {
+    const principal = principalOf(request);
+    const id = idOf(request);
+    if (containers) {
+      if (!(await containers.view(principal, id))) throw new HttpError(404, "not_found", "The conversation was not found.");
+    } else await control(principal, { operation: "get", id }, SharedSessionView);
+    if (!handoffs) throw new HttpError(503, "handoffs_unavailable", "Handoff history is unavailable.");
+    return { handoffs: await handoffs.list(principal, id) };
   });
   app.post("/v1/sessions/:id/connection", async (request, reply) => {
     reply.header("cache-control", "no-store");

@@ -28,6 +28,8 @@ export interface HandoffRecord {
   toGeneration?: number;
   ahpSessionId?: string;
   notified: boolean;
+  /** Whether the target's storage was prepared; see {@link HandoffStore.prepareStorage}. */
+  prepared: boolean;
   view: HandoffView;
 }
 
@@ -65,7 +67,6 @@ export interface SharedHandoffCutover {
   definition: SharedSessionDefinition;
   /** The runtime session the target's segment runs and clients attach to. */
   ahpSessionId: string;
-  areas: HandoffStorageAreas;
 }
 
 interface HandoffRow {
@@ -74,7 +75,7 @@ interface HandoffRow {
   to_placement: PlacementKind | null; history: HandoffHistory; approval: HostingApproval; approved_by: HandoffApprover | null;
   payload: unknown; to_generation: number | null; ahp_session_id: string | null;
   error_code: string | null; error_message: string | null; error_prerequisite: unknown;
-  notified_at: Date | null; created_at: Date; committed_at: Date | null; failed_at: Date | null;
+  notified_at: Date | null; storage_prepared_at: Date | null; created_at: Date; committed_at: Date | null; failed_at: Date | null;
 }
 
 /** A cutover the ledger refused; the transaction rolls back and the handoff fails with `code`. */
@@ -180,50 +181,34 @@ export class HandoffStore {
   }
 
   /**
-   * The same-placement cutover commit, in one transaction under the caller's storage lease: replace the session's
-   * definition with the target's, move it to the next generation in the same placement, void its outstanding tickets
-   * and activation, record the new segment, and commit the handoff. With `full` history the runtime session continues
-   * without the source's consent files (session-scoped approvals); otherwise the source's runtime state moves aside so
-   * the target starts a fresh runtime session. A session that changed, or a lost lease, fails the handoff instead and
-   * leaves the source in control.
+   * The same-placement cutover commit, in one ledger transaction: replace the session's definition with the target's,
+   * move it to the next generation in the same placement (the connection broker then closes attached clients with
+   * "moved"), void its outstanding tickets and activation, record the new segment, and commit the handoff. It writes no
+   * session files: the target's first activation prepares storage with {@link prepareStorage} before its runtime opens.
+   * A session that closed or changed fails the handoff instead and leaves the source in control.
    */
-  async commitShared(id: string, lease: SessionFileLease, cutover: SharedHandoffCutover): Promise<{ generation: number }> {
+  async commitShared(id: string, cutover: SharedHandoffCutover): Promise<{ generation: number }> {
     const definition = SharedSessionDefinition.parse(cutover.definition);
-    const { state, archive } = cutover.areas;
-    for (const key of [state, archive]) {
-      if (!PROVIDER_KEY.test(key) || key === "/" || key.endsWith("/") || key.split("/").includes("..")) throw new StoreError("invalid_request", "Invalid handoff storage area.");
-    }
-    if (archive === state || archive.startsWith(`${state}/`) || state.startsWith(`${archive}/`)) throw new StoreError("invalid_request", "Handoff storage areas must not overlap.");
-    if (!cutover.ahpSessionId || cutover.ahpSessionId.length > 128) throw new StoreError("invalid_request", "Invalid runtime session.");
+    if (!/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(cutover.ahpSessionId)) throw new StoreError("invalid_request", "Invalid runtime session.");
     try {
       return await this.shared.transaction(async (db) => {
         const handoff = (await db.query<HandoffRow>("SELECT * FROM session_handoffs WHERE id=$1 FOR UPDATE", [id])).rows[0];
-        if (!handoff || handoff.state !== "accepted" || handoff.to_placement !== "shared" || handoff.from_placement !== "shared"
-          || handoff.session_id !== lease.id || handoff.principal !== lease.principal) {
+        if (!handoff || handoff.state !== "accepted" || handoff.to_placement !== "shared" || handoff.from_placement !== "shared") {
           throw new StoreError("invalid_state", "The handoff is not ready for a shared cutover.");
         }
         const target = HandoffTarget.parse(handoff.target);
         if (definition.harness?.name !== target.name || definition.harness.version !== target.version || definition.harness.digest !== target.digest) {
           throw new StoreError("invalid_request", "The cutover definition is not the handoff's target.");
         }
-        const fresh = handoff.history !== "full";
-        if (!fresh && cutover.ahpSessionId !== await this.#currentRuntime(db, handoff.session_id, handoff.from_generation)) {
-          throw new StoreError("invalid_request", "Full history continues the source's runtime session.");
+        const continuing = await this.#currentRuntime(db, handoff.session_id, handoff.from_generation);
+        if ((handoff.history === "full") !== (cutover.ahpSessionId === continuing)) {
+          throw new StoreError("invalid_request", "Full history continues the source's runtime session; other history starts a new one.");
         }
-        const namespace = await db.query(
-          "SELECT 1 FROM session_file_namespaces WHERE id=$1 AND principal=$2 AND epoch=$3 AND lease_until>clock_timestamp() FOR UPDATE",
-          [lease.id, lease.principal, lease.epoch]);
-        if (!namespace.rowCount) throw new CutoverRefused("handoff_failed", "The conversation's storage lease ended before the cutover.");
         const moved = (await db.query<{ placement_generation: number }>(
           `UPDATE shared_sessions SET definition=$5,placement_generation=placement_generation+1,last_activity_at=clock_timestamp()
            WHERE id=$1 AND principal=$2 AND NOT closed AND placement=$3 AND placement_generation=$4 RETURNING placement_generation`,
           [handoff.session_id, handoff.principal, handoff.from_placement, handoff.from_generation, JSON.stringify(definition)])).rows[0];
         if (!moved) throw new CutoverRefused("session_changed", "The conversation closed or moved during the handoff.");
-        if (fresh) await this.#archive(db, lease.id, state, archive);
-        else {
-          await db.query("DELETE FROM session_files WHERE namespace_id=$1 AND NOT directory AND path=ANY($2::text[])",
-            [lease.id, PROMOTION_EXCLUDED_STATE_FILES.map((name) => `${state}/${name}`)]);
-        }
         await db.query("DELETE FROM shared_connection_tickets WHERE session_id=$1 AND used_at IS NULL", [handoff.session_id]);
         await db.query("DELETE FROM shared_activations WHERE session_id=$1", [handoff.session_id]);
         const generation = moved.placement_generation;
@@ -244,6 +229,39 @@ export class HandoffStore {
   }
 
   /**
+   * Prepares the session's storage for the segment a committed handoff started, once, under the activation's lease
+   * and before its runtime opens: without full history the source's runtime state moves to `areas.archive`, where it is
+   * retained, so the target starts a fresh runtime session; with full history the runtime session continues without
+   * the source's session-scoped consent files. Returns false when the segment's storage was already prepared.
+   */
+  async prepareStorage(id: string, lease: SessionFileLease, areas: HandoffStorageAreas): Promise<boolean> {
+    const { state, archive } = areas;
+    for (const key of [state, archive]) {
+      if (!PROVIDER_KEY.test(key) || key === "/" || key.endsWith("/") || key.split("/").includes("..")) throw new StoreError("invalid_request", "Invalid handoff storage area.");
+    }
+    if (archive === state || archive.startsWith(`${state}/`) || state.startsWith(`${archive}/`)) throw new StoreError("invalid_request", "Handoff storage areas must not overlap.");
+    return this.shared.transaction(async (db) => {
+      const handoff = (await db.query<HandoffRow>("SELECT * FROM session_handoffs WHERE id=$1 FOR UPDATE", [id])).rows[0];
+      if (!handoff || handoff.state !== "committed" || handoff.session_id !== lease.id || handoff.principal !== lease.principal) {
+        throw new StoreError("invalid_state", "The handoff has no committed segment to prepare.");
+      }
+      if (handoff.storage_prepared_at) return false;
+      const namespace = await db.query(
+        "SELECT 1 FROM session_file_namespaces WHERE id=$1 AND principal=$2 AND epoch=$3 AND lease_until>clock_timestamp() FOR UPDATE",
+        [lease.id, lease.principal, lease.epoch]);
+      if (!namespace.rowCount) throw new StoreError("invalid_state", "The conversation's storage lease is no longer active.");
+      if (handoff.history === "full") {
+        await db.query("DELETE FROM session_files WHERE namespace_id=$1 AND NOT directory AND path=ANY($2::text[])",
+          [lease.id, PROMOTION_EXCLUDED_STATE_FILES.map((name) => `${state}/${name}`)]);
+      } else {
+        await this.#archive(db, lease.id, state, archive);
+      }
+      await db.query("UPDATE session_handoffs SET storage_prepared_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1", [id]);
+      return true;
+    });
+  }
+
+  /**
    * Fails an accepted handoff before its cutover: the source stays in control and the conversation admits turns again.
    * Failing a refused or failed handoff returns it unchanged; a committed handoff cannot fail.
    */
@@ -259,11 +277,19 @@ export class HandoffStore {
     return current;
   }
 
-  /** Records that the target was told about the handoff; returns false when it already was. */
+  /** Records that the conversation was told about the handoff's outcome; returns false when it already was. */
   async markNotified(id: string): Promise<boolean> {
     const result = await this.pool.query(
-      "UPDATE session_handoffs SET notified_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1 AND state='committed' AND notified_at IS NULL", [id]);
+      "UPDATE session_handoffs SET notified_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1 AND state IN ('committed','failed') AND notified_at IS NULL", [id]);
     return result.rowCount === 1;
+  }
+
+  /** The latest failed handoff from a session's current segment that the source was not yet told about. */
+  async unnotifiedFailure(sessionId: string, generation: number): Promise<HandoffRecord | undefined> {
+    const row = (await this.pool.query<HandoffRow>(
+      `SELECT * FROM session_handoffs WHERE session_id=$1 AND state='failed' AND from_generation=$2 AND notified_at IS NULL
+       ORDER BY failed_at DESC LIMIT 1`, [sessionId, generation])).rows[0];
+    return row ? record(row) : undefined;
   }
 
   async #currentRuntime(db: pg.PoolClient, sessionId: string, generation: number): Promise<string> {
@@ -278,12 +304,12 @@ export class HandoffStore {
     if (!present.rowCount) return;
     const occupied = await db.query("SELECT 1 FROM session_files WHERE namespace_id=$1 AND (path=$2 OR starts_with(path,$3)) LIMIT 1",
       [namespace, archive, `${archive}/`]);
-    if (occupied.rowCount) throw new CutoverRefused("handoff_failed", "The handoff's storage area is already in use.");
+    if (occupied.rowCount) throw new StoreError("invalid_state", "The handoff's storage area is already in use.");
     const ancestors: string[] = [];
     for (let parent = posix.dirname(archive); parent !== "/"; parent = posix.dirname(parent)) ancestors.unshift(parent);
     ancestors.unshift("/");
     const files = await db.query("SELECT 1 FROM session_files WHERE namespace_id=$1 AND path=ANY($2::text[]) AND NOT directory", [namespace, ancestors]);
-    if (files.rowCount) throw new CutoverRefused("handoff_failed", "A file occupies the handoff's storage area.");
+    if (files.rowCount) throw new StoreError("invalid_state", "A file occupies the handoff's storage area.");
     await db.query(
       "INSERT INTO session_files(namespace_id,path,directory) SELECT $1,unnest($2::text[]),true ON CONFLICT (namespace_id,path) DO NOTHING",
       [namespace, ancestors]);
@@ -311,6 +337,7 @@ function record(row: HandoffRow): HandoffRecord {
     ...(row.to_generation ? { toGeneration: row.to_generation } : {}),
     ...(row.ahp_session_id ? { ahpSessionId: row.ahp_session_id } : {}),
     notified: row.notified_at !== null,
+    prepared: row.storage_prepared_at !== null,
     view: HandoffView.parse({
       id: row.id, state: row.state, source, target, history: row.history, approval: row.approval,
       ...(row.approved_by ? { approvedBy: row.approved_by } : {}),

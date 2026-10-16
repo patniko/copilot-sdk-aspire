@@ -3,7 +3,7 @@ import { z } from "zod";
 import {
   SessionContainerSettings, SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits, WORKER_CONTAINER_FEATURES,
 } from "@copilot-agent/contracts";
-import { AllocationStore, DelegationStore, JobStore, migrate, SessionFileStore, SharedStore, WorkerStore } from "@copilot-agent/job-store";
+import { AllocationStore, DelegationStore, HandoffStore, JobStore, migrate, SessionFileStore, SharedStore, WorkerStore } from "@copilot-agent/job-store";
 import {
   Admission, assertOverridesMatchHarnesses, createLogger, createPostgresPool, listen, listenPort, loadHarnesses, loadProfiles,
   loadPolicySet, optionalEnv, readPostgresConnection, requireEnv, serviceUrl,
@@ -100,6 +100,7 @@ const service = new SharedSessionService({
     } : {}),
   },
   permissionHandlers: PERMISSION_HANDLERS,
+  handoffs: new HandoffStore(pool, store),
 });
 const app = buildSharedHost(service, key, brokerKey);
 const completions = new CompletionPump(service, delegations, jobs, logger);

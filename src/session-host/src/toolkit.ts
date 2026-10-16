@@ -2,6 +2,7 @@ import type { Tool } from "@github/copilot-sdk";
 import { hostingModeOf, permissionModeFor, SHARED_WORKER_BINDINGS } from "@copilot-agent/contracts";
 import type { SharedSessionRecord, SharedTurn } from "@copilot-agent/job-store";
 import type { SharedActivationPlan } from "./admission.js";
+import { handoffTools, type HandoffOffer, type HandoffRunner } from "./handoff-tools.js";
 import type { ToolRule } from "./permissions.js";
 import { remoteMcpToolFor } from "./remote-mcp-tools.js";
 import type { SharedActivationContext } from "./runtime.js";
@@ -27,9 +28,10 @@ const DELEGATION = new Set<string>(SHARED_WORKER_BINDINGS);
 const urlOf = (args: unknown) => (args && typeof args === "object" && "url" in args && typeof args.url === "string" ? args.url : undefined);
 
 /**
- * The base tool set for one shared activation (docs/HOSTING-MODES-PLAN.md, sections 7.2 and 7.4): workspace files for
- * `files`, filtered `web_fetch` for `web`, approved remote MCP tools, the task list, the harness's in-process host
- * bindings, and an orchestrator coordinator's worker tools. Remote MCP sessions end with the activation.
+ * The base tool set for one shared activation (docs/HOSTING-MODES-PLAN.md, sections 7.2, 7.4, and 7.5): workspace
+ * files for `files`, filtered `web_fetch` for `web`, approved remote MCP tools, the task list, the harness's in-process
+ * host bindings, an orchestrator coordinator's worker tools, and a transfer tool per predefined handoff target. Remote
+ * MCP sessions end with the activation.
  */
 export async function sharedToolset(
   plan: SharedActivationPlan,
@@ -37,6 +39,7 @@ export async function sharedToolset(
   context: SharedActivationContext,
   currentTurn: () => SharedTurn,
   options: SharedToolkitOptions,
+  handoffs?: { offers: readonly HandoffOffer[]; run: HandoffRunner },
 ): Promise<SharedToolset> {
   const { definition } = plan;
   const entries: SharedTool[] = [];
@@ -75,6 +78,10 @@ export async function sharedToolset(
   if (hostingModeOf(definition) === "orchestrator") {
     if (!options.workers) throw new Error("Orchestrator workers are not configured on this shared worker.");
     entries.push(...workerTools(plan, session, context, currentTurn, options.workers));
+  }
+  if (definition.hosting?.handoffs?.length) {
+    if (!handoffs) throw new Error("Handoffs are not configured on this shared worker.");
+    entries.push(...handoffTools(handoffs.offers, context, handoffs.run));
   }
   const rules = new Map<string, ToolRule>();
   for (const entry of entries) {

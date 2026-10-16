@@ -27,6 +27,9 @@ CREATE TABLE session_handoffs (
   error_prerequisite jsonb,
   -- Set once the target was told about the handoff in its first turn.
   notified_at timestamptz,
+  -- Set once the target's first activation prepared the session's storage: a fresh runtime session moves the source's
+  -- runtime state aside, and full history drops the source's session-scoped consent.
+  storage_prepared_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   committed_at timestamptz,
