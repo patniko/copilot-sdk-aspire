@@ -57,7 +57,7 @@ export const SharedSessionView = z.object({
 export type SharedSessionView = z.infer<typeof SharedSessionView>;
 
 export const SharedConnection = z.object({
-  sessionId: z.string().uuid(), destination: z.literal("shared"),
+  sessionId: z.string().uuid(), destination: z.enum(["shared", "container"]),
   url: z.url().refine((value) => ["ws:", "wss:"].includes(new URL(value).protocol)),
   token: z.string().min(32).max(200), expiresAt: z.iso.datetime(), serverKey: SharedServerKey,
 }).strict();

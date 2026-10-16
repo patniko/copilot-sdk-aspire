@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type pg from "pg";
 import {
   SharedServerKey, SharedSessionDefinition, SharedWorkerLimits,
-  type CapabilityIntrospection, type SharedSessionView,
+  type CapabilityIntrospection, type PlacementKind, type SharedSessionView,
 } from "@copilot-agent/contracts";
 import type { SessionFileLease } from "./session-files.js";
 import { StoreError } from "./store.js";
@@ -11,6 +11,8 @@ export interface SharedSessionRecord {
   id: string;
   principal: string;
   githubUserId: number;
+  /** Where the session's loop runs. The shared worker activates and authorizes only `shared` sessions. */
+  placement: PlacementKind;
   definition: SharedSessionDefinition;
   view: SharedSessionView;
 }
@@ -23,7 +25,7 @@ export interface SharedTurn {
 }
 interface SessionRow {
   id: string; principal: string; github_user_id: string; label: string;
-  definition: SharedSessionDefinition; closed: boolean; online?: boolean;
+  definition: SharedSessionDefinition; closed: boolean; online?: boolean; placement: PlacementKind;
   tokens_used: string; tokens_reserved: string; jobs: number; continuations: number;
   created_at: Date; last_activity_at: Date;
 }
@@ -288,7 +290,7 @@ export class SharedStore {
   async authorize(db: pg.PoolClient, lease: SessionFileLease): Promise<SessionRow> {
     const row = (await db.query<SessionRow>(
       `SELECT s.* FROM shared_sessions s JOIN session_file_namespaces n ON n.id=s.id
-       WHERE s.id=$1 AND s.principal=$2 AND NOT s.closed AND n.principal=s.principal
+       WHERE s.id=$1 AND s.principal=$2 AND NOT s.closed AND s.placement='shared' AND n.principal=s.principal
          AND n.epoch=$3 AND n.lease_until>clock_timestamp() FOR SHARE OF n`, [lease.id, lease.principal, lease.epoch])).rows[0];
     if (!row) throw new StoreError("not_found", "The conversation activation is unavailable.");
     row.definition = SharedSessionDefinition.parse(row.definition);
@@ -329,7 +331,7 @@ function record(row: SessionRow): SharedSessionRecord {
   const usedTokens = Number(row.tokens_used);
   const reservedTokens = Number(row.tokens_reserved);
   return {
-    id: row.id, principal: row.principal, githubUserId: Number(row.github_user_id), definition,
+    id: row.id, principal: row.principal, githubUserId: Number(row.github_user_id), placement: row.placement ?? "shared", definition,
     view: { id: row.id, label: row.label, model: definition.model, closed: row.closed, online: row.online ?? false,
       createdAt: row.created_at.toISOString(), lastActivityAt: row.last_activity_at.toISOString(), limits: definition.limits,
       budget: { usedTokens, reservedTokens, remainingTokens: Math.max(0, definition.limits.tokenBudget - usedTokens - reservedTokens) },
