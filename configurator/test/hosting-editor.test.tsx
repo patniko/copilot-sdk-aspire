@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HarnessDetail, HarnessDocument, HarnessManifest } from "../server/types";
-import { withHostingMode, withInteraction } from "../src/views/harness/hosting";
+import { ServiceViewRow, withHostingMode, withInteraction } from "../src/views/harness/hosting";
 import { HarnessTab, permissionsPreset, tabFor } from "../src/views/harness/tabs";
 
 const state = vi.hoisted(() => ({
@@ -168,6 +168,28 @@ describe("harness hosting section", () => {
 
   it("points to the local stack before it can show the running service's view", () => {
     expect(render(manifest())).toContain("Start the local stack from Local run");
+  });
+});
+
+describe("running service view row", () => {
+  const transports = [
+    { transport: "direct" as const, allowed: true, available: true },
+    { transport: "github" as const, allowed: false, available: false },
+  ];
+
+  it("marks available transports green only while nothing blocks the harness", () => {
+    const ready = renderToStaticMarkup(<ServiceViewRow view={{ status: "ready", placement: "shared", problems: [], transports }} />);
+    expect(ready).toContain('<span class="badge badge-success">Direct WSS: available</span>');
+    expect(ready).toContain("GitHub relay: not allowed");
+
+    const problem = { code: "hosting_unavailable" as const, message: "Shared hosting needs the shared worker.", prerequisite: { kind: "host" as const, name: "shared-worker" as const } };
+    const blocked = renderToStaticMarkup(
+      <ServiceViewRow view={{ status: "unavailable", placement: "shared", problems: [problem, { ...problem, message: "Another problem." }], transports }} />,
+    );
+    expect(blocked).not.toContain("badge-success");
+    expect(blocked).toContain("Direct WSS: available");
+    expect(blocked).toContain("Shared hosting needs the shared worker. Needs the harness-driven shared worker.");
+    expect(blocked).toContain("(1 more)");
   });
 });
 

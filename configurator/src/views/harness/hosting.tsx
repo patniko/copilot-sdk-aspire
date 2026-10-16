@@ -275,7 +275,7 @@ export function ServiceViewRow({ view }: { view: Pick<HarnessHostingView, "statu
       {view.transports.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {view.transports.map((transport) => (
-            <Badge key={transport.transport} tone={transport.available ? "green" : "neutral"} title={transport.problem?.message}>
+            <Badge key={transport.transport} tone={transport.available && !first ? "green" : "neutral"} title={transport.problem?.message}>
               {TRANSPORT_INFO[transport.transport].label}: {transport.available ? "available" : transport.allowed ? "unavailable" : "not allowed"}
             </Badge>
           ))}
