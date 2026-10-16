@@ -1027,9 +1027,11 @@ Pending.
 ### Stage 2: shared-placement egress and remote MCP
 
 2026-10-15, branch `patniko-shared-egress-and-remote-mcp`: commits `8a8647d` (filter, `web_fetch`, MCP client,
-tests) and `0358927` (shared-worker adapter, tool names), plus the documentation commit that adds this entry.
-This is library code for the harness-driven shared mode slice, which wires it into served harnesses; no harness
-uses it yet. Current behavior and limits are described in
+tests), `0358927` (shared-worker adapter, tool names), `041f9ad` (fixes from an independent review), merge `3d2f85d`
+of the integration branch at `9c6b918`, `cb6650f` (reconciles the shared toolkit with the fixes), and the
+documentation commits that add this entry. The harness-driven shared mode slice wires this code into the shared
+worker ([`toolkit.ts`](../src/session-host/src/toolkit.ts)); evidence for served shared harnesses belongs to that
+slice's record. Current behavior and limits are described in
 [security](SECURITY.md#shared-placement-egress-and-remote-mcp).
 
 | Piece | Source | Behavior |
@@ -1056,20 +1058,30 @@ Decisions taken in this slice:
   endpoints. The managed `limitTo` host allowlist (N3) was not evaluated in this slice.
 - **Names.** Remote tools are `mcp_<server>_<tool>` in `[a-z0-9_]`; a name that is ambiguous within the harness or
   longer than 64 characters becomes a stable hashed form, so names stay fixed for a harness and effective policy.
+- **Review fixes.** An independent review of the first two commits found, and `041f9ad` fixed: URL port `0`, which
+  Node replaces with the default port after a port-scoped internal check; internal host names that had never
+  resolved left their addresses unprotected, so egress now pauses until each has resolved once; credential-like
+  generic headers could follow a redirect, so they are refused and only `accept`, `accept-encoding`,
+  `accept-language`, and `user-agent` follow; a server's `readOnlyHint` could relax approval under `ask`, so it is
+  now informational only (`cb6650f` removes the toolkit's quiet path for remote tools); and redaction missed
+  lowercase percent-encoded, unpadded, URL-safe, and embedded base64 forms.
 
-Recorded commands (Windows ARM64, Node 24.19, Docker 29.8.2 linux/arm64; synthetic loopback inference; no paid
-model or GitHub account):
+Recorded commands on the merged tree (`cb6650f`; Windows ARM64, Node 24.19, Docker 29.8.2 linux/arm64; synthetic
+loopback inference; no paid model or GitHub account):
 
 | Command | Result |
 | --- | --- |
 | `pnpm install`; `pnpm build`; `pnpm --filter @copilot-agent/configurator build` | Passed |
 | `aspire restore --apphost apphost.mts` with `ASPIRE_CLI_NUGET_SERVICE_INDEX` set to the package proxy | Passed; generates the AppHost modules a fresh worktree needs for type-checking |
 | `pnpm typecheck`; `pnpm typecheck:tests`; `pnpm --filter @copilot-agent/configurator typecheck`; `pnpm lint` | Passed |
-| `pnpm test:unit` | Passed: 424, 1 skipped (139 new) |
-| `pnpm test:integration` | Passed: 56, 10 skipped (2 new opt-in cases) |
-| `pnpm exec vitest run --project unit tests\unit\egress-filter.test.ts tests\unit\remote-mcp.test.ts tests\unit\web-fetch-tool.test.ts tests\unit\shared-egress.test.ts` | Passed: 139 |
-| With `HYBRID_SESSION_RUNTIME_TESTS=1`, `COPILOT_AHP_FACTORY_PROFILE=managed`, and `COPILOT_CLI_PATH` set to the candidate below: `pnpm exec vitest run --project integration tests\integration\shared-session-runtime.test.ts tests\integration\shared-service.test.ts tests\integration\shared-egress-runtime.test.ts` | Passed: 4 |
-| Manual `EgressFilter.request` without test seams | `https://example.com/` 200; `http://github.com/` redirected to HTTPS, 200, truncated at 512 KiB; `https://localhost/` and `http://169.254.169.254/latest/meta-data/` refused |
+| `pnpm test:unit` | Passed: 500, 1 skipped (142 from this slice) |
+| `pnpm test:integration` | Passed: 61, 10 skipped (2 opt-in cases from this slice) |
+| `pnpm exec vitest run --project unit tests\unit\egress-filter.test.ts tests\unit\remote-mcp.test.ts tests\unit\web-fetch-tool.test.ts tests\unit\shared-egress.test.ts` | Passed: 142 |
+| `pnpm test:integration` with `HYBRID_SESSION_RUNTIME_TESTS=1`, `COPILOT_AHP_FACTORY_PROFILE=managed`, and `COPILOT_CLI_PATH` set to the candidate below | Passed: 65, 6 skipped (other opt-in gates), including `shared-session-runtime`, `shared-service`, and both `shared-egress-runtime` cases |
+| Manual `EgressFilter.request` without test seams | `https://example.com/` 200; `http://github.com/` redirected to HTTPS, 200, truncated at 512 KiB; `https://localhost/`, `http://169.254.169.254/latest/meta-data/`, and `https://example.com:0/` refused |
+
+The real-CLI, deployment, and container gates were not rerun: they build the shared service without the egress
+toolkit, so this slice does not change what they exercise.
 
 The opt-in runtime cases used the Windows ARM64 candidate `cli-workspace-fix` from the hybrid plan's
 [actual CLI record](HYBRID-HOSTING-PLAN.md#actual-cli-conversation): `copilot-runtime.exe` SHA-256
@@ -1089,8 +1101,9 @@ Limitations:
   containers remain unenforced, and the Azure egress proxy does not exist yet.
 - Automated tests reach public-looking host names through test seams that dial loopback after vetting; the live
   check above is a manual run, not a gate.
-- Redaction covers raw, `Bearer`, URL-encoded, JSON-escaped, and base64 forms against accidental echo; a server can
-  disclose its own credential deliberately.
+- Redaction covers raw, `Bearer`, URL-encoded (either hex case), form-encoded, JSON-escaped, and base64 forms
+  (padded or not, URL-safe, at any byte alignment) against accidental echo; a server can disclose its own
+  credential deliberately. Server-authored tool descriptions and schemas reach the model as untrusted input.
 - Not supported: per-user OAuth, the deprecated HTTP+SSE transport, server-initiated sampling, elicitation, and roots
   (answered as unsupported), and binary tool content (replaced by a marker). Tool lists are cached for five minutes
   per effective catalog; an unreachable server keeps stable names with permissive schemas and fails when called.
