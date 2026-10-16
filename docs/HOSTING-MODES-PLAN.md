@@ -925,5 +925,56 @@ reviewed pages document neither WebSocket attachment nor volume mounts for sessi
 | Handoffs and crafted harnesses | API, configurator, security, product scope |
 | Azure | Deployment, [topology image](images/local-and-azure.svg), security, costs |
 
-Record dated evidence for each stage in this document, as the [hybrid record](HYBRID-HOSTING-PLAN.md#13-qualification-record)
-does, and move supported behavior into its owning reference page rather than duplicating it here.
+Record dated evidence for each stage in the [qualification record](#17-qualification-record), as the
+[hybrid record](HYBRID-HOSTING-PLAN.md#13-qualification-record) does, and move supported behavior into its owning
+reference page rather than duplicating it here.
+
+## 17. Qualification record
+
+Dated evidence for each slice, recorded as it lands: the commits, the commands run and their results, the runtime
+revision and artifact hashes where a native runtime was used, and the limitations that remain. Supported behavior
+moves to its owning reference page; this record keeps the evidence.
+
+### Stage 1: contracts, policy, validation, and admission
+
+Pending.
+
+### Stage 1: configurator hosting editor and views
+
+Pending.
+
+### Stage 2: connection broker
+
+Pending.
+
+### Stage 2: shared-placement egress and remote MCP
+
+Pending.
+
+### Stage 2: harness-driven shared mode
+
+Pending.
+
+### Stage 3: session containers
+
+Pending.
+
+### Stage 3: per-harness owner hosts and relay
+
+Pending.
+
+### Stage 4: orchestrator workers
+
+Pending.
+
+### Stage 5: promotion
+
+Pending.
+
+### Stage 6: handoffs
+
+Pending.
+
+### Runtime capabilities
+
+Pending.
