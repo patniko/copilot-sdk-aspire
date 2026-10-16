@@ -34,7 +34,7 @@ it.skipIf(!enabled)("answers through the real CLI and retains the shared convers
     const key = await readServerKey(Number(url.port), connection.token);
     cli = new QualificationCli(root, credential);
     await cli.connect({
-      sessionId, destination: "shared", url: url.href, token: connection.token, serverKey: key,
+      sessionId, destination: "shared", transport: "direct", ahpSessionId: sessionId, url: url.href, token: connection.token, serverKey: key,
       expiresAt: new Date(Date.now() + 60_000).toISOString(),
     });
   };

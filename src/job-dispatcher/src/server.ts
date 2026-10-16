@@ -18,6 +18,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { registerHostRoutes, type HostDependencies } from "./host-routes.js";
 import { registerSharedRoutes, type SharedDispatcherDependencies } from "./shared-routes.js";
+import { registerBrokerRoutes, type BrokerDispatcherDependencies } from "./broker-routes.js";
 
 export interface DispatcherDependencies {
   store: JobStore;
@@ -29,6 +30,8 @@ export interface DispatcherDependencies {
   hostStore?: HostStore;
   host?: HostDependencies;
   shared?: SharedDispatcherDependencies;
+  /** Ticket consumption and placement lookup for the connection broker. */
+  broker?: BrokerDispatcherDependencies;
   allocations?: AllocationStore;
   delegations?: DelegationStore;
 }
@@ -134,6 +137,7 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   let lastWaitingCheck = 0;
   if (deps.host) registerHostRoutes(app, deps.host);
   if (deps.shared) registerSharedRoutes(app, deps.shared, deps.signingKey, policy.allowedModels);
+  if (deps.broker) registerBrokerRoutes(app, deps.broker);
   const heartbeatSeconds = Math.max(3, Math.floor(policy.leaseSeconds / 3));
 
   const executorOnly = async (request: FastifyRequest) => {

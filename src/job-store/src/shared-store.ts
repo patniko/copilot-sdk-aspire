@@ -1,7 +1,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type pg from "pg";
 import {
-  SharedServerKey, SharedSessionDefinition, SharedWorkerLimits,
+  PlacementKind, SharedServerKey, SharedSessionDefinition, SharedWorkerLimits, sharedHarnessLimits,
   type CapabilityIntrospection, type SharedSessionView,
 } from "@copilot-agent/contracts";
 import type { SessionFileLease } from "./session-files.js";
@@ -25,6 +25,7 @@ interface SessionRow {
   id: string; principal: string; github_user_id: string; label: string;
   definition: SharedSessionDefinition; closed: boolean; online?: boolean;
   tokens_used: string; tokens_reserved: string; jobs: number; continuations: number;
+  placement: string; placement_generation: number;
   created_at: Date; last_activity_at: Date;
 }
 interface TurnRow {
@@ -93,18 +94,18 @@ export class SharedStore {
   async issueTicket(principal: string, id: string): Promise<{ token: string; expiresAt: string; serverKey: SharedServerKey }> {
     return this.transaction(async (db) => {
       await db.query("DELETE FROM shared_connection_tickets WHERE expires_at<clock_timestamp()");
-      const row = (await db.query<{ epoch: string; server_key: SharedServerKey }>(
-        `SELECT a.epoch,a.server_key FROM shared_sessions s JOIN shared_activations a ON a.session_id=s.id
+      const row = (await db.query<{ epoch: string; server_key: SharedServerKey; placement_generation: number }>(
+        `SELECT a.epoch,a.server_key,s.placement_generation FROM shared_sessions s JOIN shared_activations a ON a.session_id=s.id
          JOIN session_file_namespaces n ON n.id=s.id AND n.epoch=a.epoch AND n.principal=s.principal
-         WHERE s.id=$1 AND s.principal=$2 AND NOT s.closed AND n.lease_until>clock_timestamp()`, [id, principal])).rows[0];
+         WHERE s.id=$1 AND s.principal=$2 AND NOT s.closed AND s.placement='shared' AND n.lease_until>clock_timestamp()`, [id, principal])).rows[0];
       if (!row) throw new StoreError("not_found", "The shared conversation is unavailable.");
       const count = await db.query<{ count: number }>("SELECT count(*)::int AS count FROM shared_connection_tickets WHERE session_id=$1 AND used_at IS NULL", [id]);
       if (count.rows[0]!.count >= 16) throw new StoreError("quota_exceeded", "Too many outstanding connection tickets.");
       const token = randomBytes(32).toString("base64url");
       const inserted = await db.query<{ expires_at: Date }>(
-        `INSERT INTO shared_connection_tickets(digest,session_id,principal,epoch,expires_at)
-         VALUES($1,$2,$3,$4,clock_timestamp()+interval '60 seconds') RETURNING expires_at`,
-        [digest(token), id, principal, row.epoch]);
+        `INSERT INTO shared_connection_tickets(digest,session_id,principal,epoch,placement_generation,expires_at)
+         VALUES($1,$2,$3,$4,$5,clock_timestamp()+interval '60 seconds') RETURNING expires_at`,
+        [digest(token), id, principal, row.epoch, row.placement_generation]);
       return { token, expiresAt: inserted.rows[0]!.expires_at.toISOString(), serverKey: SharedServerKey.parse(row.server_key) };
     });
   }
@@ -116,6 +117,7 @@ export class SharedStore {
        WHERE t.digest=$1 AND t.session_id=$2 AND t.principal=$3 AND t.epoch=$4
          AND t.used_at IS NULL AND t.expires_at>clock_timestamp()
          AND s.id=t.session_id AND s.principal=t.principal AND NOT s.closed
+         AND s.placement='shared' AND s.placement_generation=t.placement_generation
          AND n.id=s.id AND n.principal=s.principal AND n.epoch=t.epoch AND n.lease_until>clock_timestamp()
        RETURNING t.digest`, [digest(ticket), lease.id, lease.principal, lease.epoch]);
     return result.rowCount === 1;
@@ -128,10 +130,16 @@ export class SharedStore {
       const session = await this.authorize(db, lease);
       const existing = (await db.query<TurnRow>("SELECT * FROM shared_turns WHERE session_id=$1 AND operation_key=$2", [lease.id, operationKey])).rows[0];
       if (existing) return turn(existing);
-      const counts = await db.query<{ queued: number; own: number }>(
-        `SELECT count(*) FILTER(WHERE state='queued')::int AS queued,
-          count(*) FILTER(WHERE session_id=$1 AND state IN ('queued','running'))::int AS own FROM shared_turns`, [lease.id]);
+      const harness = session.definition.harness?.name;
+      const counts = await db.query<{ queued: number; own: number; harness: number }>(
+        `SELECT count(*) FILTER(WHERE t.state='queued')::int AS queued,
+          count(*) FILTER(WHERE t.session_id=$1 AND t.state IN ('queued','running'))::int AS own,
+          count(*) FILTER(WHERE t.state='queued' AND s.definition->'harness'->>'name'=$2)::int AS harness
+         FROM shared_turns t JOIN shared_sessions s ON s.id=t.session_id`, [lease.id, harness ?? null]);
       if (counts.rows[0]!.own || counts.rows[0]!.queued >= limits.queuedTurns) throw new StoreError("quota_exceeded", "The shared turn queue is full or this conversation already has work.");
+      if (harness && counts.rows[0]!.harness >= sharedHarnessLimits(limits, harness).queuedTurns) {
+        throw new StoreError("quota_exceeded", "The shared turn queue is full for this harness.");
+      }
       if (source === "completion" && session.continuations >= session.definition.limits.maxContinuations) {
         throw new StoreError("quota_exceeded", "The conversation continuation limit is exhausted.");
       }
@@ -149,14 +157,19 @@ export class SharedStore {
       const current = (await db.query<TurnRow>("SELECT * FROM shared_turns WHERE id=$1 AND session_id=$2 AND epoch=$3", [id, lease.id, lease.epoch])).rows[0];
       if (!current || (current.state !== "queued" && current.state !== "running")) throw new StoreError("invalid_state", "The turn is no longer available.");
       if (current.state === "running") return turn(current);
-      const running = await db.query<{ count: number }>("SELECT count(*)::int AS count FROM shared_turns WHERE state='running'");
-      if (running.rows[0]!.count >= limits.activeTurns) return undefined;
+      const running = await db.query<{ harness: string | null; count: number }>(
+        `SELECT s.definition->'harness'->>'name' AS harness,count(*)::int AS count
+         FROM shared_turns r JOIN shared_sessions s ON s.id=r.session_id WHERE r.state='running' GROUP BY 1`);
+      if (running.rows.reduce((sum, row) => sum + row.count, 0) >= limits.activeTurns) return undefined;
+      // Harnesses at their own active-turn ceiling are skipped, so their queued turns cannot block other harnesses.
+      const full = running.rows.flatMap((row) => row.harness && row.count >= sharedHarnessLimits(limits, row.harness).activeTurns ? [row.harness] : []);
       const next = await db.query<{ id: string }>(
         `SELECT t.id FROM shared_turns t JOIN shared_sessions s ON s.id=t.session_id
          JOIN session_file_namespaces n ON n.id=t.session_id AND n.epoch=t.epoch AND n.principal=t.principal
          WHERE t.state='queued' AND NOT s.closed AND n.lease_until>clock_timestamp()
            AND (SELECT count(*) FROM shared_turns r WHERE r.principal=t.principal AND r.state='running') < $1
-         ORDER BY t.created_at,t.id LIMIT 1`, [limits.activeTurnsPerPrincipal]);
+           AND COALESCE(s.definition->'harness'->>'name','') <> ALL($2::text[])
+         ORDER BY t.created_at,t.id LIMIT 1`, [limits.activeTurnsPerPrincipal, full]);
       if (next.rows[0]?.id !== id) return undefined;
       const remaining = session.definition.limits.tokenBudget - Number(session.tokens_used) - Number(session.tokens_reserved);
       if (remaining <= 0) throw new StoreError("quota_exceeded", "The aggregate conversation budget is exhausted.");
@@ -327,10 +340,21 @@ function record(row: SessionRow): SharedSessionRecord {
   const definition = SharedSessionDefinition.parse(row.definition);
   const usedTokens = Number(row.tokens_used);
   const reservedTokens = Number(row.tokens_reserved);
+  const placement = PlacementKind.parse(row.placement);
+  const harness = definition.harness
+    ? { name: definition.harness.name, version: definition.harness.version, digest: definition.harness.digest }
+    : undefined;
+  const createdAt = row.created_at.toISOString();
   return {
     id: row.id, principal: row.principal, githubUserId: Number(row.github_user_id), definition,
     view: { id: row.id, label: row.label, model: definition.model, closed: row.closed, online: row.online ?? false,
-      createdAt: row.created_at.toISOString(), lastActivityAt: row.last_activity_at.toISOString(), limits: definition.limits,
+      createdAt, lastActivityAt: row.last_activity_at.toISOString(),
+      ...(harness ? { harness } : {}),
+      mode: definition.harness?.mode ?? (placement === "shared" ? "shared" : "isolated"),
+      placement,
+      // One segment per session until promotion or a handoff starts another; the runtime session keeps the session's ID.
+      segment: { generation: row.placement_generation, placement, ...(harness ? { harness } : {}), ahpSessionId: row.id, startedAt: createdAt },
+      limits: definition.limits,
       budget: { usedTokens, reservedTokens, remainingTokens: Math.max(0, definition.limits.tokenBudget - usedTokens - reservedTokens) },
       jobs: row.jobs, continuations: row.continuations },
   };
