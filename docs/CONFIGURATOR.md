@@ -140,17 +140,21 @@ local hybrid path, and the separately labeled, unqualified Azure hybrid proposal
 **Harness hosting** rows come from the chosen target's agent-api and its read-only
 [hosting views](API.md#hosting-views): local rows while the local stack runs, or the selected Azure target's
 deployed API. Each row shows the effective mode or batch jobs, the status with the first blocking problem and its
-prerequisite, the host (executor pool, owner host, session containers, or shared worker) with a cost note that says
-when the host is always on, and the client transports with whether policy allows them and the host provides them.
+prerequisite, the host (executor pool, owner host, session containers, or shared worker) with a cost note (always-on
+compute for owner hosts and the shared worker; idle stop and start-up waits for session containers), and the client
+transports with whether policy allows them and the host provides them.
 Harness versions saved in the workspace that the service has not loaded, or has loaded with different content, are
 listed above the rows: **Reload harnesses** from Local run, or deploy, to apply them. The rows start no hosts and grant
 no connections.
 
 Connection actions copy a `pnpm host:connect --harness <name> --target <local|azure> --transport <direct|github>`
-launcher command for a ready harness whose transport is available: on an owner host the service reports for that
-harness, or on the local shared worker, which accepts direct connections only. Otherwise the action is disabled and
-says why: the row's problem and prerequisite, an unavailable transport, per-session containers the launcher cannot
-reach yet, or shared hosting on Azure, which is not qualified. Batch rows link to **Try it** instead.
+launcher command for a ready harness whose transport is available, following the launcher's routing: shared
+harnesses use the local shared worker, and isolated harnesses use [session containers](DEPLOYMENT.md#session-containers)
+over the transports they offer (direct WSS), otherwise the harness's owner host. For the shared worker and session
+containers, the launcher creates a conversation and prints the `--resume` command for returning to it; add
+`--cli <path>` to run a Copilot CLI that matches the hosting runtime. Otherwise the action is disabled and says why:
+the row's problem and prerequisite, an unavailable transport (session containers do not offer the GitHub relay), or a
+shared-worker or session-container connection on Azure, which is not qualified. Batch rows link to **Try it** instead.
 
 Choose local or the selected Azure target, select a node to inspect its responsibility and limitations, or
 expand the text connection map. The canvas groups components into color-coded responsibility zones, highlights
