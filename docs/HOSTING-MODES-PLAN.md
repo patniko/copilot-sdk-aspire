@@ -1022,7 +1022,9 @@ Recorded 2026-10-15 on branch `patniko-configurator-hosting-editor`: commits `66
 Hosting rows), `501357c` (merge of the stage 1 integration; read availability from the API's hosting views
 instead of evaluating it locally), `c71eaaa` (Permissions presets keep the approval mode), `bf72916` (launcher actions
 for harness-driven shared mode), `92b2c6d` and `863b67e` (tests and review fixes), `1e81cd9` (documentation), merges
-of the integration branch at `9c6b918` and `4272621`, and the commit that adds this record.
+of the integration branch at `9c6b918` and `4272621`, and `4e513e4` (this record). Updated 2026-10-16 after the
+integration branch at `3ad0c7d` (session containers) was merged: `76c819e` offers session-container launchers, and
+the results below are from that commit.
 
 Delivered:
 
@@ -1050,8 +1052,11 @@ Delivered:
 - **Hosting page**: per-harness rows from `GET /v1/hosting` on the local or selected Azure API, with the effective
   mode, status, first problem and its prerequisite, host, cost note, and transports, plus workspace versions the
   service has not loaded. Connection actions copy `pnpm host:connect --harness <name> --target <target> --transport
-  <transport>` for owner hosts the service reports and for the local shared worker over direct WSS; other actions are
-  disabled and say why. The previous shared-coordinator card now targets `--harness hybrid-coordinator`.
+  <transport>` as the launcher routes it: shared harnesses to the local shared worker over direct WSS, and isolated
+  harnesses to session containers over the transports they offer (direct WSS, locally), otherwise to the owner host
+  the service reports for that harness. Session launchers explain `--resume` and `--cli`. Other actions are disabled
+  and say why, including the GitHub relay for a harness that only session containers serve. The previous
+  shared-coordinator card now targets `--harness hybrid-coordinator`.
 - **Authoring**: for conversation harnesses whose mode runs on the shared worker, Copilot is offered only the host
   bindings the conversation profile marks safe in process, and a draft that placement cannot run is rejected at its
   field path. Authoring never emits hosting, MCP, or approval fields.
@@ -1062,26 +1067,37 @@ Delivered:
 | Invalid combinations and disallowed modes fail with field-scoped errors | [`hosting-editor-validation.test.ts`](../configurator/test/hosting-editor-validation.test.ts): `hosting.mode` for a disallowed mode while other fields are invalid, `runners.allowedProfiles` for the conversation profile, `mcpServers.0` for malformed entries, the policy warnings, and `tools.0.kind` for an authored Python tool on a shared harness; stage 1's [`hosting-validation.test.ts`](../configurator/test/hosting-validation.test.ts) still passes |
 | Unavailable modes name their prerequisite | [`hosting.test.tsx`](../configurator/test/hosting.test.tsx) (`harnessHostRow`: a missing shared worker disables the connection with "Needs the harness-driven shared worker"), the `ServiceViewRow` case in `hosting-editor.test.tsx`, and [`hosting-server.test.ts`](../configurator/test/hosting-server.test.ts): views are forwarded from the API and parsed with the contract schemas, never evaluated locally, and unloaded versions are listed |
 | A read-only per-harness hosting view | The Hosting page and the editor panel against a running agent-api, below |
+| Connection actions follow the launcher's routing | `hosting.test.tsx`: session containers get the direct launcher locally and a disabled action on Azure; the relay stays disabled with the view's reason; when session containers and an owner host both serve a harness, direct WSS goes to session containers and the relay to the owner host; a harness that session containers cannot host gets no launcher; the rendered row explains `--resume`. `hosting-server.test.ts` builds the view with the service's own `hostingOverview` and shows that the configurator keeps the session-container offer and the relay problem those fixtures use |
 
 Live check: the built agent-api (`node src/agent-api/dist/main.js`) ran against a throwaway PostgreSQL 17 container
 with a synthetic workspace, a demo host configured for one harness, and a shared worker key, so its views reported an
 owner host and the shared worker without starting either. A session-local wrapper started the configurator server
 with its `hostingViewFetcher` pointed at that API and reported the local stack as running; the full Aspire stack was
 not started because it needs Foundry parameters. The rows showed ready shared and owner-host harnesses with their
-launchers, a batch harness, and a harness without a host naming its prerequisite with disabled actions, as in the
-[screenshots](CONFIGURATOR.md#hosting-approvals-and-remote-mcp). The container and processes were removed afterwards.
+launchers, a batch harness, and a harness without a host naming its prerequisite with disabled actions. The
+[editor screenshot](CONFIGURATOR.md#hosting-approvals-and-remote-mcp) is from this run. The container and processes
+were removed afterwards.
 
-Commands and results, Windows ARM64 with Node 24.19, pnpm 10.34.5, and Docker Desktop, on `ea87cdd` (this branch
-with the integration branch at `4272621` merged):
+On 2026-10-16 the same check also set `SESSION_CONTAINER_SETTINGS`, `SHARED_PRINCIPALS`, and an unused
+`CONNECTION_BROKER_URL`, with the demo host bound to a synthetic isolated harness over both transports, so
+`/v1/hosting` reported session containers over direct WSS. `interactive-demo`, served only by session containers,
+offered the direct launcher and kept the relay disabled ("No host for 'interactive-demo' offers the GitHub relay").
+The synthetic harness, served by session containers and its owner host, offered both launchers. The launcher's own
+`harnessHosting` and `sessionContainersOffer` helpers, run against the same API, chose `/v1/sessions` for direct WSS
+and the demo host for the relay, matching each row. No container was allocated, and the launcher itself was not run,
+because it needs the full stack. The [Hosting page screenshot](CONFIGURATOR.md#hosting-and-topology) is from this run.
+
+Commands and results, Windows ARM64 with Node 24.19, pnpm 10.34.5, and Docker Desktop, on `76c819e` (this branch
+with the integration branch at `3ad0c7d`):
 
 | Command | Result |
 | --- | --- |
 | `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build` | Passed |
-| `pnpm typecheck` | Passed. The first run in this new worktree failed only because the AppHost's generated `.aspire` modules were missing; `aspire restore --apphost apphost.mts` generated them, as the [developer guide](DEVELOPER-GUIDE.md#build-and-check) describes |
+| `pnpm typecheck` | Passed. In this new worktree the first run, on 2026-10-15, failed only because the AppHost's generated `.aspire` modules were missing; `aspire restore --apphost apphost.mts` generated them, as the [developer guide](DEVELOPER-GUIDE.md#build-and-check) describes |
 | `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint` | Passed |
-| `pnpm test:unit` | 550 passed, 1 skipped |
-| `pnpm test:integration` | 61 passed, 10 opt-in skipped |
-| `pnpm exec vitest run --project unit configurator/test` | 25 files, 244 passed |
+| `pnpm test:unit` | 574 passed, 1 skipped |
+| `pnpm test:integration` | 69 passed, 11 opt-in skipped |
+| `pnpm exec vitest run --project unit configurator/test` | 25 files, 250 passed |
 
 Limitations:
 
@@ -1090,8 +1106,9 @@ Limitations:
   reloaded.
 - Local rows need the local stack running. Azure rows read the selected target's deployed API; no Azure target was
   exercised, because this work is local only.
-- Connection actions cover owner hosts the service reports and the local shared worker. Per-session containers, and
-  shared hosting on Azure, stay disabled until the launcher and later stages support them.
+- The launcher creates shared-worker and session-container conversations on the local stack only, so those actions
+  stay disabled on Azure until it is qualified. The GitHub relay is offered only where an owner host that the service
+  reports for that harness provides it.
 - The configurator never handles remote MCP credentials. The secret-name field's credential check guards against
   accidental pastes and is not a secret scanner.
 - No controls exist for policy ceilings on handoff approval or history, which stage 6 may add.
