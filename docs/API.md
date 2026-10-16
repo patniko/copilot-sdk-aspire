@@ -152,15 +152,25 @@ account IDs; clients cannot supply or replace that binding. Retained principals 
 | `POST` | `/v1/sessions` | Body `{ "label": "Optional label" }`; `201` with a retained session and `Location`. Does not allocate an execution container or activate a runtime session. |
 | `GET` | `/v1/sessions` | `{ sessions }`, up to 100 recent principal-owned sessions, including closed ones |
 | `GET` | `/v1/sessions/{id}` | Session model, limits, activity timestamp, closed/online state, used/reserved/remaining budget, jobs and continuation count |
-| `POST` | `/v1/sessions/{id}/connection` | Activate/resume, then return `{ sessionId, destination: "shared", url, token, expiresAt, serverKey }` with `Cache-Control: no-store` |
+| `POST` | `/v1/sessions/{id}/connection` | Activate/resume, then return `{ sessionId, destination: "shared", url, token, expiresAt, serverKey }` with `Cache-Control: no-store`. `url` is the connection broker's `/sessions/{id}` path |
 | `GET` | `/v1/sessions/{id}/jobs` | Child job IDs/states and completion-notification state/error, including `needs_review` |
 | `POST` | `/v1/sessions/{id}/close` | Body `{ "cancelChildren": false }` by default; prevents new work and disconnects runtime residency without deleting retained data |
 
-Connection tokens are 60-second, one-use tickets bound to the principal/session/activation epoch. They are
-not internal AHP listener credentials. A reconnect requires a new ticket and a trusted server-key pin.
+Connect a WebSocket client to `url` with the ticket in a `tkn` query parameter. The URL belongs to the separate
+connection broker, not to `agent-api` or the shared worker, and stays the same for the session. The broker
+consumes the ticket and forwards bytes to the session's current placement; restarting `agent-api` does not
+close attached connections. Connection tokens are 60-second, one-use tickets bound to the principal, session,
+activation epoch, and placement generation. They are not internal AHP listener credentials. A reconnect
+requires a new ticket and a trusted server-key pin.
 The CLI separately authenticates its matching GitHub identity. Unknown, other-principal, closed, or
-account-mismatched sessions return `404`; capacity/budget limits return `429`. Successful creation is not
+account-mismatched sessions return `404`; capacity/budget limits return `429`. The broker answers a missing,
+used, expired, or mismatched ticket with `401` and responds `503` when it cannot verify tickets. Successful creation is not
 idempotent: retain its returned UUID rather than automatically repeating a lost creation response.
+
+If a session's placement changes while a client is attached, the broker closes the WebSocket with code `4301`
+and reason `moved` after any frame already in flight. Request a new connection for the same session and
+reconnect to the same URL. Only the `shared` placement exists today and no current operation changes it, so
+clients do not receive this close in ordinary use yet. Other closes, such as idle eviction, pass through unchanged.
 
 Idle eviction disconnects the CLI but preserves history/files. Closure does not cancel already-admitted
 children unless `cancelChildren` is true. Child outputs remain available through job/artifact endpoints.

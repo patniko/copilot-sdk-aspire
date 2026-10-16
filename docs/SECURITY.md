@@ -135,6 +135,18 @@ The CLI still needs trusted key provisioning and sealed GitHub authentication to
 The runtime has been exercised with one real account; independent synthetic scopes and negative checks
 do not substitute for the remaining two-real-account qualification.
 
+CLI connections terminate at the separate connection broker. It holds only its own service key, which the
+dispatcher accepts solely for ticket consumption and placement lookup and the shared worker accepts solely
+for forwarded AHP connections. It holds no caller API key, database credential, worker control key, signing
+key, inference grant, or provider credential. The dispatcher consumes each ticket atomically against its
+digest, session, expiry, activation epoch and placement generation; the worker then admits the forwarded
+connection only for the activation the ticket was issued for, and refuses public tickets and query strings.
+The broker forwards AHP bytes without interpreting them. Pinning the server key lets the CLI seal its GitHub
+authentication to the runtime, but the broker can read the rest of the session traffic it forwards, so it is
+inside the same trust boundary as the worker. Locally it listens for plain WebSocket connections and
+the API returns unencrypted URLs only for a loopback broker; TLS ingress, Azure placement, and multi-replica
+routing are not implemented. The `moved` close is a routing signal, not an authorization control.
+
 The shared worker holds PostgreSQL access and its dispatcher grant key. Its agent sessions expose only
 registered application tools; native shell/project/terminal operations are restricted in provider mode.
 There is no Docker socket, provider credential, or allocation-signing key in the worker. Native anchors

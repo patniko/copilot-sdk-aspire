@@ -191,6 +191,35 @@ async function eventually(predicate: () => boolean, label: string): Promise<void
   }
 }
 
+describe("AHP proxy ticket mode used by the demo host", () => {
+  it("authorizes the public ticket, then connects to the private listener with only its private token", async () => {
+    const native = new NativeListener();
+    const nativePort = await listen(native.server);
+    cleanup.push(async () => { for (const socket of native.sockets) socket.destroy(); native.server.close(); });
+    const tickets: string[] = [];
+    let ready = false;
+    const host = createService({ name: "synthetic-demo-host" });
+    registerAhpProxy(host, {
+      token: nativeToken, targetPort: nativePort, ready: () => ready,
+      authorize: async (ticket) => { tickets.push(ticket); return ticket.startsWith("valid-"); },
+    });
+    const port = await listen(host.server);
+    cleanup.push(() => host.close());
+    const ticket = `valid-${randomBytes(32).toString("base64url")}`;
+    expect(await openClient(`ws://127.0.0.1:${port}/?tkn=${ticket}`)).toBe(503);
+    ready = true;
+    expect(await openClient(`ws://127.0.0.1:${port}/sessions/${randomUUID()}?tkn=${ticket}`)).toBe(404);
+    expect(await openClient(`ws://127.0.0.1:${port}/`)).toBe(401);
+    expect(await openClient(`ws://127.0.0.1:${port}/?tkn=invalid-${randomBytes(32).toString("base64url")}`)).toBe(401);
+    const client = await connected(openClient(`ws://127.0.0.1:${port}/?tkn=${ticket}`));
+    (await native.socket()).write(frame(0x1, Buffer.from("hosted")));
+    await eventually(() => client.messages.length === 1, "a hosted message");
+    expect(client.messages[0]!.toString()).toBe("hosted");
+    expect(tickets.at(-1)).toBe(ticket);
+    expect(native.urls).toEqual([`/?tkn=${encodeURIComponent(nativeToken)}`]);
+  });
+});
+
 describe("connection broker", () => {
   it("consumes the client's ticket once and forwards bytes with only the broker's credential", async () => {
     const { native, connect, ticket, forwarded, sessionId, epoch } = await fixture();
