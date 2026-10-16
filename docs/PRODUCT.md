@@ -105,7 +105,7 @@ isolation or compliance claims. Historical live-run evidence is recorded in
 | --- | --- |
 | Enforced gateway-only network egress or per-job outer sandbox | This is not safe cross-customer execution isolation; approved shell/web actions can reach the network |
 | Entra ID caller auth and a separate approver role | API-key principals govern caller access and approvals |
-| MCP integrations | Only shared harnesses on the local hybrid worker use remote MCP tools, from the operator's catalog over Streamable HTTP; batch jobs and isolated hosts do not, and there is no local (stdio) MCP connector |
+| MCP integrations | Only conversations on the local hybrid shared worker (`shared` harnesses and `orchestrator` coordinators) use remote MCP tools, from the operator's catalog over Streamable HTTP; batch jobs, agent hosts, session containers (including promoted sessions), and workers do not, and there is no local (stdio) MCP connector |
 | Copilot-authenticated inference route | The implemented production route is Foundry with gateway-owned Entra identity |
 | General artifact/file persistence or repository automation | Local on-demand jobs retain bounded `outputs/` files; other attempt files remain temporary. No automatic checkout, commit, push, or general blob store |
 | Resuming batch jobs as chat | Retrying a job starts a fresh attempt; the separate experimental demo host has its own retained-session lifecycle and qualification gates |
@@ -133,12 +133,13 @@ an agreed schedule or a description of shipped functionality; the
 [recommended sequence](PRODUCT-OVERVIEW.md#recommended-product-decomposition-and-delivery-sequence) owns the
 detailed acceptance outcomes.
 
-A separate [hosting modes proposal](HOSTING-MODES-PLAN.md) would let each conversation harness choose an isolated
-container, a shared multi-tenant runtime, a shared runtime with one-way promotion into a container, or a shared
-coordinator that manages container workers. Its first delivery targets Copilot CLI over direct WSS, plus GitHub relay
-for isolated harness hosts; the GitHub Copilot app comes later. It also proposes handoffs and compares the design
-with OpenAI's Agents API. None of these modes is supported until its stage lands with evidence; the first stage adds
-only the harness and policy contract, its validation and admission errors, and the read-only hosting view.
+The [hosting modes plan](HOSTING-MODES-PLAN.md) lets each conversation harness choose an isolated container, a
+shared multi-tenant runtime, a shared runtime with one-way promotion into a container, or a shared coordinator that
+manages container workers. Its first delivery targets Copilot CLI over direct WSS, plus GitHub relay for isolated
+harness hosts; the GitHub Copilot app comes later. Stages 1 to 5 are implemented locally, as the hosting contract row
+under [supported today](#supported-today) describes. Handoffs (stage 6) have not landed yet; Azure delivery (stage 7)
+and the mode and OpenAI Agents API comparisons (stage 8) remain proposals
+([stage status](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates)).
 
 ## Acceptance criteria for changes
 

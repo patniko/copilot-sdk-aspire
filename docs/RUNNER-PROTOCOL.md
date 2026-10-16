@@ -6,9 +6,10 @@ A runner is the process that hosts one agent attempt. The platform ships a TypeS
 (`src/harness-hosting`) and a sample customer-authored Python runner (`execution-profiles/python-agent`).
 Any runner that implements this protocol and is approved as an execution profile can run harnesses.
 
-The experimental conversation host is a separate lifecycle and does not extend runner protocol v1.
-Its explicitly marked conversation harnesses omit the terminal result contract; the mappings and wire
-requirements below continue to describe batch runners. See [host architecture](ARCHITECTURE.md#optional-demo-agent-host).
+Experimental conversation hosting (agent hosts, the local hybrid shared worker, and session containers) has a
+separate lifecycle and does not extend runner protocol v1. Its explicitly marked conversation harnesses omit the
+terminal result contract; the mappings and wire requirements below continue to describe batch runners. See
+[host architecture](ARCHITECTURE.md#optional-demo-agent-host) and [local hybrid hosting](ARCHITECTURE.md#local-hybrid-hosting).
 
 The contracts are defined in [`contracts/src/runner-protocol.ts`](../contracts/src/runner-protocol.ts).
 

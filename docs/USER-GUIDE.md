@@ -122,9 +122,9 @@ In the configurator, choose **Demo agent host** in Local run or in an Azure depl
 
 | Choice | Experience |
 | --- | --- |
-| Direct | Managed harness/Foundry over local or Azure WSS; runtime work pending |
+| Direct | Managed harness/Foundry over WSS: locally on a locally built runtime bundle; in Azure, pending the runtime work |
 | GitHub | GitHub-native Copilot through the account's Mission Control environment; no public host ingress |
-| Both | Managed harness/Foundry through both transports; runtime work pending |
+| Both | Managed harness/Foundry through both transports: locally on a locally built runtime bundle; in Azure, pending the runtime work |
 
 For GitHub-native mode, the harness and custom runtime-directory fields are unused. When the configurator was
 started with `CONFIGURATOR_GITHUB_CLIENT_ID`, choose **Sign in with GitHub**, open the displayed device-activation
@@ -155,9 +155,10 @@ Use the remote session picker to select conversations, or pass the remote sessio
 pnpm host:connect --target azure --transport github --resume <remote-session-id>
 ```
 
-After the managed path is qualified, `--transport direct` provisions a fresh, 60-second single-use ticket and
-the exact endpoint's public-key pin. A direct reconnect needs a new ticket. The token-bearing URL exists in
-the CLI's process arguments; do not record it. Neither profile makes interrupted side effects safe to repeat.
+On the managed path (locally, with the locally built runtime bundle), `--transport direct` provisions a fresh,
+60-second single-use ticket and the exact endpoint's public-key pin. A direct reconnect needs a new ticket. The
+token-bearing URL exists in the CLI's process arguments; do not record it. Neither profile makes interrupted side
+effects safe to repeat.
 
 ### Per-harness owner hosts
 

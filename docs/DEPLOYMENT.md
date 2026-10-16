@@ -42,7 +42,8 @@ on the existing Foundry account you name. The deployment never creates, modifies
 - Images are built locally for `linux/amd64`. On ARM64 workstations Docker emulates amd64, so the first build is slow.
   Local runs (`aspire run`/**Local run**) instead build the executor and demo host for the workstation's native
   architecture, because an emulated host build can exceed Aspire's container build timeout. The managed-runtime host
-  stage always builds amd64 for its Linux x64 artifacts.
+  stage follows its runtime bundle's architecture: an arm64 bundle builds natively for local runs, and publishing
+  requires a linux/amd64 bundle.
 
 ## Inputs
 
@@ -217,9 +218,10 @@ harness's promotion approval in `hosting.promotion.approval`; the promoted conta
 launcher stays attached so the terminal follows the move. Promoted sessions keep their volumes like other container
 sessions.
 
-Connect with the launcher. When the harness's hosting mode is `isolated` and session containers offer the
-transport, it creates the session through `/v1/sessions` and attaches to its container; otherwise it keeps using
-the demo host. Resume with the application session UUID it prints:
+Connect with the launcher. When the harness's hosting mode is `isolated`, it uses your own
+[owner host](#per-harness-owner-hosts) for that harness if one offers the transport; otherwise, when session
+containers offer it, it creates the session through `/v1/sessions` and attaches to its container. A named harness
+never falls back to the demo host. Resume with the application session UUID it prints:
 
 ```powershell
 pnpm host:connect --harness <isolated-conversation-harness> --target local --transport direct --cli C:\path\to\matching\dist-cli\index.js
@@ -422,7 +424,7 @@ discard that host's conversations and identity.
 
 ### Demo host compatibility gate
 
-**The managed profiles remain deferred to runtime engineers.** GitHub-native mode uses host-owned sessions and
+**Deployed managed profiles remain deferred to runtime engineers.** GitHub-native mode uses host-owned sessions and
 the existing Mission Control owner binding, so it does not need the custom managed-factory or direct-key changes.
 Managed hosting requires:
 

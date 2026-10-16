@@ -206,10 +206,14 @@ snapshot, but that is not a snapshot of every executable dependency or of the en
 [registry](../src/service-defaults/src/registry.ts), [admission](../src/service-defaults/src/admission.ts),
 [deployment guide](DEPLOYMENT.md).
 
-**Proposed per-harness placement (October 15, 2026):** the [hosting modes plan](HOSTING-MODES-PLAN.md) proposes
-letting each conversation harness run in an isolated container, a shared multi-tenant runtime, a shared runtime
-with one-way promotion into a container, or a shared coordinator with container workers. It is a proposal; the
-answer above remains the current behavior.
+**Per-harness placement (planned October 15, 2026; stages 1 to 5 implemented locally by October 16):** the
+[hosting modes plan](HOSTING-MODES-PLAN.md) lets each conversation harness run in an isolated container, a shared
+multi-tenant runtime, a shared runtime with one-way promotion into a container, or a shared coordinator with
+container workers. Locally, conversation harnesses now run on the experimental agent hosts, session containers, and
+shared worker described in the [architecture](ARCHITECTURE.md#local-hybrid-hosting). The answer above remains the
+behavior of batch harnesses. Azure deployments offer conversations only through the optional demo host, and
+handoffs, Azure hosting modes, and comparisons are not implemented
+([stage status](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates)).
 
 ## 2. What is an instance, and can several run concurrently?
 
@@ -355,10 +359,11 @@ supplied custom statistics tool is pre-approved by its host binding and does not
 The interactive permission handler should not be mistaken for a generic approval wrapper around any future custom
 tool implementation.
 
-Remote MCP tools are available only to `shared` harnesses on the experimental local hybrid worker: the operator's
+Remote MCP tools are available only to conversations on the experimental local hybrid shared worker (`shared`
+harnesses and `orchestrator` coordinators): the operator's
 catalog names each server and its approved tools, the worker connects over Streamable HTTP through an egress filter,
 and the server's credential stays in the host ([security](SECURITY.md#shared-placement-egress-and-remote-mcp)).
-Batch jobs and isolated hosts have no MCP connection, and local (stdio) MCP is **not implemented**. The configurator imports earlier Harness Builder plans with a report of unsupported/unmapped features;
+Batch jobs, agent hosts, session containers, and workers have no MCP connection, and local (stdio) MCP is **not implemented**. The configurator imports earlier Harness Builder plans with a report of unsupported/unmapped features;
 importing a plan does not make those features run.
 
 The configurator also offers [description-first Copilot authoring](CONFIGURATOR.md#copilot-assisted-authoring)
