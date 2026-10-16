@@ -466,6 +466,7 @@ export class SharedSessionService {
       decision = resident.decisions.get(toolCallId);
     }
     decision ??= await this.#runtime.permissionDecision(resident.record.id, toolCallId).catch(() => undefined);
+    this.options.report(`session.handoff_decision.${decision ? `${decision.approved ? "approved" : "declined"}_by_${decision.source ?? "unattributed"}` : "missing"}`, resident.record.id);
     return decision?.approved === true && decision.source === "human_response";
   }
 
