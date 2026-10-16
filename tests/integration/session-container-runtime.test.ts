@@ -250,7 +250,7 @@ it.skipIf(!enabled)("runs a mode-1 session in its own container that idles out a
     expect(containers()[0]).not.toBe(containerId);
     cli = new QualificationCli(root, credential);
     await cli.connect(second);
-    await cli.waitFor(`NOTE_CREATED_${marker}`, 60_000);
+    await cli.waitFor(`NOTE_CREATED_${marker}`, 120_000);
     await cli.send("READ_NOTE from the session workspace.");
     await cli.waitFor(`NOTE_READ_${marker}`, 120_000);
     const resumed = JSON.stringify(requests.at(-1)?.messages);

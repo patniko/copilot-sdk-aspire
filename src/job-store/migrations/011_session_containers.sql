@@ -21,7 +21,7 @@ CREATE TABLE execution_volumes (
   name text PRIMARY KEY,
   namespace text NOT NULL,
   session_id uuid NOT NULL,
-  purpose text NOT NULL CHECK (purpose IN ('session','shared')),
+  purpose text NOT NULL CONSTRAINT execution_volume_purpose CHECK (purpose IN ('session','shared')),
   principal text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   observed_at timestamptz,
@@ -32,9 +32,9 @@ CREATE TABLE execution_volumes (
 -- Allocations are either one-shot jobs or resumable session allocations. A session allocation is requested unbound;
 -- the controller binds the image, settings, credential digest and volumes before it creates the container.
 ALTER TABLE execution_allocations
-  ADD COLUMN kind text NOT NULL DEFAULT 'job' CHECK (kind IN ('job','session')),
+  ADD COLUMN kind text NOT NULL DEFAULT 'job' CONSTRAINT execution_allocation_kind CHECK (kind IN ('job','session')),
   ADD COLUMN session_id uuid REFERENCES shared_sessions(id) ON DELETE CASCADE,
-  ADD COLUMN purpose text CHECK (purpose IN ('session')),
+  ADD COLUMN purpose text CONSTRAINT execution_allocation_purpose CHECK (purpose IN ('session')),
   ADD COLUMN size text,
   ADD COLUMN resources jsonb,
   ADD COLUMN volumes jsonb NOT NULL DEFAULT '[]',
