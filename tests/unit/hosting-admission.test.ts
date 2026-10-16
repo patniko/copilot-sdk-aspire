@@ -381,6 +381,7 @@ describe("agent-api hosting view", () => {
     expect((await get("/v1/hosting/Not_A_Slug", devKey)).statusCode).toBe(404);
     expect((await get("/v1/hosting/interactive-demo?version=9.9.9", devKey)).statusCode).toBe(404);
     expect((await get("/v1/hosting/interactive-demo?version=latest", devKey)).statusCode).toBe(400);
-    expect((await get("/v1/hosting/interactive-demo?other=1", devKey)).statusCode).toBe(400);
+    expect((await get("/v1/hosting/interactive-demo?version=1.0.0&version=1.0.1", devKey)).statusCode).toBe(400);
+    expect((await get("/v1/hosting/interactive-demo?_=1", devKey)).statusCode).toBe(200);
   });
 });
