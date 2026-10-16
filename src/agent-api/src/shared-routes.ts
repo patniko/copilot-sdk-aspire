@@ -1,6 +1,9 @@
 import { z } from "zod";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { ConnectionTicket, SharedConnection, SharedConnectionRequest, SharedSessionClosure, SharedSessionCreation, SharedSessionView } from "@copilot-agent/contracts";
+import {
+  ConnectionTicket, PromotionRequestBody, PromotionResponse, SharedConnection, SharedConnectionRequest, SharedSessionClosure,
+  SharedSessionCreation, SharedSessionView,
+} from "@copilot-agent/contracts";
 import { harnessHostingView, hostingError, HttpError, type HostingCatalog } from "@copilot-agent/service-defaults";
 import type { DelegationStore, HandoffStore } from "@copilot-agent/job-store";
 import type { ContainerSessionService } from "./container-sessions.js";
@@ -155,5 +158,27 @@ export function registerSharedSessionRoutes(
     const id = idOf(request);
     if (containers && await containers.owns(principal, id)) return containers.close(principal, id);
     return control(principal, { operation: "close", id, request: body.data }, z.object({ closed: z.literal(true) }).strict());
+  });
+  /**
+   * Caller-initiated, one-way promotion of a `promotable` conversation. Idempotent: the session's open or committed
+   * promotion is returned, and an `Idempotency-Key` deduplicates retries. A promoted session is answered from the
+   * ledger; there is no route back to shared placement.
+   */
+  app.post("/v1/sessions/:id/promote", async (request, reply) => {
+    const principal = principalOf(request);
+    const id = idOf(request);
+    const body = PromotionRequestBody.safeParse(request.body ?? {});
+    if (!body.success) throw new HttpError(400, "invalid_request", "Request a promotion with { \"reason\": \"...\" }.");
+    const header = request.headers["idempotency-key"];
+    const key = typeof header === "string" ? header : undefined;
+    if (key !== undefined && !/^[A-Za-z0-9._:-]{1,128}$/.test(key)) throw new HttpError(400, "invalid_request", "Invalid Idempotency-Key.");
+    if (containers && await containers.owns(principal, id)) {
+      const promoted = await containers.promotion(principal, id);
+      if (!promoted) throw new HttpError(409, "promotion_not_allowed", "This conversation already runs in its own session container.");
+      return PromotionResponse.parse({ sessionId: id, created: false, promotion: promoted });
+    }
+    const result = await control(principal, { operation: "promote", id, request: body.data, ...(key ? { key } : {}) }, PromotionResponse);
+    if (result.sessionId !== id) throw new HttpError(502, "invalid_shared_response", "The shared service returned an invalid response.");
+    return reply.status(result.created ? 202 : 200).send(result);
   });
 }

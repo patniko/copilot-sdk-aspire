@@ -15,4 +15,5 @@ export * from "./ahp-proxy.js";
 export * from "./admission.js";
 export * from "./promotion-restore.js";
 export * from "./handoffs.js";
+export * from "./websocket-frames.js";
 export * from "./workers.js";

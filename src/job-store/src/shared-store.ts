@@ -5,6 +5,7 @@ import {
   type CapabilityIntrospection, type SharedSessionView,
 } from "@copilot-agent/contracts";
 import type { SessionFileLease } from "./session-files.js";
+import { PROMOTION_VIEW_COLUMNS, promotionViewOf, segmentOf } from "./promotion-views.js";
 import { StoreError } from "./store.js";
 
 export interface SharedSessionRecord {
@@ -29,21 +30,18 @@ interface SessionRow {
   tokens_used: string; tokens_reserved: string; jobs: number; continuations: number;
   placement: string; placement_generation: number;
   created_at: Date; last_activity_at: Date;
-  /** The current segment's runtime session and start, when a promotion or handoff started it. */
-  segment_ahp_session_id?: string | null; segment_started_at?: Date | null;
+  /** Selected with PROMOTION_VIEW_COLUMNS: the latest promotion and the current recorded segment. */
+  promotion?: unknown; segment?: unknown;
 }
 interface TurnRow {
   id: string; session_id: string; principal: string; epoch: string; state: SharedTurn["state"];
   token_budget: number; tokens_used: string; deadline: Date | null; settled: boolean;
 }
 const SHARED_ADMISSION_LOCK = 7_310_442_002;
-/** The current segment's runtime session and start; generation 1 is implicit in the session row. */
-export const CURRENT_SEGMENT_COLUMNS = `g.ahp_session_id AS segment_ahp_session_id, g.started_at AS segment_started_at`;
-export const CURRENT_SEGMENT_JOIN = `LEFT JOIN session_segments g ON g.session_id=s.id AND g.generation=s.placement_generation`;
 const SESSION_SELECT = `SELECT s.*, EXISTS (
   SELECT 1 FROM shared_activations a JOIN session_file_namespaces n ON n.id=a.session_id AND n.epoch=a.epoch
   WHERE a.session_id=s.id AND n.principal=s.principal AND n.lease_until>clock_timestamp()
-) AS online, ${CURRENT_SEGMENT_COLUMNS} FROM shared_sessions s ${CURRENT_SEGMENT_JOIN}`;
+) AS online, ${PROMOTION_VIEW_COLUMNS} FROM shared_sessions s`;
 
 /** Durable admission authority. The bounded prototype serializes shared-ledger mutations, never network I/O. */
 export class SharedStore {
@@ -124,8 +122,11 @@ export class SharedStore {
       const session = await this.authorize(db, lease);
       const existing = (await db.query<TurnRow>("SELECT * FROM shared_turns WHERE session_id=$1 AND operation_key=$2", [lease.id, operationKey])).rows[0];
       if (existing) return turn(existing);
-      const moving = await db.query("SELECT 1 FROM session_handoffs WHERE session_id=$1 AND state='accepted'", [lease.id]);
-      if (moving.rowCount) throw new StoreError("invalid_state", "The conversation is being handed off to another harness; it admits no new turns until the move completes.");
+      // A conversation being handed off, or moving to a container, admits no new turns until the move completes or fails.
+      const handingOff = await db.query("SELECT 1 FROM session_handoffs WHERE session_id=$1 AND state='accepted'", [lease.id]);
+      if (handingOff.rowCount) throw new StoreError("invalid_state", "The conversation is being handed off to another harness; it admits no new turns until the move completes.");
+      const moving = await db.query("SELECT 1 FROM session_promotions WHERE session_id=$1 AND state IN ('requested','moving','starting')", [lease.id]);
+      if (moving.rowCount) throw new StoreError("invalid_state", "The conversation is moving to a dedicated container; it admits no new turns until the move completes.");
       const harness = session.definition.harness?.name;
       const counts = await db.query<{ queued: number; own: number; harness: number }>(
         `SELECT count(*) FILTER(WHERE t.state='queued')::int AS queued,
@@ -341,6 +342,9 @@ function record(row: SessionRow): SharedSessionRecord {
     ? { name: definition.harness.name, version: definition.harness.version, digest: definition.harness.digest }
     : undefined;
   const createdAt = row.created_at.toISOString();
+  const promotion = promotionViewOf(row.promotion);
+  const segment = segmentOf(row.segment);
+  const segmentHarness = segment?.harness ?? harness;
   return {
     id: row.id, principal: row.principal, githubUserId: Number(row.github_user_id), placement, definition,
     view: { id: row.id, label: row.label, model: definition.model, closed: row.closed, online: row.online ?? false,
@@ -348,15 +352,16 @@ function record(row: SessionRow): SharedSessionRecord {
       ...(harness ? { harness } : {}),
       mode: definition.harness?.mode ?? (placement === "shared" ? "shared" : "isolated"),
       placement,
-      // Generation 1 is implicit: its runtime session keeps the application session's ID. Promotion and handoff record
-      // the segments they start, and a handoff without full history starts a new runtime session.
+      // A session starts with one implicit segment that runs the application session's ID as its runtime session;
+      // promotion and handoffs record the segments they start, with the runtime session each runs.
       segment: {
-        generation: row.placement_generation, placement, ...(harness ? { harness } : {}),
-        ahpSessionId: row.segment_ahp_session_id ?? row.id, startedAt: row.segment_started_at?.toISOString() ?? createdAt,
+        generation: row.placement_generation, placement, ...(segmentHarness ? { harness: segmentHarness } : {}),
+        ahpSessionId: segment?.ahpSessionId ?? row.id, startedAt: segment?.startedAt ?? createdAt,
       },
       limits: definition.limits,
       budget: { usedTokens, reservedTokens, remainingTokens: Math.max(0, definition.limits.tokenBudget - usedTokens - reservedTokens) },
-      jobs: row.jobs, continuations: row.continuations },
+      jobs: row.jobs, continuations: row.continuations,
+      ...(promotion ? { promotion } : {}) },
   };
 }
 

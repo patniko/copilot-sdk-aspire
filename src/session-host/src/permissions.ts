@@ -18,6 +18,11 @@ export interface ToolRule {
   kind?: ToolPermissionKind;
   /** Runs under `ask` without a prompt, as the Copilot CLI runs workspace reads and read-only MCP tools. */
   quietUnderAsk?: boolean;
+  /**
+   * Always goes to the session's permission flow, whatever the per-kind rules say: the runtime's effective approval
+   * mode and the attached client decide, and no custom handler answers for a person. Promotion with `ask` uses it.
+   */
+  person?: boolean;
   /** What a call targets (a workspace path, URL, or `server:tool`), for custom handlers. */
   target?: (args: unknown) => string | undefined;
   /**
@@ -85,6 +90,7 @@ export class SharedPermissionPolicy {
         : { permissionDecision: "deny", permissionDecisionReason: "The tool is not admitted for this harness." };
     }
     if (rule.handoff) return rule.handoff.approval === "allow" ? ALLOW : { permissionDecision: "ask", permissionDecisionReason: rule.handoff.prompt };
+    if (rule.person) return undefined;
     if (!rule.kind) return ALLOW;
     const mode = ruleFor(this.context.definition, rule.kind);
     if (mode === "deny") return { permissionDecision: "deny", permissionDecisionReason: "Denied by the harness permission rules." };
@@ -101,6 +107,7 @@ export class SharedPermissionPolicy {
     if (!rule) return reject("The tool is not admitted for this harness.");
     // A handoff that needs a person goes to the attached client; nothing in this process answers for them.
     if (rule.handoff) return rule.handoff.approval === "allow" ? { kind: "approve-once" } : { kind: "no-result" };
+    if (rule.person) return { kind: "no-result" };
     if (!rule.kind) return { kind: "approve-once" };
     const mode = ruleFor(this.context.definition, rule.kind);
     if (mode === "deny") return reject("Denied by the harness permission rules.");

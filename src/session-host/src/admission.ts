@@ -2,9 +2,10 @@ import {
   type ApprovalMode, approvalModeOf, connectionProblem, effectiveApprovalModes, effectiveHostingPolicy, evaluateHosting, type ExecutionPolicy,
   type ExecutionProfile, type HandoffErrorCode, type HandoffHistory, handoffHistoryFor, type HarnessDefinition, type HarnessSnapshot,
   type HostingApproval, type HostingDeployment, type HostingEvaluation, type HostingMode, hostingModeOf, HostingPrerequisite, type HostingTarget,
-  type HostingTransport, type PlacementKind, placementMoveAllowed, policyFor, RUNTIME_APPROVAL_MODES, type RuntimeApprovalMode,
-  SHARED_TOOLS, SHARED_WORKER_BINDINGS, SHARED_WORKER_FEATURES, SHARED_WORKER_TRANSPORTS, type SharedHarnessRef, type SharedSessionCreation,
-  SharedSessionDefinition, SharedSessionLimits, CONVERSATION_PROFILE, startingPlacement, WORKER_TOOLS,
+  type HostingTransport, type PlacementKind, placementMoveAllowed, policyFor, PROMOTE_SESSION_TOOL, RUNTIME_APPROVAL_MODES, type RuntimeApprovalMode,
+  SESSION_CONTAINER_FEATURES, SHARED_TOOLS, SHARED_WORKER_BINDINGS, SHARED_WORKER_FEATURES, SHARED_WORKER_TRANSPORTS, type SharedHarnessRef,
+  type SharedSessionCreation, SharedSessionDefinition, SharedSessionLimits, CONVERSATION_PROFILE, startingPlacement, WORKER_CONTAINER_FEATURES,
+  WORKER_TOOLS,
 } from "@copilot-agent/contracts";
 import { canonicalJson, handoffToolName, hostingError, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
 import type { SharedConfiguration, SharedRegistry } from "./configuration.js";
@@ -15,6 +16,21 @@ export const SHARED_WORKER_DEPLOYMENT: HostingDeployment = Object.freeze({
   isolatedHosts: [],
   sharedWorker: { transports: [...SHARED_WORKER_TRANSPORTS], features: [...SHARED_WORKER_FEATURES] },
 });
+
+/**
+ * This worker's hosting offer. With `promotion` it can move `promotable` conversations into session containers, so it
+ * adds the `promotion` feature and the session-container host they move to; with `workerContainers` it runs
+ * orchestrator coordinators whose workers start in session containers.
+ */
+export function sharedWorkerDeployment(options: { promotion?: boolean; workerContainers?: boolean } = {}): HostingDeployment {
+  if (!options.promotion && !options.workerContainers) return SHARED_WORKER_DEPLOYMENT;
+  return {
+    isolatedHosts: [],
+    sharedWorker: { transports: [...SHARED_WORKER_TRANSPORTS], features: [...SHARED_WORKER_FEATURES, ...(options.promotion ? ["promotion" as const] : [])] },
+    ...(options.promotion ? { sessionContainers: { transports: ["direct"], features: [...SESSION_CONTAINER_FEATURES] } } : {}),
+    ...(options.workerContainers ? { workerContainers: { features: [...WORKER_CONTAINER_FEATURES] } } : {}),
+  };
+}
 
 /** The approval settings an activation applies (docs/HOSTING-MODES-PLAN.md, section 3, "Approval modes"). */
 export interface SharedApprovalPlan {
@@ -69,7 +85,7 @@ export interface SharedAdmissionOptions {
 }
 
 const DELEGATION_BINDINGS = new Set<string>(SHARED_WORKER_BINDINGS);
-const RESERVED_TOOL_NAMES = new Set<string>(Object.values(SHARED_TOOLS));
+const RESERVED_TOOL_NAMES = new Set<string>([...Object.values(SHARED_TOOLS), PROMOTE_SESSION_TOOL]);
 /** An orchestrator coordinator also has the worker tools. */
 const ORCHESTRATOR_TOOL_NAMES = new Set<string>([...RESERVED_TOOL_NAMES, ...Object.values(WORKER_TOOLS)]);
 

@@ -67,6 +67,30 @@ export const PromotionRequestBody = z.object({ reason: z.string().trim().max(500
 export type PromotionRequestBody = z.infer<typeof PromotionRequestBody>;
 
 /**
+ * What a move into a session container starts: `promotion` continues the conversation under its admitted harness;
+ * `handoff` (stage 6) may run a target harness, start a fresh runtime session, or both. Either records a segment.
+ */
+export const PROMOTION_KINDS = ["promotion", "handoff"] as const;
+export const PromotionKind = z.enum(PROMOTION_KINDS);
+export type PromotionKind = z.infer<typeof PromotionKind>;
+
+/** A runtime (AHP) session identifier: a directory name in the runtime's session state and a `copilot --resume` argument. */
+export const RuntimeSessionId = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/);
+
+/**
+ * A move's opening note, sent once by the container in place of the standard move continuation, such as a handoff
+ * summary. Its first line is a marker like `[handoff:<uuid>]`, which deduplicates delivery.
+ */
+export const PROMOTION_NOTICE_MAX = 20_000;
+export const PromotionNotice = z.string().max(PROMOTION_NOTICE_MAX)
+  .refine((value) => /^\[[a-z][a-z-]{0,31}:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\]$/.test(value.split("\n", 1)[0]!),
+    "A notice's first line is a marker such as [handoff:<uuid>].");
+
+/** A promotion as returned by `POST /v1/sessions/{id}/promote`: the session's promotion and whether this request created it. */
+export const PromotionResponse = z.object({ sessionId: z.string().uuid(), created: z.boolean(), promotion: PromotionView }).strict();
+export type PromotionResponse = z.infer<typeof PromotionResponse>;
+
+/**
  * Snapshot bounds. They are the session storage limits (eight MiB per file, 64 MiB and 2,048 entries per
  * namespace), so a namespace that fits its storage always fits one snapshot.
  */
@@ -84,6 +108,12 @@ export const PROMOTION_SNAPSHOT_LIMITS = Object.freeze({
  * without them: approvals given while the session had no shell or real files do not carry into the container.
  */
 export const PROMOTION_EXCLUDED_STATE_FILES = Object.freeze(["permissions.json", "settings.json", "config.json"]);
+
+/**
+ * Directories at the root of the runtime's session state that are not carried: `temp` holds spilled tool output the
+ * runtime deletes when the session disconnects, so the model re-runs a tool whose output it still needs.
+ */
+export const PROMOTION_EXCLUDED_STATE_DIRECTORIES = Object.freeze(["temp"]);
 
 /**
  * A path inside one snapshot area: relative, `/`-separated, with no empty, `.`, or `..` component and no NUL,
@@ -141,4 +171,47 @@ export function promotionSnapshotDigestInput(manifest: PromotionSnapshotManifest
     ...manifest.entries.map((entry) => entry.kind === "file"
       ? `${entry.area}\tfile\t${entry.path}\t${entry.size}\t${entry.sha256}`
       : `${entry.area}\tdirectory\t${entry.path}`)].join("\n") + "\n";
+}
+
+// Internal protocol between a session container started for a promotion and the dispatcher, authenticated with the
+// container's allocation-scoped credential.
+
+/** Request one page of the snapshot, from a manifest ordinal. */
+export const PromotionSnapshotPageRequest = z.object({ from: z.number().int().nonnegative().max(PROMOTION_SNAPSHOT_LIMITS.entries).default(0) }).strict();
+export type PromotionSnapshotPageRequest = z.infer<typeof PromotionSnapshotPageRequest>;
+
+/** One page of the snapshot: the manifest and its digest, and file contents in ascending ordinal order. */
+export const PromotionSnapshotPage = z.object({
+  promotionId: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  digest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  manifest: PromotionSnapshotManifest,
+  files: z.array(z.object({ ordinal: z.number().int().nonnegative(), content: z.base64() }).strict()).max(PROMOTION_SNAPSHOT_LIMITS.entries),
+  next: z.number().int().nonnegative().optional(),
+}).strict();
+export type PromotionSnapshotPage = z.infer<typeof PromotionSnapshotPage>;
+
+/** The container could not restore or resume the snapshot; the promotion fails and the session stays shared. */
+export const PromotionContainerFailure = z.object({
+  code: z.enum(["restore_failed", "startup_failed"]),
+  message: z.string().min(1).max(500),
+}).strict();
+export type PromotionContainerFailure = z.infer<typeof PromotionContainerFailure>;
+
+/**
+ * The system continuation a promoted conversation receives once, after cutover, so the agent knows where it now runs
+ * and continues the work that asked for the move. The runtime keeps history as written, so earlier messages may name
+ * the shared worker's workspace path; `previousWorkspace` maps it to the new one. The interrupted turn is not replayed.
+ */
+export function promotionContinuation(promotionId: string, workspace: string, previousWorkspace?: string): string {
+  return [
+    `[promotion:${promotionId}]`,
+    "This conversation moved from shared placement into its own session container, one way.",
+    `The workspace is now a real filesystem at ${workspace}, seeded from the conversation's workspace files,`,
+    "and shell and file tools are available.",
+    ...(previousWorkspace && previousWorkspace !== workspace
+      ? [`Earlier messages refer to the workspace as ${previousWorkspace}; that path is now ${workspace}.`]
+      : []),
+    "The turn that asked for the move ended before it; nothing was replayed. Continue the task you were working on.",
+  ].join("\n");
 }

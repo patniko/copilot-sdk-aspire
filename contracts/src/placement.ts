@@ -40,6 +40,11 @@ export const SessionPlacement = z.object({
   sessionId: z.string().uuid(),
   kind: PlacementKind,
   generation: PlacementGeneration,
+  /**
+   * The session is being promoted: its shared activation is closing and no new turns are admitted, so live routes to
+   * it should close with "moved" and reconnect once the move completes or fails.
+   */
+  moving: z.literal(true).optional(),
 }).strict();
 export type SessionPlacement = z.infer<typeof SessionPlacement>;
 

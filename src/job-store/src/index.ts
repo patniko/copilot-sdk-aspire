@@ -11,4 +11,5 @@ export * from "./session-directory.js";
 export * from "./session-containers.js";
 export * from "./promotions.js";
 export * from "./handoffs.js";
+export * from "./promotion-views.js";
 export * from "./workers.js";

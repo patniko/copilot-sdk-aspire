@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { hostingHostsOf, type ExecutionProfile, type HarnessSnapshot, type HostingDeployment, type PolicySet } from "@copilot-agent/contracts";
 import { harnessHostingView, loadHarnesses, loadPolicySet, loadProfiles, type ConfiguredOwnerHost } from "@copilot-agent/service-defaults";
 import { hostingDeployment } from "../../src/agent-api/src/hosting-deployment.js";
-import { harnessConnectRoute } from "../../configurator/server/connect-route.js";
+import { harnessConnectRoute, reprovisionSession, SessionRouteChanged } from "../../configurator/server/connect-route.js";
 
 const root = join(import.meta.dirname, "..", "..");
 const api = { apiUrl: "http://127.0.0.1:3000", key: "synthetic-api-key" };
@@ -95,5 +95,54 @@ describe("pnpm host:connect routing for a named harness", () => {
     await expect(harnessConnectRoute(api, "hybrid-coordinator", viewOf(shared, "hybrid-coordinator"), "github")).rejects.toThrow(/^transport_unsupported: /);
     await expect(harnessConnectRoute(api, "hybrid-coordinator", viewOf(deploymentOf([]), "hybrid-coordinator"), "direct")).rejects.toThrow(/^hosting_unavailable: /);
     await expect(harnessConnectRoute(api, "text-summarizer", viewOf(shared, "text-summarizer"), "direct")).rejects.toThrow(/runs as batch jobs/);
+  });
+});
+
+describe("re-provisioning a moved session through the same routing", () => {
+  /** Serves the hosting view and the session's connection, recording each request. */
+  function serveMoved(deployment: HostingDeployment, harness: string, connection: (body: unknown) => Response, ownerHosts: ConfiguredOwnerHost[] = []) {
+    const requests: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const path = new URL(String(input)).pathname;
+      requests.push(`${init?.method ?? "GET"} ${path}`);
+      if (path === `/v1/hosting/${harness}`) return Response.json(viewOf(deployment, harness));
+      if (path === "/v1/hosting") return Response.json({ hosts: hostingHostsOf(deployment), harnesses: [] });
+      if (path === `/v1/sessions/${sessionId}`) return Response.json({ id: sessionId });
+      if (path === `/v1/sessions/${sessionId}/connection`) return connection(JSON.parse(String(init?.body ?? "{}")));
+      const owner = /^\/v1\/hosts\/([^/]+)$/.exec(path)?.[1];
+      const entry = ownerHosts.find((candidate) => candidate.harness === owner);
+      if (entry) return Response.json({ harness: owner, transport: entry.transport, execution: entry.execution, owned: true, online: true, resource: entry.resource });
+      throw new Error(`Unexpected request: ${path}`);
+    });
+    return requests;
+  }
+  const containerConnection = () => Response.json({
+    sessionId, destination: "container", transport: "direct", ahpSessionId: sessionId, url: `ws://127.0.0.1:47000/sessions/${sessionId}`,
+    token: "t".repeat(43), expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    serverKey: { keyId: "container", algorithm: "x25519-sealedbox", publicKey: "container-public" },
+  });
+
+  it("routes a promoted shared conversation again and connects to the same session at its new placement", async () => {
+    const deployment = deploymentOf([], { sharedWorker: true, sessionContainers: true });
+    const bodies: unknown[] = [];
+    const requests = serveMoved(deployment, "hybrid-coordinator", (body) => { bodies.push(body); return containerConnection(); });
+    expect(await reprovisionSession(api, "hybrid-coordinator", "direct", sessionId)).toMatchObject({ sessionId, destination: "container" });
+    expect(requests).toEqual(["GET /v1/hosting/hybrid-coordinator", `POST /v1/sessions/${sessionId}/connection`]);
+    expect(bodies).toEqual([{ transport: "direct" }]);
+  });
+
+  it("reports a move in progress as retryable and a route that no longer reaches the session as permanent", async () => {
+    const shared = deploymentOf([], { sharedWorker: true, sessionContainers: true });
+    serveMoved(shared, "hybrid-coordinator", () => Response.json({ error: { code: "promotion_in_progress", message: "Moving." } }, { status: 409 }));
+    const moving = await reprovisionSession(api, "hybrid-coordinator", "direct", sessionId).catch((error: unknown) => error);
+    expect(moving).toMatchObject({ status: 409, code: "promotion_in_progress" });
+    expect(moving).not.toHaveProperty("permanent");
+    vi.restoreAllMocks();
+    // An isolated session whose deployment no longer runs session containers would route to an owner host instead.
+    const hosts = [host("interactive-demo", "managed", "both")];
+    serveMoved(deploymentOf(hosts), "interactive-demo", containerConnection, hosts);
+    const changed = await reprovisionSession(api, "interactive-demo", "direct", sessionId).catch((error: unknown) => error);
+    expect(changed).toBeInstanceOf(SessionRouteChanged);
+    expect(changed).toMatchObject({ permanent: true });
   });
 });
