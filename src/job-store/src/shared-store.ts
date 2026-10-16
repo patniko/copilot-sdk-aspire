@@ -110,19 +110,6 @@ export class SharedStore {
     });
   }
 
-  async consumeTicket(lease: SessionFileLease, ticket: string): Promise<boolean> {
-    const result = await this.pool.query(
-      `UPDATE shared_connection_tickets t SET used_at=clock_timestamp()
-       FROM shared_sessions s,session_file_namespaces n
-       WHERE t.digest=$1 AND t.session_id=$2 AND t.principal=$3 AND t.epoch=$4
-         AND t.used_at IS NULL AND t.expires_at>clock_timestamp()
-         AND s.id=t.session_id AND s.principal=t.principal AND NOT s.closed
-         AND s.placement='shared' AND s.placement_generation=t.placement_generation
-         AND n.id=s.id AND n.principal=s.principal AND n.epoch=t.epoch AND n.lease_until>clock_timestamp()
-       RETURNING t.digest`, [digest(ticket), lease.id, lease.principal, lease.epoch]);
-    return result.rowCount === 1;
-  }
-
   async enqueueTurn(lease: SessionFileLease, operationKey: string, source: "user" | "completion", limits: SharedWorkerLimits): Promise<SharedTurn> {
     SharedWorkerLimits.parse(limits);
     if (!operationKey || operationKey.length > 200) throw new StoreError("invalid_request", "Invalid turn operation key.");
