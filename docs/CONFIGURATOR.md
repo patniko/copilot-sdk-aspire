@@ -80,12 +80,12 @@ repository if it must be shared or audited.
 
 ![Hosting section of the harness editor with synthetic harnesses](images/configurator-hosting.png)
 
-The harness editor's **Hosting** tab and three Policy cards edit the per-harness fields of the
-[hosting modes plan](HOSTING-MODES-PLAN.md#3-per-harness-configuration-proposed-contract). They are validated as you
-type with the same contracts as hosted admission, and problems appear at their field paths: for example `hosting.mode`
-when the effective policy does not allow the mode, or `mcpServers.0.server` for a server outside the catalog. Choosing
-a mode records a request; whether a deployment can host it is reported by the running service (see
-[Hosting and topology](#hosting-and-topology)), with no fallback to another mode.
+The harness editor's **Hosting** tab and three Policy cards edit the `hosting`, `mcpServers`, and approval-mode
+fields that the [hosting modes plan](HOSTING-MODES-PLAN.md#3-per-harness-configuration-proposed-contract) introduced.
+They are validated as you type with the same contracts as hosted admission, and problems appear at their field
+paths: for example `hosting.mode` when the effective policy does not allow the mode, or `mcpServers.0.server` for a
+server outside the catalog. Choosing a mode records a request; whether a deployment can host it is reported by the
+running service (see [Hosting and topology](#hosting-and-topology)), with no fallback to another mode.
 
 On the **Hosting** tab:
 
@@ -121,7 +121,7 @@ documented defaults rather than the base policy's values.
 - **Remote MCP servers**: the catalog of name, URL, description, approved tools, an optional credential by **secret
   name** with an optional header, and a development-only private-network allowance. The secret field accepts only a
   lowercase name and discards input that looks like a credential instead of keeping it in the browser draft; the
-  hosting process resolves the name.
+  hosting process [resolves the name](SECURITY.md#shared-placement-egress-and-remote-mcp).
 - **Hosting**: allowed modes and client transports, promotion approval, the container size catalog and default size,
   worker limits including inherited human authority, and crafting templates.
 
