@@ -141,6 +141,16 @@ function bound(text: string, max: number): { text: string; truncated: boolean } 
   return { text: text.slice(0, end), truncated: true };
 }
 
+/** Bounds `text` to `max` UTF-8 bytes without splitting a character. */
+function boundBytes(text: string, max: number): { text: string; truncated: boolean } {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= max) return { text, truncated: false };
+  let end = max;
+  // A continuation byte at the cut belongs to a character that starts earlier: leave that whole character out.
+  while (end > 0 && (bytes[end]! & 0xc0) === 0x80) end--;
+  return { text: bytes.subarray(0, end).toString("utf8"), truncated: true };
+}
+
 const JsonRpcId = z.union([z.string(), z.number()]);
 const JsonRpcMessage = z.object({
   jsonrpc: z.literal("2.0"),
@@ -172,7 +182,12 @@ const MAX_SERVER_MESSAGES = 1000;
 const MAX_TOOLS_PER_SERVER = 500;
 const MAX_LIST_PAGES = 10;
 const MAX_ARGUMENT_BYTES = 256 * 1024;
-const MAX_RESULT_CHARACTERS = 64 * 1024;
+/**
+ * Model-visible result size, in UTF-8 bytes. The Copilot runtime moves a tool result above 20 KiB into a file and
+ * gives the model a pointer to it, and with a client attached it does so even when the session disables that; shared
+ * placement has no tool that can read the file, so results stay below the threshold.
+ */
+const MAX_RESULT_BYTES = 16 * 1024;
 const MAX_SCHEMA_BYTES = 32 * 1024;
 const MAX_DESCRIPTION = 1024;
 
@@ -751,9 +766,13 @@ export class RemoteMcpSession {
         this.#connections.set(entry.server, connection);
       }
       const result = CallToolResult.parse(await connection.request("tools/call", { name: entry.tool, arguments: input }, signal));
-      const { text, truncated } = bound(connection.redact(contentText(result)), MAX_RESULT_CHARACTERS);
+      const { text, truncated } = boundBytes(connection.redact(contentText(result)), MAX_RESULT_BYTES);
       outcome(result.isError ? "tool_error" : "ok");
-      return { ok: result.isError !== true, text: truncated ? `${text}\n[Result truncated.]` : text, truncated };
+      return {
+        ok: result.isError !== true,
+        text: truncated ? `${text}\n[Result truncated at ${MAX_RESULT_BYTES / 1024} KiB; ask for a narrower result to see more.]` : text,
+        truncated,
+      };
     } catch (error) {
       const failure = error instanceof RemoteMcpError ? error
         : error instanceof z.ZodError || error instanceof SyntaxError ? new RemoteMcpError("protocol", `The remote MCP server '${entry.server}' sent an invalid result.`)

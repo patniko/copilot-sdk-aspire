@@ -99,12 +99,14 @@ it.skipIf(!enabled)("lets a shared in-process session use the filtered web tool 
   const site = website();
   const mcp = new FakeMcpServer({ credential, echoCredential: true, mode: "sse" });
   let sitePort = 0;
-  // Fetch a page, try the metadata address, call two remote MCP tools, then answer.
+  // Fetch a page, try the metadata address, call two remote MCP tools, take a remote result above the runtime's 20 KiB
+  // large-output threshold, then answer.
   const upstream = syntheticModel(() => [
     { name: "web_fetch", arguments: { url: `http://docs.example:${sitePort}/runtime-page` } },
     { name: "web_fetch", arguments: { url: "http://169.254.169.254/latest/meta-data/" } },
     { name: "mcp_docs_search_search", arguments: { query: "egress" } },
     { name: "mcp_docs_search_leak", arguments: {} },
+    { name: "mcp_docs_search_big", arguments: { bytes: 30_000 } },
   ], record);
   try {
     await migrate(pool);
@@ -112,12 +114,12 @@ it.skipIf(!enabled)("lets a shared in-process session use the filtered web tool 
     sitePort = (site.address() as AddressInfo).port;
     await mcp.start();
     const catalog = new RemoteMcpCatalogClient({
-      catalog: { "docs-search": { url: mcp.url, allowPrivateNetwork: true, auth: { secret: "docs-search-token" }, tools: ["search", "leak"] } },
+      catalog: { "docs-search": { url: mcp.url, allowPrivateNetwork: true, auth: { secret: "docs-search-token" }, tools: ["search", "leak", "big"] } },
       egress: new EgressFilter(),
       secrets: environmentSecretResolver({ MCP_SECRET_DOCS_SEARCH_TOKEN: credential }),
       report: (event, detail) => reports.push({ event, ...detail }),
     });
-    const selection = [{ server: "docs-search", tools: ["search", "leak", "admin_reset"] }];
+    const selection = [{ server: "docs-search", tools: ["search", "leak", "big", "admin_reset"] }];
     const described = await catalog.describe(selection);
     const mcpSession = catalog.session(selection);
     runtime = new SharedSessionRuntime(root, new SessionFileStore(pool), () => undefined, 1);
@@ -152,12 +154,16 @@ it.skipIf(!enabled)("lets a shared in-process session use the filtered web tool 
     expect(names).not.toContain("mcp_docs_search_admin_reset");
     expect(advertised.find((tool) => tool.name === "web_fetch")?.description).toContain("Local, private, and internal network addresses are refused");
     const toolResults = (index: number) => JSON.stringify(wire.parse(JSON.parse(bodies[index]!)).messages.filter((message) => message.role === "tool").at(-1)?.content);
-    expect(bodies.length).toBeGreaterThanOrEqual(5);
+    expect(bodies.length).toBeGreaterThanOrEqual(6);
     expect(toolResults(1)).toContain("Shared sessions");
     expect(toolResults(1)).toContain("untrusted data from the web");
     expect(toolResults(2)).toContain("cloud metadata address");
     expect(toolResults(3)).toContain("Results for egress");
     expect(toolResults(4)).toContain("[redacted]");
+    // A large remote result is bounded below the runtime's large-output threshold and reaches the model inline.
+    expect(toolResults(5)).toContain("x".repeat(16_000));
+    expect(toolResults(5)).toContain("[Result truncated at 16 KiB");
+    expect(toolResults(5)).not.toContain("Output too large");
     const stored = await pool.query<{ content: Buffer | null }>("SELECT content FROM session_files WHERE namespace_id=$1", [id]);
     for (const text of [...bodies, JSON.stringify(events), JSON.stringify(reports), ...stored.rows.map((row) => row.content?.toString("utf8") ?? "")]) {
       for (const form of forms) expect(text).not.toContain(form);
@@ -245,6 +251,51 @@ it.skipIf(!enabled)("routes web_fetch and remote MCP approvals through the runti
     finally {
       await mcp.stop();
       for (const server of [site, upstream]) if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+      await rm(root, { recursive: true, force: true });
+    }
+  }
+}, 120_000);
+
+it.skipIf(!enabled)("keeps a shared tool result above the runtime's large-output threshold inline while no client is attached", async () => {
+  await localRuntimeArtifacts();
+  const pool = new pg.Pool({ connectionString: inject("databaseUrl") });
+  const root = await mkdtemp(join(tmpdir(), "shared-large-output-runtime-"));
+  const id = randomUUID();
+  const record = { bodies: [] as string[], errors: [] as string[], finished: false, advertised: [] as Array<{ name: string; description?: string }> };
+  const events: Array<{ type?: string }> = [];
+  const report = `${"z".repeat(29_990)}TAIL-MARKER`;
+  const upstream = syntheticModel(() => [{ name: "bulk_report", arguments: {} }], record);
+  let runtime: SharedSessionRuntime | undefined;
+  try {
+    await migrate(pool);
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+    runtime = new SharedSessionRuntime(root, new SessionFileStore(pool), () => undefined, 1);
+    await runtime.start();
+    await runtime.open({
+      id, principal: "large-output-principal", githubUserId: 1, model: "qualification-model",
+      instructions: "Synthetic shared session for the large-output qualification.",
+      provider: { type: "openai", baseUrl: address(upstream), apiKey: "synthetic-unused", wireApi: "completions" },
+      tools: () => [{ name: "bulk_report", description: "Returns a large report.", parameters: { type: "object", properties: {} }, handler: async () => report }],
+      hooks: () => ({ onPreToolUse: async () => ({ permissionDecision: "allow" }) }),
+      onEvent: (_context, event) => { events.push(event as { type?: string }); },
+    });
+    // An application turn such as a completion continuation: no client is attached.
+    await runtime.sendSystem(id, "Read the report.");
+    for (const deadline = Date.now() + 60_000; !record.finished || !events.some((event) => event.type === "session.idle");) {
+      if (record.errors.length) throw new Error(record.errors.join("\n"));
+      if (Date.now() > deadline) throw new Error(`The turn did not finish after ${record.bodies.length} model calls.`);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    const result = JSON.stringify(wire.parse(JSON.parse(record.bodies.at(-1)!)).messages.filter((message) => message.role === "tool").at(-1)?.content);
+    // Shared placement has no tool that could read a spilled temp file, so the runtime must not replace the result.
+    expect(result).toContain(report);
+    expect(result).not.toContain("Output too large");
+  } finally {
+    try { await runtime?.stop(); }
+    finally {
+      if (upstream.listening) await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      await pool.query("DELETE FROM session_file_namespaces WHERE id=$1", [id]);
+      await pool.end();
       await rm(root, { recursive: true, force: true });
     }
   }
