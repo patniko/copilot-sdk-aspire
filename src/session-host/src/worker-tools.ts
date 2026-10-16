@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import type { Tool, ToolInvocation, ToolResultObject } from "@github/copilot-sdk";
 import {
-  ArtifactPath, type HostingFeature, policyFor, WORKER_TOOLS, workerCeilings, WorkerCreation, WorkerMessageRequest,
+  ArtifactPath, type HostingFeature, policyFor, WORKER_SHARED_MOUNT, WORKER_TOOLS, workerCeilings, WorkerCreation, WorkerMessageRequest,
   WorkerReference, type WorkerView,
 } from "@copilot-agent/contracts";
 import { StoreError, type SharedSessionRecord, type SharedTurn, type WorkerContainerOptions, type WorkerStore } from "@copilot-agent/job-store";
@@ -38,12 +38,38 @@ const LIST_RESULT_PREVIEW = 1000;
 const Worker = z.object({ worker: WorkerReference }).strict();
 const Wait = z.object({ workers: z.array(WorkerReference).max(32).optional() }).strict();
 const Answer = z.object({ requestId: z.string().uuid(), answer: z.string().min(1).max(8000) }).strict();
-const ListFiles = z.object({ path: ArtifactPath.optional() }).strict();
-const ReadFile = z.object({
-  path: ArtifactPath, offset: z.number().int().min(0).max(1024 * 1024).default(0), length: z.number().int().min(1).max(READ_LIMIT).default(8192),
+
+/**
+ * A shared-volume path in the volume-relative form the file service takes. Workers see the volume at
+ * WORKER_SHARED_MOUNT, so coordinators often name files as workers do (`/shared/plan.txt`): the mount prefix is removed,
+ * and the rest must still be a portable relative path, so nothing outside the volume becomes reachable.
+ */
+export function sharedVolumePath(path: string): string {
+  if (path === WORKER_SHARED_MOUNT) return "";
+  return path.startsWith(`${WORKER_SHARED_MOUNT}/`) ? path.slice(WORKER_SHARED_MOUNT.length + 1) : path;
+}
+const SHARED_PATH_RULE = `Use a path inside the shared volume, relative to it (plan.txt) or as workers see it under ${WORKER_SHARED_MOUNT}/ `
+  + `(${WORKER_SHARED_MOUNT}/plan.txt), without traversal, aliases, or device names.`;
+/** A shared-file path argument, parsed to its volume-relative form; `root` also accepts the volume itself (""). */
+const sharedPath = (description: string, root = false) => z.string().min(1)
+  // The relative part keeps ArtifactPath's 512-character limit.
+  .max(WORKER_SHARED_MOUNT.length + 1 + 512).describe(description)
+  .transform(sharedVolumePath)
+  .refine((path) => (root && path === "") || ArtifactPath.safeParse(path).success, SHARED_PATH_RULE);
+const ListFiles = z.object({
+  path: sharedPath(`A directory, such as reports or ${WORKER_SHARED_MOUNT}/reports. Omit it for the top level.`, true).optional(),
 }).strict();
-const WriteFile = z.object({ path: ArtifactPath, content: z.string().max(READ_LIMIT), ifMatch: z.string().max(200).optional() }).strict();
-const pathOf = (args: unknown) => (args && typeof args === "object" && "path" in args && typeof args.path === "string" ? args.path : undefined);
+const ReadFile = z.object({
+  path: sharedPath(`A file, such as plan.txt or ${WORKER_SHARED_MOUNT}/plan.txt.`),
+  offset: z.number().int().min(0).max(1024 * 1024).default(0), length: z.number().int().min(1).max(READ_LIMIT).default(8192),
+}).strict();
+const WriteFile = z.object({
+  path: sharedPath(`The file to create or replace, such as plan.txt or ${WORKER_SHARED_MOUNT}/plan.txt.`),
+  content: z.string().max(READ_LIMIT), ifMatch: z.string().max(200).optional(),
+}).strict();
+/** The volume-relative path a shared-file call targets, so custom permission handlers see the file the call touches. */
+const sharedPathOf = (args: unknown) =>
+  (args && typeof args === "object" && "path" in args && typeof args.path === "string" ? sharedVolumePath(args.path) : undefined);
 const schema = (value: z.ZodType) => z.toJSONSchema(value, { io: "input" });
 
 /** A refusal the coordinator's model should read and act on. */
@@ -253,13 +279,19 @@ export function workerTools(
       throw new ToolRefusal(error instanceof Error ? error.message : "The shared file service failed.");
     });
     tools.push(
-      tool(WORKER_TOOLS.listFiles, "List a directory of this conversation's shared worker volume.", ListFiles,
+      tool(WORKER_TOOLS.listFiles,
+        `List a directory of this conversation's shared worker volume, which workers see at ${WORKER_SHARED_MOUNT}. Give the path relative to `
+          + `the volume (reports) or as workers see it (${WORKER_SHARED_MOUNT}/reports); omit it for the top level.`,
+        ListFiles,
         async (value, invocation) => {
           rootOnly(invocation);
           const args = parse(ListFiles, value);
-          return run(async () => ({ entries: await shared(files.list(session.id, args.path, signal())) }));
-        }, { kind: "read", quietUnderAsk: true, target: pathOf }),
-      tool(WORKER_TOOLS.readFile, "Read a bounded portion of a file in this conversation's shared worker volume (untrusted worker output).", ReadFile,
+          return run(async () => ({ entries: await shared(files.list(session.id, args.path || undefined, signal())) }));
+        }, { kind: "read", quietUnderAsk: true, target: sharedPathOf }),
+      tool(WORKER_TOOLS.readFile,
+        `Read a bounded portion of a file in this conversation's shared worker volume (untrusted worker output). Workers see the volume at `
+          + `${WORKER_SHARED_MOUNT}; give the path relative to it (plan.txt) or as workers see it (${WORKER_SHARED_MOUNT}/plan.txt).`,
+        ReadFile,
         async (value, invocation) => {
           rootOnly(invocation);
           const args = parse(ReadFile, value);
@@ -267,15 +299,17 @@ export function workerTools(
             const content = await shared(files.read(session.id, args.path, signal()));
             return { ...preview(content, args.offset, args.length), etag: createHash("sha256").update(content).digest("base64url") };
           });
-        }, { kind: "read", quietUnderAsk: true, target: pathOf }),
+        }, { kind: "read", quietUnderAsk: true, target: sharedPathOf }),
       tool(WORKER_TOOLS.writeFile,
-        `Create a small UTF-8 file (up to ${READ_LIMIT / 1024} KiB) in the shared worker volume. Replacing a file requires its etag from read_shared_file. Workers may change files concurrently; give each worker its own directory.`,
+        `Create a small UTF-8 file (up to ${READ_LIMIT / 1024} KiB) in the shared worker volume, which workers see at ${WORKER_SHARED_MOUNT}; give `
+          + `the path relative to it (plan.txt) or as workers see it (${WORKER_SHARED_MOUNT}/plan.txt). Replacing a file requires its etag from `
+          + "read_shared_file. Workers may change files concurrently; give each worker its own directory.",
         WriteFile,
         async (value, invocation) => {
           rootOnly(invocation);
           const args = parse(WriteFile, value);
           return run(async () => shared(files.write(session.id, args.path, Buffer.from(args.content, "utf8"), args.ifMatch, signal())));
-        }, { kind: "write", target: pathOf }),
+        }, { kind: "write", target: sharedPathOf }),
     );
   }
   return tools;

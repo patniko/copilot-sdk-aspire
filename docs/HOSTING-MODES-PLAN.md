@@ -1943,6 +1943,19 @@ without it refuses assisted sessions (not changed in this stage). *(2026-10-16: 
 [stage-2 follow-up](#follow-up-assisted-approvals-without-host-injected-flags): the shared worker now sets the flag in
 its own process and refuses to activate a session whose approval mode the runtime will not hold.)*
 
+Follow-up, 2026-10-16, from the integration branch at `087e0f9` and merged with it at `77458bc`: in the real-model
+demo the `hybrid-orchestrator` coordinator named shared files as its workers see them (`/shared/plan.txt`), which
+`read_shared_file` refused until the model retried. The coordinator's shared-file tools now accept the workers' mount
+prefix and pass the volume-relative path to the file service. What follows the prefix must still be a portable
+relative path, so traversal, other absolute paths, and look-alike prefixes stay refused. Custom permission handlers
+see the same volume-relative path, and the tool and parameter descriptions name both forms; the example instructions
+and their pinned digests are unchanged. Evidence: `tests\integration\worker-tools.test.ts` (9 tests; the new case
+fails on the previous tool code), the full baseline on the merged tree (`pnpm test:unit` 723 passed, 1 skipped; `pnpm
+test:integration` 148 passed, 32 opt-in skipped), and the worker gate, whose coordinator now lists `/shared`, reads
+`/shared/beta-….txt`, and checks each read's content: it passed in 58 s on `087e0f9` and in 61 s on the merged tree,
+each with 38 synthetic requests, the latter with `copilot-session-container:patniko-orchestrator-workers`
+`sha256:f2651a2b…` rebuilt from it.
+
 ### Stage 5: promotion
 
 Recorded 2026-10-16 on branch `patniko-stage-5-promotion`. Commits:
