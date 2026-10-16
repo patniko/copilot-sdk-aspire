@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "1",
+  "harness": "hybrid-orchestrator",
+  "overrides": {
+    "hosting": {
+      "modes": ["orchestrator"],
+      "transports": ["direct"],
+      "workers": {
+        "maxConcurrentPerSession": 2,
+        "maxPerSession": 8,
+        "maxPerPrincipal": 4,
+        "idleSeconds": 900,
+        "maxLifetimeSeconds": 3600,
+        "allowInheritedAuthority": true
+      },
+      "crafting": {
+        "templates": {
+          "notes": {
+            "description": "A worker that reads and writes files only, with manual approvals.",
+            "toolBindings": [],
+            "builtinTools": ["files"],
+            "models": ["grok-4.6"],
+            "approvalModes": ["manual"],
+            "maxDurationSeconds": 300,
+            "maxInferenceTokens": 50000,
+            "sizes": ["small"]
+          }
+        }
+      }
+    }
+  }
+}

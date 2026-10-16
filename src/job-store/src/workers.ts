@@ -106,6 +106,8 @@ export interface WorkerGrant {
   allocationId: string;
   principal: string;
   harness: { name: string; definition: HarnessDefinition };
+  /** The harness whose effective policy approves the worker's models: its own, or its coordinator's for a crafted worker. */
+  policyHarness: string;
   models: string[];
   remainingTokens: number;
   expiresAt: Date;
@@ -163,6 +165,12 @@ const INPUT_SELECT = `SELECT r.*, w.session_id, w.name AS worker_name, w.harness
   FROM worker_input_requests r JOIN session_workers w ON w.id=r.worker_id`;
 
 function digest(value: string): string { return createHash("sha256").update(value).digest("hex"); }
+function validateAuthority(messages: readonly string[]): void {
+  if (messages.length > INHERITED_AUTHORITY_MAX_MESSAGES || !messages.every((message) => typeof message === "string")
+    || authorityLength(messages) > INHERITED_AUTHORITY_MAX_CHARACTERS) {
+    throw new StoreError("invalid_request", "Invalid authority messages.");
+  }
+}
 function bounded(text: string, maximum: number): { text: string; truncated: boolean } {
   return text.length > maximum ? { text: text.slice(0, maximum), truncated: true } : { text, truncated: false };
 }
@@ -434,6 +442,10 @@ export class WorkerStore {
   async sweep(limit = 200): Promise<StoppedWorker[]> {
     return this.shared.transaction(async (db) => {
       await this.#expireInputs(db);
+      // A closed coordinator's shared volume is retained for the operator, but no new allocation may mount it.
+      await db.query(
+        `UPDATE execution_volumes v SET released_at=clock_timestamp() FROM shared_sessions s
+         WHERE v.session_id=s.id AND v.purpose='shared' AND v.released_at IS NULL AND s.closed`);
       const rows = (await db.query<WorkerRow & { session_closed: boolean; now: Date }>(
         `SELECT w.*,s.closed AS session_closed,clock_timestamp() AS now FROM session_workers w JOIN shared_sessions s ON s.id=w.session_id
          WHERE w.state<>'stopped' AND (s.closed OR w.expires_at<=clock_timestamp() OR w.tokens_used>=w.token_budget
@@ -582,11 +594,14 @@ export class WorkerStore {
   /** Renews the allocation's two-minute inference grant while the worker runs and its reservation lasts. */
   async grant(allocationId: string): Promise<WorkerGrant> {
     return this.shared.transaction(async (db) => {
-      const row = (await db.query<WorkerRow>(
-        `SELECT w.* FROM execution_allocations e JOIN session_workers w ON w.id=e.worker_id JOIN shared_sessions s ON s.id=w.session_id
+      const row = (await db.query<WorkerRow & { coordinator_harness: string | null }>(
+        `SELECT w.*,s.definition->'harness'->>'name' AS coordinator_harness FROM execution_allocations e
+         JOIN session_workers w ON w.id=e.worker_id JOIN shared_sessions s ON s.id=w.session_id
          WHERE e.id=$1 AND e.state IN ('starting','running') AND e.ready_at IS NOT NULL AND e.expires_at>clock_timestamp()
            AND w.state<>'stopped' AND NOT s.closed FOR UPDATE OF w`, [allocationId])).rows[0];
       if (!row) throw new StoreError("not_found", "The worker allocation is not active.");
+      const policyHarness = row.source === "crafted" ? row.coordinator_harness : row.harness_name;
+      if (!policyHarness) throw new StoreError("invalid_state", "The worker's coordinator has no admitted harness.");
       const remainingTokens = row.token_budget - Number(row.tokens_used);
       if (remainingTokens <= 0) throw new StoreError("quota_exceeded", "The worker's share of the conversation budget is used up.");
       const grant = (await db.query<{ id: string; expires_at: Date }>(
@@ -596,7 +611,7 @@ export class WorkerStore {
       const definition = HarnessDefinition.parse(row.definition);
       return {
         jti: grant.id, workerId: row.id, sessionId: row.session_id, allocationId, principal: row.principal,
-        harness: { name: row.harness_name, definition },
+        harness: { name: row.harness_name, definition }, policyHarness,
         models: [...new Set([row.model, ...(definition.agents ?? []).flatMap((agent) => agent.model ? [agent.model] : []),
           ...(definition.permissions?.judgeModel ? [definition.permissions.judgeModel] : [])])],
         remainingTokens, expiresAt: grant.expires_at,
@@ -905,23 +920,36 @@ export class WorkerStore {
    * its activation's runtime history. A grant identical to the newest one is not recorded again.
    */
   async grantAuthority(lease: SessionFileLease, reference: string, messages: readonly string[]): Promise<{ id: string; created: boolean } | undefined> {
-    if (messages.length > INHERITED_AUTHORITY_MAX_MESSAGES || !messages.every((message) => typeof message === "string")
-      || authorityLength(messages) > INHERITED_AUTHORITY_MAX_CHARACTERS) {
-      throw new StoreError("invalid_request", "Invalid authority messages.");
-    }
+    validateAuthority(messages);
     return this.shared.transaction(async (db) => {
       await this.shared.authorize(db, lease);
-      const worker = await this.#resolve(db, lease.id, reference);
-      if (!worker.inherit_authority || worker.state === "stopped") return undefined;
-      const value = `sha256:${digest(JSON.stringify(messages))}`;
-      const newest = (await db.query<{ id: string; digest: string }>(
-        "SELECT id,digest FROM worker_authority_grants WHERE worker_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1", [worker.id])).rows[0];
-      if (newest?.digest === value) return { id: newest.id, created: false };
-      const id = randomUUID();
-      await db.query("INSERT INTO worker_authority_grants(id,worker_id,source_session_id,messages,digest) VALUES($1,$2,$3,$4,$5)",
-        [id, worker.id, lease.id, JSON.stringify(messages), value]);
-      return { id, created: true };
+      return this.#grant(db, await this.#resolve(db, lease.id, reference), lease.id, messages);
     });
+  }
+
+  /** Records a coordinator's current human messages for every running worker that inherits its authority. */
+  async refreshAuthority(lease: SessionFileLease, messages: readonly string[]): Promise<number> {
+    validateAuthority(messages);
+    return this.shared.transaction(async (db) => {
+      await this.shared.authorize(db, lease);
+      const rows = (await db.query<WorkerRow>(
+        "SELECT * FROM session_workers WHERE session_id=$1 AND inherit_authority AND state<>'stopped' ORDER BY created_at,id FOR UPDATE", [lease.id])).rows;
+      let created = 0;
+      for (const row of rows) if ((await this.#grant(db, row, lease.id, messages))?.created) created++;
+      return created;
+    });
+  }
+
+  async #grant(db: pg.PoolClient, worker: WorkerRow, sourceSessionId: string, messages: readonly string[]): Promise<{ id: string; created: boolean } | undefined> {
+    if (!worker.inherit_authority || worker.state === "stopped") return undefined;
+    const value = `sha256:${digest(JSON.stringify(messages))}`;
+    const newest = (await db.query<{ id: string; digest: string }>(
+      "SELECT id,digest FROM worker_authority_grants WHERE worker_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1", [worker.id])).rows[0];
+    if (newest?.digest === value) return { id: newest.id, created: false };
+    const id = randomUUID();
+    await db.query("INSERT INTO worker_authority_grants(id,worker_id,source_session_id,messages,digest) VALUES($1,$2,$3,$4,$5)",
+      [id, worker.id, sourceSessionId, JSON.stringify(messages), value]);
+    return { id, created: true };
   }
 
   /** The container fetches a grant it was told about; the messages are the coordinator's, exactly as recorded. */
@@ -976,6 +1004,8 @@ export class WorkerStore {
     if (!updated.rowCount) return;
     await db.query("UPDATE worker_messages SET state='cancelled' WHERE worker_id=$1 AND state='pending'", [row.id]);
     await db.query("UPDATE worker_input_requests SET state='cancelled',resolved_at=clock_timestamp() WHERE worker_id=$1 AND state='pending'", [row.id]);
+    // The private volume is retained for the operator, but no new allocation may mount it.
+    await db.query("UPDATE execution_volumes SET released_at=COALESCE(released_at,clock_timestamp()) WHERE session_id=$1 AND purpose='worker'", [row.id]);
     if (reason === "failed") await this.#notify(db, row, "failed", { error: (error ?? "The worker failed.").slice(0, 1000) });
     else if (BACKSTOPS.has(reason)) await this.#notify(db, row, "stopped", { reason });
   }

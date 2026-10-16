@@ -289,6 +289,79 @@ reported.
 Locally the broker reaches the container's ingress on its host-loopback published port. The Azure direction, an
 outbound tunnel from the container (plan D14), is not implemented.
 
+### Orchestrator workers
+
+With `Parameters:orchestrator-workers=true` (which needs session containers), a conversation created from an
+`orchestrator` harness runs as a shared session on the shared worker with worker tools added: mode 4 of the
+[hosting modes plan](HOSTING-MODES-PLAN.md#74-mode-4-orchestrator-shared-brain-container-workers). Each worker it
+starts is a child application session with its own harness, size, and session container, and reports back through
+the coordinator's durable inbox. Clients attach only to the coordinator.
+
+```mermaid
+flowchart LR
+    CLI["Copilot CLI"] -->|"broker WSS"| Host["Shared worker<br/>coordinator + worker tools"]
+    Host -->|"admit, message, interrupt, archive,<br/>authority grants"| DB[("PostgreSQL<br/>workers, inbox, requests,<br/>allocations, volumes")]
+    Host -->|"inbox continuation<br/>(no polling)"| Host
+    Host -->|"bounded file tools"| Files["Controller file service"]
+    Files -->|"network-less helper"| Shared[("Shared volume /shared")]
+    Controller["Execution controller"] -->|"bind, create, retire"| Box
+    Controller --> DB
+    subgraph Box["Worker container (one per worker)"]
+        Supervisor["Supervisor (root)<br/>worker-bound credential"]
+        Owner["Owner (uid 10001)<br/>worker harness"]
+        Supervisor -->|"IPC: grants,<br/>worker calls"| Owner
+    end
+    Box --- Private[("Private volume /data")]
+    Box --- Shared
+    Supervisor -->|"spec, control, turns,<br/>requests, authority"| Dispatcher["job-dispatcher"]
+    Dispatcher --> DB
+    Owner -->|"worker capability"| Gateway["inference-gateway"]
+    Person["Person"] -->|"answer worker requests"| API["agent-api"]
+    API --> DB
+```
+
+`create_worker` rechecks the coordinator's current effective policy, then plans a listed worker harness (which must
+use `isolated` hosting) or a crafted one from an operator template, through the `HarnessDefinition` schema, hosted
+admission against the features worker containers implement, and policy intersection. One ledger transaction admits
+the worker within the per-conversation, per-principal, and deployment ceilings, reserves part of the conversation's
+aggregate token budget while leaving the coordinator one turn's budget, records its first task as message 1, and
+requests its allocation (purpose `worker`, counted against the same container limits as jobs and sessions), with a
+private volume at `/data` and, with `sharedStorage: "session"`, the conversation's shared volume at `/shared`,
+read-write or read-only. The tool returns at once. Workers cannot create workers, delegate jobs, or hand off.
+
+The controller binds and starts a worker container like a session container, with a worker label alongside the
+coordinator's session label. Its supervisor holds an allocation credential bound to the worker and serves the
+owner's calls to the dispatcher's `/internal/workers/*` routes: the spec, durable messages, turn and result reports,
+requests for a person, authority grants, and two-minute inference grants charged to the worker's reservation. The
+owner runs the worker's harness on the private volume and delivers each coordinator message with the source
+`agent-<coordinatorId>`, so the runtime never treats it as the person's words: `enqueue` messages wait for the
+current turn, and `immediate` ones steer it. An interrupt aborts the turn.
+
+Worker completions, turns without a result, requests for a person, failures, and backstop stops go to the
+coordinator's inbox. The shared worker's inbox pump delivers them as bounded system continuations when the
+coordinator is idle, with a runtime-history marker per batch so a retried batch is recognized; failed deliveries
+retry after a growing delay and go to review after five attempts or when continuations or the aggregate budget run
+out. The same loop applies the backstops (idle time, lifetime, the worker's reservation, and a closed coordinator)
+and returns a worker's capacity, settling its reservation, once the controller has retired its allocation. A worker
+whose container stops while it runs has failed. Container time is recorded per worker.
+
+A worker's [approval mode](HOSTING-MODES-PLAN.md#approval-modes) decides its requests after its harness's per-kind
+rules, and nobody but a person approves: `manual` requests and the requests an `assisted` worker's judge declines go
+to a principal-scoped request queue ([API](API.md#orchestrator-workers)); the coordinator is told that a person must
+answer and can answer only questions, and only when policy sets `hosting.workers.allowCoordinatorAnswers`. With
+[inherited human authority](HOSTING-MODES-PLAN.md#inherited-human-authority), the shared worker reads the person's
+own messages from the coordinator's runtime history (root user messages without an agent or system source),
+records them as a grant for each inheriting worker when it is created, before each coordinator message, and after
+each new message from the person, and the worker applies the newest grant with the runtime's
+`setInheritedHumanAuthority`. The judge then sees those exact messages as the person's words, while the
+coordinator's tasks stay data. Grants and what the runtime accepted are recorded for audit.
+
+The coordinator has no filesystem of its own. Its file tools reach the shared volume only through the execution
+controller's file service (plan D10), which runs one bounded operation per short-lived helper container from the
+session image, with no network and only that volume mounted; writes are atomic and replacing a file needs its
+current etag. Volumes are retained: a stopped worker's private volume and a closed coordinator's shared volume are
+released, not deleted.
+
 ## Optional demo agent host
 
 Agent hosts are separate, disabled-by-default integrations for `interaction: "conversation"` harnesses, not

@@ -5,7 +5,7 @@ import {
   CopilotClient, RuntimeConnection, type AhpHost, type AhpHostOptions, type CopilotSession, type PermissionHandler, type SessionConfig,
   type SessionEvent,
 } from "@github/copilot-sdk";
-import type { RuntimeApprovalMode } from "@copilot-agent/contracts";
+import { humanAuthorityMessages, type RuntimeApprovalMode } from "@copilot-agent/contracts";
 import { SessionFileStore, type SessionFileLease } from "@copilot-agent/job-store";
 import { z } from "zod";
 import type { SharedSessionSettings } from "./harness-session.js";
@@ -20,6 +20,11 @@ export interface SharedActivationContext {
   stateDirectory: string;
   /** The runtime session this activation runs: the application session's ID unless a handoff started a fresh one. */
   runtimeSessionId: string;
+  /**
+   * The person's own messages in this session's runtime history, exactly as sent and oldest first: the only source of
+   * inherited human authority for an orchestrator's workers.
+   */
+  humanMessages: () => Promise<string[]>;
 }
 /** The approval modes an activation starts in and offers to attached clients. */
 export interface SharedApprovalModes {
@@ -163,7 +168,13 @@ export class SharedSessionRuntime {
       await storage.mkdir(anchor, true);
       const workspace = new SessionWorkspace(anchor, storage, lifetime.signal, (operation) => this.report(`session.fs.${operation}.failed`, options.id));
       const stateDirectory = join(this.root, "session-state");
-      const context: SharedActivationContext = { lease, signal: lifetime.signal, workspace, stateDirectory, runtimeSessionId };
+      const context: SharedActivationContext = {
+        lease, signal: lifetime.signal, workspace, stateDirectory, runtimeSessionId,
+        humanMessages: async () => {
+          if (!session || lifetime.signal.aborted) throw new Error("The shared conversation is not active.");
+          return humanAuthorityMessages(await session.getEvents());
+        },
+      };
       const tools = typeof options.tools === "function" ? await options.tools(context) : options.tools ?? [];
       const metadataPath = join(stateDirectory, "application-snapshot.json");
       const current = snapshot.parse({

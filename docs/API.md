@@ -316,10 +316,12 @@ Container sessions have no delegated jobs, so their jobs route returns an empty 
 ## Orchestrator workers
 
 An `orchestrator` coordinator's workers are child sessions of a shared conversation, each with its own harness, size,
-and container ([plan, section 7.4](HOSTING-MODES-PLAN.md#74-mode-4-orchestrator-shared-brain-container-workers)).
-The worker ledger, its request queue, the coordinator's worker tools, and the routes below are implemented. Worker
-containers are not available yet, so no deployment enables orchestrator hosting and the lists stay empty until that
-part of stage 4 lands. The routes exist when `agent-api` is connected to the shared worker. Implemented in
+and container ([plan, section 7.4](HOSTING-MODES-PLAN.md#74-mode-4-orchestrator-shared-brain-container-workers);
+[architecture](ARCHITECTURE.md#orchestrator-workers)). The coordinator runs on the shared worker and manages its
+workers with tools; clients attach only to the coordinator. Workers run in session containers when the deployment
+enables `Parameters:orchestrator-workers` ([deployment](DEPLOYMENT.md#orchestrator-workers)); without it,
+orchestrator harnesses report `hosting_unavailable` with prerequisite `worker-containers` and the lists stay empty.
+The routes exist when `agent-api` is connected to the shared worker. Implemented in
 [worker-routes.ts](../src/agent-api/src/worker-routes.ts) and the [worker ledger](../src/job-store/src/workers.ts),
 with contracts in [workers.ts](../contracts/src/workers.ts).
 
@@ -369,19 +371,21 @@ policy plus any override), and the hosts the deployment provides. They are read-
 no connection material, and change nothing. Any authenticated principal can read them; transports are evaluated for
 the calling principal. The [hosting modes plan](HOSTING-MODES-PLAN.md) describes the modes. Today conversations run
 in `isolated` mode on an optional [agent host](#experimental-demo-host-control) (the demo host or a local per-harness
-owner host) or in [session containers](#session-containers), and in `shared` mode on the local hybrid worker
-([shared conversations](#experimental-shared-conversations)); batch harnesses run as jobs.
+owner host) or in [session containers](#session-containers), in `shared` mode on the local hybrid worker
+([shared conversations](#experimental-shared-conversations)), and in `orchestrator` mode on the shared worker with
+[workers](#orchestrator-workers) in session containers; batch harnesses run as jobs.
 Implemented in [hosting-routes.ts](../src/agent-api/src/hosting-routes.ts) with contracts in
 [hosting.ts](../contracts/src/hosting.ts).
 
 `GET /v1/hosting` returns `{ hosts, harnesses }`. `hosts` lists what the deployment provides: the batch
 `executor` (`pool` or `dedicated`), `isolatedHosts` (each managed agent host and the harness it serves, with its
-transports), `sharedWorker` (the local hybrid worker), `sessionContainers` (per-session containers, when enabled), and later
-`workerContainers`. Each host lists the harness `features` it implements: the shared worker implements `remote-mcp`,
-`approval-modes`, `custom-approval`, and `handoffs`, plus `promotion` when promotion and session containers are
-deployed; agent hosts and session containers implement none, and no host implements workers yet. GitHub-native demo
-hosting runs Copilot's own sessions rather than a harness, so it adds no isolated host. Owner principals are not
-returned.
+transports), `sharedWorker` (the local hybrid worker), `sessionContainers` (per-session containers, when enabled), and
+`workerContainers` (orchestrator workers, when enabled). Each host lists the harness `features` it implements: the
+shared worker implements `remote-mcp`, `approval-modes`, `custom-approval`, and `handoffs`, plus `promotion` when
+session containers are enabled; worker containers implement `approval-modes`, `crafted-workers`,
+`inherited-authority`, and `shared-storage`; agent hosts and session containers implement none.
+GitHub-native demo hosting runs Copilot's own sessions rather than a harness, so it adds no isolated host. Owner
+principals are not returned.
 
 Each harness view (latest version, or `?version=` on the single-harness route) contains:
 

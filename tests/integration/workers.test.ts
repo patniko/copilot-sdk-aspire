@@ -294,7 +294,10 @@ describe("worker containers", () => {
         { purpose: "shared", sessionId: c.session.id, target: "/shared", readOnly: true, name: `hybrid-${namespace}-shared-${c.session.id}` },
       ]);
       expect(await allocations.authenticate(token)).toEqual({ kind: "worker", id: allocationId, workerId: view.id, sessionId: c.session.id, principal: c.principal });
-      await allocations.ready(allocationId, { keyId: "worker-key", algorithm: "x25519-sealedbox", publicKey: "public-key" });
+      await expect(allocations.ready(allocationId, { keyId: "worker-key", algorithm: "x25519-sealedbox", publicKey: "public-key" }))
+        .rejects.toMatchObject({ code: "invalid_request" });
+      await allocations.ready(allocationId);
+      await allocations.ready(allocationId);
       expect((await pool.query("SELECT 1 FROM session_containers WHERE session_id=$1", [c.session.id])).rowCount).toBe(0);
       expect(await allocations.containerHeartbeat(allocationId, { activeTurn: true, activity: true })).toEqual({ stop: false });
       expect(await workers.spec(allocationId, 5)).toMatchObject({
@@ -306,8 +309,7 @@ describe("worker containers", () => {
       expect(await allocations.containerHeartbeat(allocationId, { activeTurn: false, activity: false })).toEqual({ stop: true });
       expect(await allocations.get(lease, allocationId)).toMatchObject({ sessionClosed: true });
       await expect(workers.spec(allocationId, 5)).rejects.toMatchObject({ code: "not_found" });
-      await expect(allocations.ready(allocationId, { keyId: "worker-key", algorithm: "x25519-sealedbox", publicKey: "public-key" }))
-        .rejects.toMatchObject({ code: "not_found" });
+      await expect(allocations.ready(allocationId)).rejects.toMatchObject({ code: "not_found" });
     } finally {
       await pool.query("DELETE FROM execution_volumes WHERE namespace=$1", [namespace]);
       await pool.query("DELETE FROM execution_controller WHERE namespace=$1", [namespace]);
@@ -550,6 +552,11 @@ describe("worker records", () => {
       }),
     ]);
     expect(await workers.authority(randomUUID(), c.session.id, inheriting.id)).toEqual([]);
+    expect(await workers.refreshAuthority(c.lease, [...messages, "and lint it"])).toBe(0);
+    expect(await workers.refreshAuthority(c.lease, [...messages, "and lint it", "then push"])).toBe(1);
+    expect((await workers.control(inheriting.id)).authority).not.toEqual({ id: newer.id });
+    expect((await workers.control(plain.id)).authority).toBeUndefined();
+    await expect(workers.refreshAuthority(other.lease, [])).resolves.toBe(0);
   });
 
   it("scope every read to the principal and export the recorded definition", async () => {

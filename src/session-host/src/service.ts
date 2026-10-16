@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
-  effectiveHarnessHosting, handoffFailureNotice, handoffNotice, handoffNoticeMarker, PromotionResponse, SessionContainerSettings,
-  SharedPrincipalBindings, SharedWorkerLimits,
+  effectiveHarnessHosting, handoffFailureNotice, handoffNotice, handoffNoticeMarker, humanAuthorityMessages, PromotionResponse,
+  SessionContainerSettings, SharedPrincipalBindings, SharedWorkerLimits,
   type ConnectionTicket, type HandoffPayload, type HostingTransport, type PromotionRequestBody, type SharedSessionCreation,
 } from "@copilot-agent/contracts";
 import type { ManagedSettings, ToolInvocation } from "@github/copilot-sdk";
@@ -58,6 +58,11 @@ export interface SharedServiceOptions {
   permissionHandlerTimeoutMs?: number;
   /** The handoff ledger; required for harnesses with handoff targets. */
   handoffs?: HandoffStore;
+  /**
+   * Called after the person sends a message to a resident conversation, for example to refresh the authority grants of
+   * an orchestrator's workers from the recorded history.
+   */
+  onHumanMessage?: (context: SharedActivationContext) => Promise<void>;
   /**
    * One-way promotion of `promotable` conversations into session containers, when this deployment runs them: the
    * ledger, and the settings the started containers run under. Handoffs to targets that run in a container use it too.
@@ -456,6 +461,9 @@ export class SharedSessionService {
               this.options.report("session.turn_settlement_failed", row.id);
               void this.deactivate(row.id).catch(() => this.options.report("session.deactivation_failed", row.id));
             });
+          }
+          if (event.type === "user.message" && this.options.onHumanMessage && humanAuthorityMessages([event]).length) {
+            void this.options.onHumanMessage(context).catch(() => this.options.report("session.authority_refresh_failed", row.id));
           }
         },
       });

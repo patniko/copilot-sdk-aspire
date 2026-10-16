@@ -30,6 +30,7 @@ beforeEach(async () => {
     lease: { id: "session", principal: "alice", epoch: "epoch" } as SessionFileLease,
     signal: lifetime.signal, workspace: new SessionWorkspace(anchor, storage, lifetime.signal, () => undefined),
     stateDirectory: join(root, "session-state"), runtimeSessionId: "session",
+    humanMessages: async () => [],
   };
 });
 afterEach(async () => { lifetime.abort(); await rm(root, { recursive: true, force: true }); });

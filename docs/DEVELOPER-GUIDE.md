@@ -476,6 +476,41 @@ reconnects to a new container from the retained volume, and checks that the hist
 capacity returns to zero after close. It follows the containers' operator logs for diagnosis, removes the volumes it
 created, and uses no paid model or Azure resource.
 
+Orchestrator workers ([architecture](ARCHITECTURE.md#orchestrator-workers)) keep their contracts in
+[`workers.ts`](../contracts/src/workers.ts), the ledger, inbox, request queue, and authority grants in
+[`workers.ts`](../src/job-store/src/workers.ts) (migration 013, which also adds the `worker` allocation and volume
+purposes), planning and crafting in [`workers.ts`](../src/service-defaults/src/workers.ts), the
+coordinator's tools and inbox pump in [`worker-tools.ts`](../src/session-host/src/worker-tools.ts) and
+[`worker-inbox.ts`](../src/session-host/src/worker-inbox.ts), the container's routes in
+[`worker-routes.ts`](../src/job-dispatcher/src/worker-routes.ts), the worker supervisor and owner in
+[`src/session-container`](../src/session-container/src), and the file service in
+[`shared-files.ts`](../src/execution-controller/src/shared-files.ts). `WORKER_CONTAINER_FEATURES` records what
+worker containers implement. Their unit and integration suites need no runtime or Docker:
+
+```powershell
+pnpm exec vitest run --project unit tests\unit\worker-contracts.test.ts tests\unit\worker-planning.test.ts tests\unit\worker-inbox.test.ts tests\unit\worker-containers.test.ts
+pnpm exec vitest run --project integration tests\integration\workers.test.ts tests\integration\worker-routes.test.ts tests\integration\worker-tools.test.ts tests\integration\worker-containers.test.ts
+```
+
+The opt-in `tests/integration/worker-runtime.test.ts` is the real-container gate. Build the session-container image
+as above, set the CLI path and account opt-in, then run:
+
+```powershell
+$env:HYBRID_WORKER_TESTS = '1'
+$env:HYBRID_WORKER_IMAGE = 'copilot-session-container:local' # or your branch's tag
+pnpm exec vitest run --project integration tests\integration\worker-runtime.test.ts
+```
+
+It drives an orchestrator coordinator through the real CLI and an in-process shared worker with synthetic inference
+(a scripted coordinator, scripted workers, and a scripted judge). The coordinator starts two differently sized
+workers on one shared volume, one `manual` and one `assisted` with inherited human authority, and the test checks
+that a crafted worker exceeding its template is refused; that `immediate` and `enqueue` messages, an interrupt, and
+completions arrive through the inbox without polling; that every worker approval waits for a person through the
+request queue and never for the coordinator; that the judge allows a write the person's own words authorize while one
+only the coordinator asked for reaches a person; that the coordinator's file tools read the workers' shared files;
+and that after archiving, no containers remain and capacity returns to zero. It removes the volumes it created and
+uses no paid model or Azure resource.
+
 The separate `tests/integration/github-native-host.test.ts` opt-in uses `DEMO_GITHUB_HOST_TESTS=1`,
 the same explicit GitHub credential variables, and `copilot-aspire-agent-host:native-demo` (or
 `DEMO_GITHUB_HOST_TEST_IMAGE`). It exercises the actual native container, Mission Control registration,
