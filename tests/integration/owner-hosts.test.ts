@@ -8,6 +8,7 @@ import { HostStore, JobEventListener, JobStore, migrate, PlacementStore } from "
 import { Admission, ApiKeyAuthenticator, loadHarnesses, loadPolicy, loadProfiles, verifyInferenceCapability } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../src/agent-api/src/server.js";
 import type { ApiOwnerHost } from "../../src/agent-api/src/host-routes.js";
+import { hostingDeployment } from "../../src/agent-api/src/hosting-deployment.js";
 import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
 
 const root = join(import.meta.dirname, "..", "..");
@@ -158,6 +159,29 @@ describe("owner host API", () => {
     expect(legacy.token).toEqual(expect.any(String));
     await app.close();
     expect(() => api(undefined, "http://broker.example")).toThrow(/loopback connection broker/);
+  });
+
+  it("keeps an owner host private when session containers serve its harness for every principal", async () => {
+    const policies = { base: policy, overrides: new Map() };
+    const deployment = hostingDeployment({ executor: "on-demand", ownerHosts: [reviewHost], sharedWorker: false, sessionContainers: true });
+    const app = buildApi({
+      store: new JobStore(pool), listener, admission: new Admission({ harnesses, profiles, policies }),
+      authenticator: new ApiKeyAuthenticator(`dev:${devKey};other:${otherKey}`), harnesses, maxOpenJobsPerPrincipal: 10, console: false,
+      hosting: { harnesses, profiles, policies, deployment },
+      hosts: { store, hosts: [reviewHost], harnesses, policies, profiles },
+    });
+    const lease = await store.acquire(reviewHost, 30, 1);
+    await store.heartbeat(reviewHost, lease.epoch, 30, "review-environment", serverKey);
+    // The deployment view offers every principal direct WSS, through session containers.
+    const view = (await app.inject({ method: "GET", url: "/v1/hosting/review-agent", headers: as(otherKey) })).json();
+    expect(view.transports).toContainEqual({ transport: "direct", allowed: true, available: true });
+    const direct = await app.inject({ method: "POST", url: "/v1/hosts/review-agent/connection", headers: as(otherKey), payload: { transport: "direct" } });
+    expect(direct.statusCode).toBe(409);
+    expect(direct.json().error).toMatchObject({ code: "hosting_unavailable", details: { prerequisite: { kind: "host", name: "session-containers" } } });
+    const relay = await app.inject({ method: "POST", url: "/v1/hosts/review-agent/connection", headers: as(otherKey), payload: { transport: "github" } });
+    expect(relay.json().error.code).toBe("relay_owner_only");
+    expect((await app.inject({ method: "POST", url: "/v1/hosts/review-agent/connection", headers: as(devKey), payload: { transport: "direct" } })).statusCode).toBe(200);
+    await app.close();
   });
 
   it("distinguishes unknown harnesses, undeployed hosts, and transports the policy does not allow", async () => {

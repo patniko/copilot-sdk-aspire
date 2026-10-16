@@ -1,4 +1,4 @@
-import { HarnessHostingView, SharedConnection, SharedSessionView, type HostingTransport } from "@copilot-agent/contracts";
+import { HarnessHostingView, HostingOverview, SharedConnection, SharedSessionView, type HostingTransport } from "@copilot-agent/contracts";
 
 export interface SharedLaunch {
   /** A published conversation harness for a new session; ignored when resuming. */
@@ -48,7 +48,12 @@ export async function harnessHosting(connection: { apiUrl: string; key: string }
   return HarnessHostingView.parse(await call(connection, "GET", `/v1/hosting/${harness}`));
 }
 
-/** Creates or resumes a harness-driven shared conversation and returns one-use connection material for it. */
+/** Whether the deployment runs `isolated` conversations in session containers over `transport`, through `/v1/sessions`. */
+export async function sessionContainersOffer(connection: { apiUrl: string; key: string }, transport: HostingTransport): Promise<boolean> {
+  return HostingOverview.parse(await call(connection, "GET", "/v1/hosting")).hosts.sessionContainers?.transports.includes(transport) ?? false;
+}
+
+/** Creates or resumes a harness-driven conversation (shared or session-container placement) and returns one-use connection material for it. */
 export async function sharedConnection(connection: { apiUrl: string; key: string }, launch: SharedLaunch): Promise<SharedConnection> {
   apiBase(connection);
   const { resume, transport = "direct" } = launch;

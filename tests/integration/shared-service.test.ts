@@ -16,7 +16,7 @@ import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
 import { SharedSessionService } from "../../src/session-host/src/service.js";
 import { buildSharedHost } from "../../src/session-host/src/server.js";
 import { buildBroker } from "../../src/connection-broker/src/broker.js";
-import { DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/connection-broker/src/sessions.js";
+import { containerUpstream, DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/connection-broker/src/sessions.js";
 import { buildGateway } from "../../src/inference-gateway/src/server.js";
 import { parseRoutes } from "../../src/inference-gateway/src/routes.js";
 import { localRuntimeArtifacts } from "../runtime/artifacts.js";
@@ -145,7 +145,7 @@ it.skipIf(!enabled)("provisions protected shared sessions, accounts usage, dedup
     await dispatcher.listen({ port: 0, host: "127.0.0.1" });
     ({ app: broker } = buildBroker({
       families: [sessionRoutes(new DispatcherDirectory(address(dispatcher.server), brokerKey))],
-      upstreams: { shared: sharedUpstream(new URL(address(host.server)), brokerKey) },
+      upstreams: { shared: sharedUpstream(new URL(address(host.server)), brokerKey), container: containerUpstream() },
     }));
     await broker.listen({ port: 0, host: "127.0.0.1" });
     api = buildApi({

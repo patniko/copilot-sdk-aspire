@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ownerHostCliArguments, ownerHostConnection } from "../server/owner-host-client.js";
+import { applicationSessionExists, ownedOwnerHostOffers, ownerHostCliArguments, ownerHostConnection } from "../server/owner-host-client.js";
 
 const api = { apiUrl: "http://127.0.0.1:3000", key: "synthetic-api-key" };
 const ahpSessionId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -58,6 +58,40 @@ describe("owner host CLI provisioning client", () => {
     expect(ownerHostCliArguments(info).env.COPILOT_AHP_SERVER_KEY).toBe(JSON.stringify({ endpoint: brokered.url, ...serverKey }));
     expect(ownerHostCliArguments(info).args).toContain(`${brokered.url}?tkn=${direct.token}`);
     await expect(ownerHostConnection(api, "interactive-demo", "direct")).rejects.toThrow(/at the host or its broker path/);
+  });
+
+  it("routes an isolated harness to the caller's own owner host only when it offers the transport", async () => {
+    const view = { harness: "interactive-demo", transport: "both", execution: "managed", owned: true, online: true, resource: "host-interactive-demo" };
+    const request = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json(view))
+      .mockResolvedValueOnce(Response.json({ ...view, owned: false }))
+      .mockResolvedValueOnce(Response.json({ ...view, transport: "github" }))
+      .mockResolvedValueOnce(Response.json({ error: { code: "hosting_unavailable" } }, { status: 409 }))
+      .mockResolvedValueOnce(Response.json({ error: { code: "not_found" } }, { status: 404 }))
+      .mockResolvedValueOnce(new Response(null, { status: 500 }));
+    expect(await ownedOwnerHostOffers(api, "interactive-demo", "direct")).toBe(true);
+    expect(String(request.mock.calls[0]![0])).toBe(`${api.apiUrl}/v1/hosts/interactive-demo`);
+    expect(request.mock.calls[0]![1]).toMatchObject({ redirect: "error", headers: { authorization: `Bearer ${api.key}` } });
+    expect(await ownedOwnerHostOffers(api, "interactive-demo", "direct")).toBe(false);
+    expect(await ownedOwnerHostOffers(api, "interactive-demo", "direct")).toBe(false);
+    expect(await ownedOwnerHostOffers(api, "interactive-demo", "direct")).toBe(false);
+    expect(await ownedOwnerHostOffers(api, "interactive-demo", "github")).toBe(false);
+    await expect(ownedOwnerHostOffers(api, "interactive-demo", "direct")).rejects.toThrow(/lookup failed \(500\)/);
+    await expect(ownedOwnerHostOffers({ ...api, apiUrl: "http://remote.example" }, "interactive-demo", "direct")).rejects.toThrow(/HTTPS/);
+  });
+
+  it("finds the caller's application sessions so --resume follows a session to where it lives", async () => {
+    const request = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json({ id: ahpSessionId }))
+      .mockResolvedValueOnce(Response.json({ error: { code: "not_found" } }, { status: 404 }))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }));
+    expect(await applicationSessionExists(api, ahpSessionId.toUpperCase())).toBe(true);
+    expect(String(request.mock.calls[0]![0])).toBe(`${api.apiUrl}/v1/sessions/${ahpSessionId}`);
+    expect(await applicationSessionExists(api, ahpSessionId)).toBe(false);
+    await expect(applicationSessionExists(api, ahpSessionId)).rejects.toThrow(/session lookup failed \(503\)/);
+    // An owner-host AHP or runtime ID that is not a UUID is never an application session.
+    expect(await applicationSessionExists(api, "a".repeat(32))).toBe(false);
+    expect(request).toHaveBeenCalledTimes(3);
   });
 
   it("attaches the relay to the harness host's own environment with the attached resume form", () => {

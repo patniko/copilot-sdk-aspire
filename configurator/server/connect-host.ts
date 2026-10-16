@@ -2,11 +2,11 @@ import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { hostConnection } from "./host-client.js";
-import { ownerHostCliArguments, ownerHostConnection } from "./owner-host-client.js";
+import { applicationSessionExists, ownedOwnerHostOffers, ownerHostCliArguments, ownerHostConnection } from "./owner-host-client.js";
 import { Settings } from "./settings.js";
 import { StatusService } from "./status.js";
 import { TryService } from "./try.js";
-import { harnessHosting, sharedConnection } from "./shared-client.js";
+import { harnessHosting, sessionContainersOffer, sharedConnection } from "./shared-client.js";
 
 /** The harness `--destination shared` connects to, from before hosting was chosen per harness. */
 const LEGACY_SHARED_HARNESS = "hybrid-coordinator";
@@ -27,7 +27,8 @@ async function main(): Promise<void> {
   if (values.help) {
     console.log([
       "pnpm host:connect --harness <name> --transport direct|github --target local|azure [--resume <session>] [--label <text>] [--cli <executable>]",
-      "  Shared harnesses open a shared conversation; isolated harnesses connect to their per-harness owner host (local only).",
+      "  Shared harnesses open a shared conversation. Isolated harnesses use your own per-harness owner host when it offers the",
+      "  transport, otherwise a session container (direct only); --resume follows the session to where it lives. Local only.",
       "pnpm host:connect --destination container|shared ...   (container is the single demo host; shared connects to the hybrid-coordinator harness)",
     ].join("\n"));
     return;
@@ -54,8 +55,17 @@ async function main(): Promise<void> {
   const harness = values.harness ?? (values.destination === "shared" ? LEGACY_SHARED_HARNESS : undefined);
   const api = harness ? await jobs.connection(values.target) : undefined;
   const hosting = harness && api ? await harnessHosting(api, harness) : undefined;
-  if (hosting?.placement === "shared" && api && harness) {
-    if (values.target !== "local") throw new Error("Shared hosting currently supports local connections only. Azure qualification remains open.");
+  // Isolated harnesses: the caller's own owner host when it offers this transport, unless --resume names one of the
+  // caller's application sessions; otherwise a session container when the deployment offers one over this transport;
+  // otherwise the owner-host path, whose API errors name what is missing.
+  const isolated = hosting?.placement === "container" && api !== undefined && harness !== undefined && values.harness !== undefined;
+  const resumesSession = isolated && values.resume !== undefined && await applicationSessionExists(api!, values.resume);
+  const ownerHost = isolated && !resumesSession && await ownedOwnerHostOffers(api!, harness!, values.transport);
+  const sessions = hosting?.placement === "shared"
+    || (hosting?.placement === "container" && !ownerHost && api !== undefined && await sessionContainersOffer(api, values.transport));
+  if (hosting && sessions && api && harness) {
+    const kind = hosting.placement === "shared" ? "shared conversation" : "session container";
+    if (values.target !== "local") throw new Error(`The ${kind} path currently supports local connections only. Azure qualification remains open.`);
     const transport = hosting.transports.find((entry) => entry.transport === values.transport);
     if (transport?.problem) throw new Error(`${transport.problem.code}: ${transport.problem.message}`);
     if (!values.resume && hosting.problems[0]) throw new Error(`${hosting.problems[0].code}: ${hosting.problems[0].message}`);
@@ -66,7 +76,7 @@ async function main(): Promise<void> {
     env.COPILOT_AHP_SERVER_KEY = JSON.stringify({ endpoint: url.href, ...connection.serverKey });
     url.searchParams.set("tkn", connection.token);
     args.push("--ahp", url.href, "--ahp-authenticate-with-github", "--resume", connection.ahpSessionId);
-    console.log(`Connecting to shared conversation ${connection.sessionId} (${harness}) through the connection broker with a one-use ticket. This explicitly authorizes GitHub identity authentication to the provisioned host.`);
+    console.log(`Connecting to ${kind} ${connection.sessionId} (${harness}) through the connection broker with a one-use ticket. This explicitly authorizes GitHub identity authentication to the provisioned host.`);
     console.log(`Resume later with: pnpm host:connect --harness ${harness} --resume ${connection.sessionId}`);
   } else if (hosting && api && harness && values.harness !== undefined) {
     // An isolated harness: connect to its own owner host over direct WSS or its own relay environment.

@@ -1258,7 +1258,95 @@ Pending.
 
 ### Stage 3: session containers
 
-Pending.
+Recorded 2026-10-15 on branch `patniko-session-containers` (implementation commit `a7d44b7`; merged with the broker
+placement interface `b0cc328`, the integration branch at `78db20c` (stage 1), `9c6b918` (the shared-mode session
+model, adopted in `d0e67e4`) and `6a62235` (the connection broker, adopted in `00317fd`); launcher path `301f428`).
+Local only: Windows ARM64 host, Docker Desktop with linux/arm64 containers, disposable PostgreSQL 17.
+
+Delivered:
+
+- The allocation ledger's `session` kind (migration `011_session_containers.sql`): an allocation request names one
+  application session, its purpose, a size resolved from the effective policy's catalog, and the volumes it mounts;
+  admission counts it with job allocations against `executionContainers` and `containersPerPrincipal` in one
+  transaction. The controller binds the immutable image, an HMAC-derived allocation credential and ingress
+  credential, and named volumes (`execution_volumes`, labeled with the controller namespace), then creates, observes,
+  and retires containers: idle stop, maximum lifetime, stale heartbeats, exits before readiness, and closure. Volumes
+  are retained and released on close, never deleted; orphan containers are removed and unknown labeled volumes
+  reported.
+- Mode-1 sessions are `shared_sessions` rows with placement `container` (the broker's placement table). Their
+  definition is stage 2's `SharedSessionDefinition`: model, limits (the shared worker's budget and deadline rules,
+  with the container's idle stop), and the harness reference with `mode: "isolated"` and the policy digest;
+  `session_containers` keeps the admitted snapshot and size. `POST /v1/sessions` (`{ harness, version?, label }`)
+  evaluates the harness with stage 1's hosting view and routes `container` placement here; connection
+  (`{ transport }`) requests an allocation, waits for readiness, and returns stage 2's `SharedConnection` with
+  `destination: "container"` and a ticket bound to the allocation and placement generation. Views come from the
+  shared store's `record()` for every placement (`SessionDirectory`), with an optional `container` status on
+  `SharedSessionView`; the shared worker refuses to activate or authorize container-placed sessions. Clients attach
+  through the connection broker: `PlacementStore.consumeTicket` routes the `container` kind with the allocation's
+  internal ingress origin and credential, and the broker's `containerUpstream()` forwards with that credential in
+  `x-internal-key`; the container's ingress accepts nothing else. `pnpm host:connect --harness` takes this path when
+  session containers offer the requested transport.
+- The session-container image (`deploy/SessionContainer.Dockerfile`, package `src/session-container`): a root
+  supervisor holding only the allocation and ingress credentials, and an owner as uid 10001 running the locally built
+  runtime in-process with `buildSessionOptions(..., "conversation")`, packaged tools, skills, sub-agents and the
+  hosted permission policy (moved unchanged to `harness-hosting`), on the volume's real filesystem. Inference uses
+  two-minute session grants fenced by the allocation; the dispatcher's allocation-scoped routes serve the spec,
+  readiness, heartbeats and grants.
+- Docs: [architecture](ARCHITECTURE.md#session-containers) and its diagram, [deployment](DEPLOYMENT.md#session-containers),
+  [API](API.md#session-containers), [security](SECURITY.md#session-container-boundaries), the developer guide, and REST
+  examples.
+
+Runtime artifacts: Linux bundle `hybrid-linux-arm64-verified` (runtime `0a32c39595f734b28cb1930f1af9cb7ead50091b`,
+hosting `b20e188cd895852d046f80ca9630480be82aff57`, mxc `622d4f197739692686f94ed6cd78ef4e5e03c82f`, `fast`
+configuration; SHA-256 `copilot-runtime` `4e34c560…`, `runtime.node` `abe1e751…`, `sdk.tgz` `3707195d…`), image
+`copilot-session-container:patniko-session-containers` `sha256:c70b9929…` (3.9 GB, built from `00317fd`; the packaged
+sources are unchanged since). The real-CLI gates used the CLI built at the same runtime revision
+(`dist-cli/index.js`); the shared-worker gates and the AppHost used the Windows pair with the workspace path fix
+(`copilot-runtime.exe` `d843b17a…`, `runtime.node` `ed6e2dda…`).
+
+Exit evidence after the `6a62235` merge, each command passing:
+
+- Baseline: `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`, `pnpm typecheck`,
+  `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint`, `pnpm test:unit`
+  (519 passed, 1 opt-in skipped) and `pnpm test:integration` (69 passed, 11 opt-in skipped).
+- `pnpm exec vitest run --project integration tests\integration\session-containers.test.ts` (5 tests): allocation
+  lifecycle with a one-use ticket, idle stop that keeps the volume, reallocation from the same volume, retirement on
+  close with capacity zero; controller replacement that adopts a running container, removes an orphan, and retires a
+  vanished one; concurrent requests capped by deployment and principal limits, also blocking job reservations;
+  allocation and job credentials refused on each other's routes, cross-session tickets refused, grants charged once
+  per request and revoked on close, the shared worker refusing a container session; other principals denied; the
+  stored definition carries the harness reference with `mode: "isolated"` and the policy digest, and no legacy fields.
+- `HYBRID_SESSION_CONTAINER_TESTS=1 HYBRID_USE_GH_ACCOUNT=1` with `HYBRID_CLI_PATH` set:
+  `pnpm exec vitest run --project integration tests\integration\session-container-runtime.test.ts` passed in 58 s. A
+  mode-1 session ran in its own container (environment limited to the allocation credentials and service URLs, one
+  named volume at `/data`, `CapDrop: ALL`, `no-new-privileges`, 2 CPUs and 4 GiB from the policy's `large` size; uid
+  10001 cannot read the supervisor's environment); its published ingress refused the client's ticket presented
+  directly and a wrong credential (401); the real CLI attached through an in-process connection broker over direct
+  WSS with a pinned key and the approved account, and the broker logged both attaches as `container` routes; the
+  shell tool wrote a file as uid 10001 in `/data/execution/workspace`; the container stopped
+  when idle; a new container resumed from the volume, the CLI replayed history, and the next model request contained
+  the earlier turn and the file's content; capacity returned to zero after close with the volume retained. While
+  parallel sessions held the host above 85% CPU, one run took 298 s and another timed out waiting 60 s for the
+  replayed history; that wait now matches the gate's other 120-second CLI waits.
+- `HYBRID_DEPLOYMENT_TESTS=1` `tests\integration\hybrid-deployment.test.ts` still passed (61 s), as did the shared
+  worker's opt-in suites, `HYBRID_SESSION_RUNTIME_TESTS=1` (`shared-service`, `shared-session-runtime`,
+  `shared-egress-runtime`) and `HYBRID_CLI_TESTS=1` (`shared-cli`): 4 files, 5 tests. One earlier `shared-cli` run
+  under load failed only on a Windows temporary-directory cleanup race (`EBUSY`) and passed on rerun.
+- AppHost: `aspire start --apphost apphost.mts --isolated` with `hybrid-hosting`, `session-containers`,
+  `session-container-image` set to the image above, synthetic Foundry parameters, and the Windows runtime pair
+  started every resource healthy, including the connection broker. `GET /v1/hosting` reported session containers
+  on `direct` and `interactive-demo` as isolated, container, ready; `POST /v1/sessions {"harness":"interactive-demo"}`
+  created a dormant `small` (0.5 CPU, 1 GiB) container session; its connection started a container in 5 s and
+  returned `destination: "container"` with the broker's `/sessions/{id}` URL; a WebSocket upgrade with that ticket
+  opened through the broker to the container, and replaying the ticket was refused; `transport: "github"` returned
+  409 `hosting_unavailable`; closing removed the container and kept the volume, which the run then deleted.
+
+Remaining: Azure reachability through an outbound tunnel (plan D14; locally the broker reaches a host-loopback port)
+and an Azure backend; egress control; hosting features (`SESSION_CONTAINER_FEATURES` is empty: no
+remote MCP, approval modes beyond `manual`, custom handlers, or handoffs); a per-harness size field for isolated
+hosting (the policy's default size applies); a per-turn token budget inside containers (the aggregate budget and turn
+deadline apply); automated volume retention; a real-CLI run through `pnpm host:connect --harness` (unit-tested; the
+gate drives the CLI directly); synthetic inference only, with one real account.
 
 ### Stage 3: per-harness owner hosts and relay
 

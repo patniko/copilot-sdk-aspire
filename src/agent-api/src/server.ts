@@ -13,6 +13,7 @@ import { registerConsole } from "./console.js";
 import { registerHostRoutes, type HostApiDependencies } from "./host-routes.js";
 import { registerHostingRoutes } from "./hosting-routes.js";
 import { registerSharedSessionRoutes, type SharedApiDependencies } from "./shared-routes.js";
+import type { ContainerSessionService } from "./container-sessions.js";
 
 export interface ApiDependencies {
   store: JobStore;
@@ -26,6 +27,8 @@ export interface ApiDependencies {
   /** Per-harness owner hosts, including the legacy single demo host. */
   hosts?: HostApiDependencies;
   shared?: SharedApiDependencies;
+  /** Per-session isolated containers (hosting mode 1). */
+  containers?: ContainerSessionService;
   execution?: "pool" | "dedicated";
   delegations?: DelegationStore;
   /** Published harnesses, profiles, policies, and deployment capabilities for the read-only `/v1/hosting` views. */
@@ -43,7 +46,9 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
   }
 
   const principalOf = (request: FastifyRequest) => deps.authenticator.authenticate(request).id;
-  if (deps.shared) registerSharedSessionRoutes(app, deps.shared, principalOf, deps.delegations, deps.hosting);
+  if (deps.shared || deps.containers) {
+    registerSharedSessionRoutes(app, deps.shared, principalOf, deps.delegations, deps.hosting, deps.containers);
+  }
   if (deps.hosting) registerHostingRoutes(app, deps.hosting, principalOf);
   // Per-harness owner hosts and the legacy single demo host routes.
   if (deps.hosts?.hosts.length) registerHostRoutes(app, deps.hosts, principalOf);

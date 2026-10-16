@@ -1,5 +1,39 @@
-import { canonicalSessionId, OwnerHostConnection, type HostingTransport } from "@copilot-agent/contracts";
+import { canonicalSessionId, OwnerHostConnection, OwnerHostView, ownerHostTransports, type HostingTransport } from "@copilot-agent/contracts";
 const LOOPBACK = ["localhost", "127.0.0.1", "[::1]"];
+
+function apiBase(api: { apiUrl: string }): URL {
+  const base = new URL(api.apiUrl);
+  if (base.username || base.password || base.search || base.hash
+    || (base.protocol !== "https:" && !(base.protocol === "http:" && LOOPBACK.includes(base.hostname)))) {
+    throw new Error("Owner host provisioning requires HTTPS or a loopback API without embedded credentials.");
+  }
+  return base;
+}
+
+async function lookup(api: { apiUrl: string; key: string }, path: string): Promise<Response> {
+  return fetch(new URL(path, apiBase(api)), {
+    redirect: "error", signal: AbortSignal.timeout(15_000), headers: { authorization: `Bearer ${api.key}` },
+  });
+}
+
+/** Whether the caller owns a deployed owner host for `harness` that offers `transport` (`GET /v1/hosts/{harness}`). */
+export async function ownedOwnerHostOffers(api: { apiUrl: string; key: string }, harness: string, transport: HostingTransport): Promise<boolean> {
+  const response = await lookup(api, `/v1/hosts/${encodeURIComponent(harness)}`);
+  // No owner-host routes, no such harness, or no host deployed for it.
+  if (response.status === 404 || response.status === 409) return false;
+  if (!response.ok) throw new Error(`The owner host lookup failed (${response.status}).`);
+  const view = OwnerHostView.parse(await response.json());
+  return view.owned && ownerHostTransports(view.transport).includes(transport);
+}
+
+/** Whether `id` is one of the caller's application sessions, shared or in a session container (`GET /v1/sessions/{id}`). */
+export async function applicationSessionExists(api: { apiUrl: string; key: string }, id: string): Promise<boolean> {
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id)) return false;
+  const response = await lookup(api, `/v1/sessions/${id.toLowerCase()}`);
+  if (response.ok) return true;
+  if (response.status === 404 || response.status === 409) return false;
+  throw new Error(`The session lookup failed (${response.status}).`);
+}
 
 /**
  * Provisions connection material for a per-harness owner host through the authenticated API. Direct material is a
@@ -11,12 +45,7 @@ export async function ownerHostConnection(
   transport: HostingTransport | undefined,
   resume?: string,
 ): Promise<OwnerHostConnection> {
-  const base = new URL(api.apiUrl);
-  if (base.username || base.password || base.search || base.hash
-    || (base.protocol !== "https:" && !(base.protocol === "http:" && LOOPBACK.includes(base.hostname)))) {
-    throw new Error("Owner host provisioning requires HTTPS or a loopback API without embedded credentials.");
-  }
-  const response = await fetch(new URL(`/v1/hosts/${encodeURIComponent(harness)}/connection`, base), {
+  const response = await fetch(new URL(`/v1/hosts/${encodeURIComponent(harness)}/connection`, apiBase(api)), {
     method: "POST",
     redirect: "error",
     signal: AbortSignal.timeout(15_000),

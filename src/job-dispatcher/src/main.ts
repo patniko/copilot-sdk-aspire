@@ -1,5 +1,5 @@
-import { policyFor } from "@copilot-agent/contracts";
-import { AllocationStore, DelegationStore, HostStore, JobStore, PlacementStore, SharedStore, migrate } from "@copilot-agent/job-store";
+import { policyFor, SessionContainerSettings } from "@copilot-agent/contracts";
+import { AllocationStore, DelegationStore, HostStore, JobStore, PlacementStore, SessionContainerStore, SharedStore, migrate } from "@copilot-agent/job-store";
 import {
   createPostgresPool,
   listen,
@@ -7,6 +7,7 @@ import {
   loadPolicySet,
   loadHarnesses,
   loadProfiles,
+  optionalEnv,
   ownerHostKey,
   ownerHostUrl,
   readOwnerHosts,
@@ -37,6 +38,9 @@ const hostRoutes: OwnerHostRoute[] = ownerHosts.map((host) => {
 });
 const legacyHost = ownerHosts.find((host) => host.legacy);
 const adoptedLegacyHost = legacyHost ? await hostStore.adoptLegacyHost(legacyHost.harness) : false;
+const allocations = new AllocationStore(pool, sharedStore);
+const sessionSettings = optionalEnv("SESSION_CONTAINER_SETTINGS", "");
+const sessionContainers = sessionSettings ? SessionContainerSettings.parse(JSON.parse(sessionSettings)) : undefined;
 
 const app = buildDispatcher({
   store,
@@ -47,8 +51,13 @@ const app = buildDispatcher({
   hostStore,
   ...(process.env.SHARED_WORKER_KEY ? {
     shared: { store: sharedStore, key: requireEnv("SHARED_WORKER_KEY") },
-    allocations: new AllocationStore(pool, sharedStore),
+    allocations,
     delegations: new DelegationStore(pool, sharedStore, store),
+  } : {}),
+  ...(process.env.SHARED_WORKER_KEY && sessionContainers ? {
+    sessionContainers: {
+      allocations, store: new SessionContainerStore(pool, sharedStore), policies, heartbeatSeconds: sessionContainers.heartbeatSeconds,
+    },
   } : {}),
   ...(process.env.CONNECTION_BROKER_KEY ? {
     broker: { store: new PlacementStore(pool), key: requireEnv("CONNECTION_BROKER_KEY") },

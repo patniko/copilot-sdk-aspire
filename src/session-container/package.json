@@ -1,0 +1,24 @@
+{
+  "name": "@copilot-agent/session-container",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "files": ["dist"],
+  "description": "Resumable per-session container: a root supervisor holding only an allocation credential, and an unprivileged owner running one session's agent loop on the session volume.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/supervisor.js"
+  },
+  "dependencies": {
+    "@copilot-agent/contracts": "workspace:*",
+    "@copilot-agent/harness-hosting": "workspace:*",
+    "@copilot-agent/service-defaults": "workspace:*",
+    "@github/copilot-sdk": "link:../../../copilot-agent-runtime-hybrid/src/sdk/nodejs",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}

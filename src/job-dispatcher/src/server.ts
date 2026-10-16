@@ -19,6 +19,7 @@ import { z } from "zod";
 import { registerBrokerHostRoutes, registerHostRoutes, type HostDependencies } from "./host-routes.js";
 import { registerSharedRoutes, type SharedDispatcherDependencies } from "./shared-routes.js";
 import { registerBrokerRoutes, type BrokerDispatcherDependencies } from "./broker-routes.js";
+import { registerSessionContainerRoutes, type SessionContainerDispatcherDependencies } from "./session-container-routes.js";
 
 export interface DispatcherDependencies {
   store: JobStore;
@@ -32,6 +33,8 @@ export interface DispatcherDependencies {
   shared?: SharedDispatcherDependencies;
   /** Ticket consumption and placement lookup for the connection broker. */
   broker?: BrokerDispatcherDependencies;
+  /** Allocation-authenticated routes and inference grants for resumable session containers. */
+  sessionContainers?: SessionContainerDispatcherDependencies;
   allocations?: AllocationStore;
   delegations?: DelegationStore;
 }
@@ -139,6 +142,7 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   if (deps.shared) registerSharedRoutes(app, deps.shared, deps.signingKey, policy.allowedModels);
   if (deps.broker) registerBrokerRoutes(app, deps.broker);
   if (deps.broker && deps.host) registerBrokerHostRoutes(app, { store: deps.host.store, key: deps.broker.key, hosts: deps.host.hosts });
+  if (deps.sessionContainers) registerSessionContainerRoutes(app, deps.sessionContainers, deps.signingKey);
   const heartbeatSeconds = Math.max(3, Math.floor(policy.leaseSeconds / 3));
 
   const executorOnly = async (request: FastifyRequest) => {
@@ -146,7 +150,7 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
     if (typeof presented !== "string") throw new HttpError(401, "unauthenticated", "Service authentication failed.");
     if (secretsEqual(presented, deps.executorKey)) return undefined;
     const allocation = await deps.allocations?.authenticate(presented);
-    if (!allocation) throw new HttpError(401, "unauthenticated", "Service authentication failed.");
+    if (!allocation || allocation.kind !== "job") throw new HttpError(401, "unauthenticated", "Service authentication failed.");
     const id = (request.params as { id?: string }).id;
     if (id && (!z.string().uuid().safeParse(id).success || !(await deps.allocations!.ownsAttempt(allocation.id, id)))) {
       throw new HttpError(403, "forbidden", "This allocation does not own the attempt.");
@@ -320,6 +324,10 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
       const shared = await deps.shared.store.introspect(jti, undefined, policy.allowedModels);
       if (shared.reason !== "unknown") return shared;
     }
+    if (result.reason === "unknown" && deps.sessionContainers) {
+      const container = await deps.sessionContainers.store.introspect(jti);
+      if (container.reason !== "unknown") return container;
+    }
     return result.reason === "unknown" && deps.hostStore ? deps.hostStore.introspect(jti) : result;
   });
 
@@ -355,6 +363,10 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
     }
     if (deps.hostStore && usage.requestId) {
       const recorded = await deps.hostStore.recordUsage(usage.jti, usage.requestId, usage.inputTokens, usage.outputTokens);
+      if (recorded) return { recorded };
+    }
+    if (deps.sessionContainers && usage.requestId) {
+      const recorded = await deps.sessionContainers.store.recordUsage(usage.jti, usage.requestId, usage.inputTokens, usage.outputTokens);
       if (recorded) return { recorded };
     }
     return { recorded: await deps.store.recordUsage(usage.jti, usage.inputTokens, usage.outputTokens, usage.requestId, usage.usageKnown ?? true) };

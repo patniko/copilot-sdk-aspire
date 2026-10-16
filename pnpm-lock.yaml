@@ -334,6 +334,31 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  src/session-container:
+    dependencies:
+      '@copilot-agent/contracts':
+        specifier: workspace:*
+        version: link:../../contracts
+      '@copilot-agent/harness-hosting':
+        specifier: workspace:*
+        version: link:../harness-hosting
+      '@copilot-agent/service-defaults':
+        specifier: workspace:*
+        version: link:../service-defaults
+      '@github/copilot-sdk':
+        specifier: link:../../../copilot-agent-runtime-hybrid/src/sdk/nodejs
+        version: link:../../../copilot-agent-runtime-hybrid/src/sdk/nodejs
+      zod:
+        specifier: ^4.3.6
+        version: 4.6.5
+    devDependencies:
+      '@types/node':
+        specifier: ^22.0.0
+        version: 22.20.4
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   src/session-host:
     dependencies:
       '@copilot-agent/contracts':

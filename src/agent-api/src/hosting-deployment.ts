@@ -1,4 +1,4 @@
-import { type HostingDeployment, SHARED_WORKER_FEATURES } from "@copilot-agent/contracts";
+import { type HostingDeployment, SESSION_CONTAINER_FEATURES, SHARED_WORKER_FEATURES } from "@copilot-agent/contracts";
 import { type ConfiguredOwnerHost, DEMO_HOST_FEATURES, isolatedHostsOf } from "@copilot-agent/service-defaults";
 
 /** The deployment configuration agent-api receives from the AppHost, as hosting inputs. */
@@ -14,13 +14,16 @@ export interface HostingConfiguration {
   ownerHosts?: readonly ConfiguredOwnerHost[];
   /** Whether the local hybrid shared worker is connected (`SHARED_WORKER_KEY`). */
   sharedWorker: boolean;
+  /** Whether per-session containers are enabled (`SESSION_CONTAINER_SETTINGS`). */
+  sessionContainers?: boolean;
 }
 
 /**
  * The hosts, transports, and features this deployment provides, for hosting admission and the `/v1/hosting` views.
  * Each managed owner host is an isolated host for its one harness over direct WSS, the GitHub relay, or both; the
  * legacy demo host with the `github` transport runs GitHub-native sessions instead of the harness and adds no host.
- * The local hybrid worker is the shared worker, over direct WSS, with SHARED_WORKER_FEATURES.
+ * The local hybrid worker is the shared worker, over direct WSS, with SHARED_WORKER_FEATURES. Session containers serve
+ * isolated harnesses for any principal over direct WSS, with SESSION_CONTAINER_FEATURES.
  */
 export function hostingDeployment(configuration: HostingConfiguration): HostingDeployment {
   const demo = configuration.demoHost;
@@ -32,6 +35,7 @@ export function hostingDeployment(configuration: HostingConfiguration): HostingD
   return {
     executor: configuration.executor === "on-demand" ? "dedicated" : "pool",
     isolatedHosts: [...owners, ...legacy],
+    ...(configuration.sessionContainers ? { sessionContainers: { transports: ["direct"], features: [...SESSION_CONTAINER_FEATURES] } } : {}),
     ...(configuration.sharedWorker ? { sharedWorker: { transports: ["direct"], features: [...SHARED_WORKER_FEATURES] } } : {}),
   };
 }
