@@ -1504,6 +1504,51 @@ Limitations:
   not flag `shared:*` bindings in batch harnesses (job submission rejects them).
 - Local only: no Azure resources, TLS ingress, or multi-replica worker.
 
+#### Follow-up: assisted approvals without host-injected flags
+
+Recorded 2026-10-16 on the same branch, merged with the integration branch at `0fc1b46` (orchestrator workers):
+commit `812d378` and the commit that adds this entry. The workers slice found that the runtime offers assisted
+approval only behind its experimental `AUTO_APPROVAL` feature flag, which the in-process engine reads from the process
+environment when its client starts. The gates above passed only because the GitHub Copilot app injects
+`AUTO_APPROVAL=true` and other `COPILOT_*` variables into the processes it starts, and the test services inherited
+them. Reproduced on `51a3f71` with those variables removed: `shared-approvals.test.ts` failed both assisted cases
+(2 failed, 2 passed) with "The runtime refused the session's approval mode." A packaged worker or another machine
+would have refused assisted sessions, and a resumed session could have fallen back to manual approval silently.
+
+Fixed:
+
+- `SharedSessionRuntime` sets `AUTO_APPROVAL=true` in its own process before it creates its in-process client, for
+  the Node app, the image, and tests alike, regardless of which harnesses are served, because policy reloads without a
+  restart. The flag only makes assisted approval available; managed settings and the host's approval ceiling still
+  keep each session within its policy's modes.
+- Every activation applies the session's mode before publication, where the AHP host adopts it: the harness's mode
+  for a new session, and for a resumed one the mode its last `session.permissions_changed` event records (a person's
+  switch included), falling back to manual approval if the policy no longer allows it. The worker then confirms the
+  mode with `getMode`. If the runtime will not hold it, activation fails with `409 hosting_unavailable` (prerequisite
+  feature `approval-modes`) and the event `session.approval_mode_refused`, and nothing runs. Creation starts no
+  runtime session, so activation is the first point where the mode can be set.
+- Managed settings are always stated, including `{ permissions: {} }` when a policy allows every mode, as the
+  workers' are. This is defensive: with them omitted, the open-policy case below still passed on this runtime.
+- The test CLI no longer inherits the worker's in-process flag, as a person's CLI would not. The packaged-image check
+  asserts that the container starts without `AUTO_APPROVAL` or `COPILOT_CLI_ENABLED_FEATURE_FLAGS`, then holds an
+  assisted session's mode before and after a worker replacement.
+
+Commands and results, with every `COPILOT_*` variable except `COPILOT_CLI_PATH` and `COPILOT_AHP_FACTORY_PROFILE`, and
+`AUTO_APPROVAL`, removed from the test process (`GH_TOKEN` and `GH_HOST` kept for `gh`), runtime checkout
+`62a6b07a10a` (artifacts `d89cfe45b29`, hosting `006b030`):
+
+| Command | Result |
+| --- | --- |
+| `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`, `pnpm typecheck`, `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint` | Passed |
+| `pnpm test:unit` | 694 passed, 1 skipped; new [`shared-approval-modes.test.ts`](../tests/unit/shared-approval-modes.test.ts) covers the flag, the recorded mode, confirmation, and the refusal |
+| `pnpm test:integration` | 138 passed, 24 opt-in skipped |
+| `HYBRID_SESSION_RUNTIME_TESTS=1`: `shared-approvals.test.ts` | 6 passed, including new cases: a policy that allows every mode starts in assisted and runs a judge-approved write unattended; a resumed session returns to assisted, to a person's switch to manual, and back |
+| `HYBRID_CLI_TESTS=1 HYBRID_USE_GH_ACCOUNT=1`: `shared-approval-cli.test.ts`, `shared-gate.test.ts` | 2 passed; the picker offered exactly "1. Manual Approval" and "2. Assisted Permissions ✓" with no flag in the CLI's environment |
+| The same flags: `shared-service`, `shared-session-runtime`, `shared-egress-runtime`, `shared-cli`, and `connection-broker` | 5 files, 8 tests passed |
+| `HYBRID_CONTAINER_TESTS=1 HYBRID_DEPLOYMENT_TESTS=1`, images rebuilt from this tree with bundle `hybrid-linux-arm64-d89cfe45b29-host-006b030` (session host `sha256:95250e9e…`, executor `sha256:3ef1ed50…`): `shared-image`, `artifact-safety`, `hybrid-deployment` | 3 passed |
+
+This also resolves the stage-4 record's note that a packaged shared worker without the flag refuses assisted sessions.
+
 ### Stage 3: session containers
 
 Recorded 2026-10-15 on branch `patniko-session-containers` (implementation commit `a7d44b7`; merged with the broker

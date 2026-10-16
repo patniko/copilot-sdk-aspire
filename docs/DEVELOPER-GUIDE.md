@@ -407,6 +407,16 @@ the judge approves without a prompt, and checks that the CLI's picker offers exa
 switch to another mode is refused. The approval gates need runtime `d89cfe45b29` (host `006b030`) or later, whose
 SDK passes the judge's verdict to the handler and whose host enforces `startAhpHost({ approvalModes })`.
 
+Run these gates without the variables a Copilot host application injects into its child processes (`COPILOT_*`
+feature and session settings and `AUTO_APPROVAL`), which can mask a missing runtime flag; keep only the
+`COPILOT_CLI_PATH` and `COPILOT_AHP_FACTORY_PROFILE` you set. The shared worker sets `AUTO_APPROVAL` in its own
+process, and the test CLI does not inherit it, as a person's CLI would not. For example:
+
+```powershell
+Get-ChildItem env: | Where-Object { ($_.Name -like 'COPILOT_*' -and $_.Name -notin 'COPILOT_CLI_PATH', 'COPILOT_AHP_FACTORY_PROFILE') -or $_.Name -eq 'AUTO_APPROVAL' } |
+  ForEach-Object { Remove-Item "env:$($_.Name)" }
+```
+
 For the complete local CLI/container gate, build `copilot-hybrid-executor:local` (or set
 `HYBRID_EXECUTOR_IMAGE` to another tag), set the matching native/CLI paths and explicit account opt-in
 above, then run:

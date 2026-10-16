@@ -219,8 +219,12 @@ on a person's behalf ([`permissions.ts`](../src/session-host/src/permissions.ts)
   approve, deny, or ask a person; one that throws, returns no valid decision, or does not answer within five seconds
   denies. The session stays in `manual`, so the runtime never approves without the handler.
 
-The worker starts each session in its harness's mode and applies managed settings that refuse the runtime modes the
-policy does not allow, so a client cannot switch into them. Batch harnesses keep `manual`.
+The worker starts each session in its harness's mode, and returns a resumed session to the mode its history records,
+before the AHP host publishes it. If the runtime will not hold that mode, activation fails rather than continuing in
+another one. Managed settings, always stated, refuse the runtime modes the policy does not allow, so a client cannot
+switch into them. The runtime offers assisted approval only behind its experimental `AUTO_APPROVAL` flag; the worker
+sets it in its own process, so assisted approval does not depend on the environment a host application supplies, and
+the flag alone admits no mode the policy disallows. Batch harnesses keep `manual`.
 
 ### Shared-placement egress and remote MCP
 

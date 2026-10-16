@@ -52,12 +52,14 @@ beforeAll(async () => {
   const registry = await sharedRegistry([
     notes("manual-notes", {}),
     notes("assisted-notes", { approvalMode: "assisted", judgeModel: "fixture" }),
+    notes("open-notes", { approvalMode: "assisted", judgeModel: "fixture" }),
     notes("allow-notes", { approvalMode: "allow-all" }),
     notes("drafts-notes", { approvalMode: "custom", handler: "workspace-drafts" }),
     notes("failing-notes", { approvalMode: "custom", handler: "failing-handler" }),
     notes("slow-notes", { approvalMode: "custom", handler: "slow-handler" }),
   ], { permissionHandlers: [...handlers.keys()] }, {
     "assisted-notes": { hosting: { modes: ["shared"] }, approvalModes: ["manual", "assisted"] },
+    "open-notes": { hosting: { modes: ["shared"] }, approvalModes: ["manual", "assisted", "allow-all"] },
     "allow-notes": { hosting: { modes: ["shared"] }, approvalModes: ["manual", "allow-all"] },
     ...Object.fromEntries(["drafts-notes", "failing-notes", "slow-notes"].map((name) => [name, { hosting: { modes: ["shared"] }, approvalModes: ["manual", "custom"] }])),
   });
@@ -158,4 +160,31 @@ describe.skipIf(!enabled)("shared approval modes on the in-process runtime", () 
     expect(await stack.service.requestApprovalMode(principal, assisted.id, "manual")).toBe("manual");
     expect(await stack.service.requestApprovalMode(principal, assisted.id, "assisted")).toBe("assisted");
   }, 60_000);
+
+  it("offers every mode a fully open policy allows, starting in the harness's mode", async () => {
+    judge = "approve";
+    const approved = await unattendedWrite("open-notes", "open.md");
+    expect(approved).toMatchObject({ written: true });
+    expect(approved.judged).toBeGreaterThan(0);
+    expect(await stack.service.approvalMode(principal, approved.session)).toBe("assisted");
+    expect(await stack.service.requestApprovalMode(principal, approved.session, "allow-all")).toBe("allow-all");
+    expect(model.errors).toEqual([]);
+  }, 90_000);
+
+  it("returns a resumed conversation to the mode its history records, including a person's switch", async () => {
+    const session = await stack.service.create(principal, { harness: "assisted-notes", label: "" });
+    sessions.push(session.id);
+    const reactivate = async () => {
+      await stack.service.deactivate(session.id);
+      await stack.service.ensure(principal, session.id);
+      return stack.service.approvalMode(principal, session.id);
+    };
+    await stack.service.ensure(principal, session.id);
+    expect(await stack.service.approvalMode(principal, session.id)).toBe("assisted");
+    expect(await reactivate()).toBe("assisted");
+    expect(await stack.service.requestApprovalMode(principal, session.id, "manual")).toBe("manual");
+    expect(await reactivate()).toBe("manual");
+    expect(await stack.service.requestApprovalMode(principal, session.id, "assisted")).toBe("assisted");
+    expect(await reactivate()).toBe("assisted");
+  }, 90_000);
 });

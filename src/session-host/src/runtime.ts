@@ -67,6 +67,66 @@ const snapshot = z.object({
 const rejectAll: PermissionHandler = async () => ({ kind: "reject", feedback: "This shared session permits only its application tools." });
 
 /**
+ * The runtime offers assisted approval only behind its experimental `AUTO_APPROVAL` feature flag, which the in-process
+ * engine reads from this process's environment when its client starts; without it, `setMode("assisted")` is refused.
+ * The worker sets the flag itself rather than relying on its host environment. It only makes the mode available:
+ * managed settings and the AHP host's approval ceiling still keep every session within the modes its policy allows.
+ */
+export function enableAssistedApprovals(environment: NodeJS.ProcessEnv = process.env): void {
+  environment.AUTO_APPROVAL = "true";
+}
+
+/** Thrown when the runtime will not hold a session's approval mode; the session must not run in another mode instead. */
+export class ApprovalModeRefused extends Error {
+  constructor(readonly mode: RuntimeApprovalMode, readonly actual?: string) {
+    super(`The runtime refused approval mode '${mode}'${actual ? ` and reports '${actual}'` : ""}.`);
+    this.name = "ApprovalModeRefused";
+  }
+}
+
+const RECORDED_MODES = new Map<string, RuntimeApprovalMode>([
+  ["allow-all", "allow-all"], ["on", "allow-all"], ["assisted", "assisted"], ["auto", "assisted"], ["manual", "manual"], ["off", "manual"],
+]);
+
+/**
+ * The approval mode a session's history last recorded, which the runtime restores when it resumes the session: the last
+ * `session.permissions_changed` event, read as the runtime reads it, or manual approval when there is none. A recorded
+ * mode the current policy no longer allows yields manual approval, the floor, which is also what the runtime restores.
+ */
+export function recordedApprovalMode(events: ReadonlyArray<{ type: string; data?: unknown }>, available: readonly RuntimeApprovalMode[]): RuntimeApprovalMode {
+  let recorded: RuntimeApprovalMode = "manual";
+  for (const event of events) {
+    if (event.type !== "session.permissions_changed") continue;
+    const data = (event.data ?? {}) as { mode?: unknown; allowAllPermissionMode?: unknown; allowAllPermissions?: unknown };
+    const named = typeof data.mode === "string" ? data.mode : typeof data.allowAllPermissionMode === "string" ? data.allowAllPermissionMode : undefined;
+    recorded = (named !== undefined ? RECORDED_MODES.get(named) : undefined) ?? (data.allowAllPermissions === true ? "allow-all" : "manual");
+  }
+  return available.includes(recorded) ? recorded : "manual";
+}
+
+/**
+ * Puts a session in `mode` and confirms that the runtime reports it in force. A refusal, such as assisted approval
+ * without the runtime's feature flag or a mode that managed settings disable, throws `ApprovalModeRefused` instead of
+ * leaving the session in another mode.
+ */
+export async function applyApprovalMode(
+  permissions: Pick<CopilotSession["rpc"]["permissions"], "getMode" | "setMode">,
+  mode: RuntimeApprovalMode,
+  judgeModel?: string,
+): Promise<void> {
+  let actual: string | undefined;
+  try {
+    if (mode !== "manual" || (await permissions.getMode()).mode !== "manual") {
+      await permissions.setMode({ mode, ...(mode === "assisted" && judgeModel ? { assistedApprovalModel: judgeModel } : {}) });
+    }
+    actual = (await permissions.getMode()).mode;
+  } catch {
+    actual = undefined;
+  }
+  if (actual !== mode) throw new ApprovalModeRefused(mode, actual);
+}
+
+/**
  * A bounded local prototype: many published conversations share one in-process SDK client.
  * Returned listener tokens are internal provisioning material, never public API responses.
  */
@@ -88,6 +148,7 @@ export class SharedSessionRuntime {
     if (process.env.COPILOT_AHP_FACTORY_PROFILE !== "managed") {
       throw new Error("Set COPILOT_AHP_FACTORY_PROFILE=managed before starting the in-process shared runtime; AHP identity must not replace application provider configuration.");
     }
+    enableAssistedApprovals();
     this.#client = new CopilotClient({
       connection: RuntimeConnection.forInProcess(),
       mode: "empty",
@@ -196,12 +257,11 @@ export class SharedSessionRuntime {
       const original = session;
       session.on((event) => options.onEvent?.(context, event));
       const approval = options.approval;
-      // A resumed session keeps the mode the runtime last confirmed; managed settings and the host ceiling clamp it.
-      if (!resume && approval && approval.initial !== "manual") {
-        const applied = await session.rpc.permissions.setMode({
-          mode: approval.initial, ...(approval.initial === "assisted" && approval.judgeModel ? { assistedApprovalModel: approval.judgeModel } : {}),
-        });
-        if (!applied.success || applied.mode !== approval.initial) throw new Error("The runtime refused the session's approval mode.");
+      if (approval) {
+        // A new session starts in its harness's mode; a resumed one returns to the mode its history records. Either must
+        // hold before publication, because the AHP host adopts the mode in force when it publishes the session.
+        const mode = resume ? recordedApprovalMode(await session.getEvents(), approval.available) : approval.initial;
+        await applyApprovalMode(session.rpc.permissions, mode, approval.judgeModel);
       }
       const hostOptions: AhpHostOptions = {
         computeId: options.id,

@@ -138,6 +138,6 @@ describe("shared permission policy", () => {
       .toEqual({ permissions: { disableBypassPermissionsMode: "disable", disableAssistedPermissionsMode: true } });
     expect(approvalManagedSettings({ mode: "assisted", initial: "assisted", available: ["manual", "assisted"] }))
       .toEqual({ permissions: { disableBypassPermissionsMode: "disable" } });
-    expect(approvalManagedSettings({ mode: "manual", initial: "manual", available: ["manual", "assisted", "allow-all"] })).toBeUndefined();
+    expect(approvalManagedSettings({ mode: "manual", initial: "manual", available: ["manual", "assisted", "allow-all"] })).toEqual({ permissions: {} });
   });
 });

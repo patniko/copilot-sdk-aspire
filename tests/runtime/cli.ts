@@ -101,8 +101,10 @@ export class QualificationCli {
     const require = createRequire(join(resolve(dirname(process.env.HYBRID_CLI_PATH!), ".."), "package.json"));
     const pty: PtyModule = require("node-pty");
     const env: Record<string, string> = {};
+    // A person's CLI has none of the hosting configuration, including the runtime flags a worker in this test process
+    // sets for itself (AUTO_APPROVAL).
     for (const [name, value] of Object.entries(process.env)) {
-      if (value !== undefined && !/^(DEMO_|HYBRID_|SHARED_|COPILOT_|GITHUB_TOKEN$|GH_TOKEN$)/.test(name)) env[name] = value;
+      if (value !== undefined && !/^(DEMO_|HYBRID_|SHARED_|COPILOT_|AUTO_APPROVAL$|GITHUB_TOKEN$|GH_TOKEN$)/.test(name)) env[name] = value;
     }
     env.GH_TOKEN = this.credential;
     env.GITHUB_TOKEN = this.credential;

@@ -184,6 +184,8 @@ harness whose mode needs a host the deployment lacks, or a feature its host lack
 its `prerequisite`; and the GitHub relay for a shared harness is `422 transport_unsupported`. The shared worker
 re-checks a session's harness against the current effective policy on every activation, so a narrowed policy
 refuses an existing session with the same codes, or with `409 policy_revoked` when its admitted model was removed.
+If the runtime will not hold the session's approval mode, activation returns `409 hosting_unavailable` with the
+prerequisite feature `approval-modes` instead of running it in another mode.
 Shared sessions created before harness-driven hosting cannot be activated (`409 invalid_state`); create a new one.
 
 Approvals and questions in a shared session go to the attached client, not to the job input-request API. The
