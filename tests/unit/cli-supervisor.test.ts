@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { BROKER_MOVED_CLOSE } from "@copilot-agent/contracts";
 import { superviseSessionCli, type SessionConnection } from "../../configurator/server/cli-supervisor.js";
+import { SessionRouteChanged } from "../../configurator/server/connect-route.js";
 
 const fakeCli = join(import.meta.dirname, "..", "fakes", "fake-ahp-cli.mjs");
 
@@ -168,6 +169,27 @@ describe("launcher supervision of the CLI", () => {
     broker.move();
     expect(await exit).toBe(1);
     expect(notices.at(-1)).toMatch(/Could not reconnect/);
+  }, 60_000);
+
+  it("retries provisioning while the move completes, and stops at once when the route no longer reaches the session", async () => {
+    const broker = new FakeBroker();
+    await broker.listening();
+    cleanup.push(() => broker.close());
+    const { exit, log } = await supervised(broker, { moveTimeoutMs: 60_000 });
+    await (await eventually(() => broker.attached[0], "the first attachment")).hello;
+    broker.failProvisioning = Object.assign(new Error("promotion_in_progress: The conversation is moving."), { status: 409 });
+    broker.move();
+    await delay(300);
+    broker.failProvisioning = undefined;
+    const moved = await eventually(() => broker.attached.find((entry) => entry.generation === 2), "the reattachment after the move");
+    await moved.hello;
+    expect((await log()).filter((entry) => entry.event === "start")).toHaveLength(2);
+
+    broker.failProvisioning = new SessionRouteChanged("Session moved off /v1/sessions.");
+    const started = Date.now();
+    broker.move();
+    expect(await exit).toBe(1);
+    expect(Date.now() - started).toBeLessThan(30_000);
   }, 60_000);
 
   it("returns the CLI's own exit code when the person ends it", async () => {

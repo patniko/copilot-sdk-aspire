@@ -16,7 +16,7 @@ import type { AllocationStore, DelegationStore, AttemptOutcome, Claim, JobStore,
 import { createService, HttpError, requireInternalKey, secretsEqual, signCapability } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
-import { registerHostRoutes, type HostDependencies } from "./host-routes.js";
+import { registerBrokerHostRoutes, registerHostRoutes, type HostDependencies } from "./host-routes.js";
 import { registerSharedRoutes, type SharedDispatcherDependencies } from "./shared-routes.js";
 import { registerBrokerRoutes, type BrokerDispatcherDependencies } from "./broker-routes.js";
 import { registerSessionContainerRoutes, type SessionContainerDispatcherDependencies } from "./session-container-routes.js";
@@ -141,6 +141,7 @@ export function buildDispatcher(deps: DispatcherDependencies): FastifyInstance {
   if (deps.host) registerHostRoutes(app, deps.host);
   if (deps.shared) registerSharedRoutes(app, deps.shared, deps.signingKey, policy.allowedModels);
   if (deps.broker) registerBrokerRoutes(app, deps.broker);
+  if (deps.broker && deps.host) registerBrokerHostRoutes(app, { store: deps.host.store, key: deps.broker.key, hosts: deps.host.hosts });
   if (deps.sessionContainers) registerSessionContainerRoutes(app, deps.sessionContainers, deps.signingKey);
   const heartbeatSeconds = Math.max(3, Math.floor(policy.leaseSeconds / 3));
 

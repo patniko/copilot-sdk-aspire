@@ -66,6 +66,35 @@ Content-Type: application/json
 
 {}
 
+### Agent hosts (local per-harness owner hosts and the demo host): transport, online state, and cost inputs (resource, size)
+GET {{baseUrl}}/v1/hosts
+Authorization: Bearer {{apiKey}}
+
+### Owner host direct connection material (owner only; through the connection broker in hybrid mode; the ticket is a secret)
+POST {{baseUrl}}/v1/hosts/interactive-demo/connection
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{ "transport": "direct" }
+
+### The owner host's own GitHub relay environment (another principal gets 403 relay_owner_only)
+POST {{baseUrl}}/v1/hosts/interactive-demo/connection
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{ "transport": "github" }
+
+### The owner's sessions on that host, with the ahpSessionId that copilot --resume uses
+GET {{baseUrl}}/v1/hosts/interactive-demo/sessions
+Authorization: Bearer {{apiKey}}
+
+### Negative check: unknown harness (expect 404 not_found)
+POST {{baseUrl}}/v1/hosts/no-such-harness/connection
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+
+{}
+
 ### Submit a job with the TypeScript agent (change "profile" to "python-agent" for the Python agent)
 # @name submit
 POST {{baseUrl}}/v1/jobs

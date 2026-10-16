@@ -107,11 +107,30 @@ WORKDIR /app/src/agent-host
 EXPOSE 8080
 ENTRYPOINT ["node", "dist/main.js"]
 
-FROM agent-host AS agent-host-runtime
+# ---------------------------------------------------------------------------
+# Managed hosts run a locally built runtime with its matching SDK: a verified bundle from
+# deploy/build-hybrid-runtime.ps1 (copilot-runtime, runtime.node, sdk.tgz, provenance.json, SHA256SUMS),
+# built for the bundle's own Linux architecture.
+FROM ${NODE_IMAGE} AS demo-runtime
 ARG DEMO_RUNTIME_DIR=.runtime-artifacts
-COPY ${DEMO_RUNTIME_DIR}/copilot-runtime /opt/demo-runtime/copilot-runtime
-COPY ${DEMO_RUNTIME_DIR}/runtime.node /opt/demo-runtime/runtime.node
-RUN chmod 0555 /opt/demo-runtime/copilot-runtime \
- && chmod 0444 /opt/demo-runtime/runtime.node
+ARG NPM_REGISTRY=https://registry.npmjs.org/
+WORKDIR /bundle
+COPY ${DEMO_RUNTIME_DIR}/copilot-runtime ${DEMO_RUNTIME_DIR}/runtime.node ${DEMO_RUNTIME_DIR}/sdk.tgz ${DEMO_RUNTIME_DIR}/provenance.json ${DEMO_RUNTIME_DIR}/SHA256SUMS ./
+RUN sha256sum -c SHA256SUMS \
+ && mkdir /sdk \
+ && tar -xzf sdk.tgz --strip-components=1 -C /sdk \
+ && cd /sdk \
+ && npm install --omit=dev --ignore-scripts --no-audit --no-fund --registry="${NPM_REGISTRY}"
+
+FROM agent-host AS agent-host-runtime
+COPY --from=demo-runtime --chmod=0555 /bundle/copilot-runtime /opt/demo-runtime/copilot-runtime
+COPY --from=demo-runtime --chmod=0444 /bundle/runtime.node /bundle/provenance.json /bundle/SHA256SUMS /opt/demo-runtime/
+COPY --from=demo-runtime /sdk /opt/demo-runtime/sdk
+# The published SDK pin is replaced by the bundle's matching SDK for the host and its shared harness mapping.
+RUN for sdk in $(find /app/src/agent-host/node_modules -path '*/@github/copilot-sdk' -prune); do \
+      real=$(readlink -f "$sdk"); [ "$real" = /opt/demo-runtime/sdk ] && continue; \
+      rm -rf "$real" && ln -s /opt/demo-runtime/sdk "$real" || exit 1; \
+    done \
+ && test "$(readlink -f /app/src/agent-host/node_modules/@github/copilot-sdk)" = /opt/demo-runtime/sdk
 ENV DEMO_HOST_RUNTIME_PATH=/opt/demo-runtime/copilot-runtime \
     DEMO_HOST_RUNTIME_PROVIDER=/opt/demo-runtime/runtime.node

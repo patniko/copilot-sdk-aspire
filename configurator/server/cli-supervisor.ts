@@ -17,7 +17,10 @@ export interface CliSupervisorOptions {
   env: NodeJS.ProcessEnv;
   /** The first connection material, already provisioned for the session. */
   connection: SessionConnection;
-  /** Provisions fresh material for the same session: a new one-use ticket at its current placement. */
+  /**
+   * Provisions fresh material for the same session: a new one-use ticket at its current placement. A rejection with a
+   * `status` of 404, or one marked `permanent`, stops supervision; others are retried until `moveTimeoutMs`.
+   */
   provision: () => Promise<SessionConnection>;
   /** Status lines for the person at the terminal. */
   notify?: (message: string) => void;
@@ -224,7 +227,7 @@ class CliSupervisor {
     while (!connection) {
       try { connection = await this.options.provision(); }
       catch (error) {
-        if (Date.now() >= deadline || (error instanceof Error && "status" in error && error.status === 404)) {
+        if (Date.now() >= deadline || permanent(error)) {
           this.#notify(`Could not reconnect to session ${this.#connection.sessionId}: ${error instanceof Error ? error.message : "provisioning failed"}`);
           this.#state = "stopped";
           return this.#finish(1);
@@ -250,6 +253,11 @@ function same(presented: string, expected: string): boolean {
   const left = Buffer.from(presented);
   const right = Buffer.from(expected);
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+/** A provisioning failure that retrying cannot fix: the session is gone, or no longer reachable on this path. */
+function permanent(error: unknown): boolean {
+  return error instanceof Error && (("status" in error && error.status === 404) || ("permanent" in error && error.permanent === true));
 }
 
 /**

@@ -8,10 +8,14 @@ import {
   loadHarnesses,
   loadProfiles,
   optionalEnv,
+  ownerHostKey,
+  ownerHostUrl,
+  readOwnerHosts,
   readPostgresConnection,
   requireEnv,
 } from "@copilot-agent/service-defaults";
 import { buildDispatcher } from "./server.js";
+import type { OwnerHostRoute } from "./host-routes.js";
 
 const policies = await loadPolicySet();
 const policy = policies.base;
@@ -20,11 +24,20 @@ await migrate(pool);
 const store = new JobStore(pool);
 const sharedStore = new SharedStore(pool);
 const hostStore = new HostStore(pool);
-const hostOwner = optionalEnv("DEMO_HOST_OWNER", "").toLowerCase();
-const hostExecution = optionalEnv("DEMO_HOST_TRANSPORT", "direct") === "github" ? "github-native" : "managed";
-const hostRegistry = hostOwner && hostExecution === "managed" ? await loadHarnesses() : undefined;
-const hostHarness = hostRegistry?.get(optionalEnv("DEMO_HOST_HARNESS", "interactive-demo"))?.[0];
-if (hostOwner && hostExecution === "managed" && !hostHarness) throw new Error("The configured demo host harness is not published.");
+const ownerHosts = readOwnerHosts();
+const managedHosts = ownerHosts.some((host) => host.execution === "managed");
+const hostRegistry = managedHosts ? await loadHarnesses() : undefined;
+const hostRoutes: OwnerHostRoute[] = ownerHosts.map((host) => {
+  const snapshot = host.execution === "managed" ? hostRegistry?.get(host.harness)?.[0] : undefined;
+  if (host.execution === "managed" && !snapshot) throw new Error(`The owner host harness '${host.harness}' is not published.`);
+  const endpoint = ownerHostUrl(host);
+  return {
+    harness: host.harness, owner: host.owner, key: ownerHostKey(host), transport: host.transport, execution: host.execution,
+    snapshot, policy: policyFor(policies, host.harness), ...(endpoint ? { endpoint } : {}),
+  };
+});
+const legacyHost = ownerHosts.find((host) => host.legacy);
+const adoptedLegacyHost = legacyHost ? await hostStore.adoptLegacyHost(legacyHost.harness) : false;
 const allocations = new AllocationStore(pool, sharedStore);
 const sessionSettings = optionalEnv("SESSION_CONTAINER_SETTINGS", "");
 const sessionContainers = sessionSettings ? SessionContainerSettings.parse(JSON.parse(sessionSettings)) : undefined;
@@ -50,19 +63,21 @@ const app = buildDispatcher({
   ...(process.env.CONNECTION_BROKER_KEY ? {
     broker: { store: new PlacementStore(pool), key: requireEnv("CONNECTION_BROKER_KEY") },
   } : {}),
-  ...(hostOwner ? {
+  ...(hostRoutes.length ? {
     host: {
-      store: hostStore, key: requireEnv("DEMO_HOST_KEY"), owner: hostOwner,
-      execution: hostExecution, harness: hostHarness, profiles: hostExecution === "managed" ? await loadProfiles() : undefined,
-      policy: hostHarness ? policyFor(policies, hostHarness.definition.name) : policy,
+      store: hostStore, hosts: hostRoutes, profiles: managedHosts ? await loadProfiles() : undefined,
       signingKey: requireEnv("CAPABILITY_SIGNING_KEY"),
     },
   } : {}),
 });
 
 await listen(app, listenPort(8081));
+if (adoptedLegacyHost) app.log.warn({ harness: legacyHost!.harness }, "adopted the legacy demo host as this harness's owner host");
 app.log.info(
-  { acknowledgedGaps: policy.acknowledgedGaps, requirements: policy.requirements, policyOverrides: [...policies.overrides.keys()] },
+  {
+    acknowledgedGaps: policy.acknowledgedGaps, requirements: policy.requirements, policyOverrides: [...policies.overrides.keys()],
+    ownerHosts: ownerHosts.map((host) => ({ harness: host.harness, transport: host.transport, execution: host.execution })),
+  },
   "job-dispatcher ready",
 );
 
