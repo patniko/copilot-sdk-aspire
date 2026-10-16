@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { superviseSessionCli } from "./cli-supervisor.js";
 import { hostConnection } from "./host-client.js";
-import { harnessConnectRoute, reprovisionSession } from "./connect-route.js";
+import { harnessConnectRoute, reprovisionSession, routeTargetProblem } from "./connect-route.js";
 import { ownerHostCliArguments, ownerHostConnection } from "./owner-host-client.js";
 import { Settings } from "./settings.js";
 import { StatusService } from "./status.js";
@@ -63,9 +63,11 @@ async function main(): Promise<void> {
   if (values.destination === "shared" && !(route?.kind === "sessions" && route.placement === "shared")) {
     throw new Error(`The '${LEGACY_SHARED_HARNESS}' harness is not hosted as a shared conversation in this deployment.`);
   }
+  // Shared with the Hosting page, which disables the same connections.
+  const refusal = route && routeTargetProblem(route, values.target);
+  if (refusal) throw new Error(refusal);
   if (route?.kind === "sessions" && api && harness) {
     const kind = route.placement === "shared" ? "shared conversation" : "session container";
-    if (values.target !== "local") throw new Error(`The ${kind} path currently supports local connections only. Azure qualification remains open.`);
     const connection = await sharedConnection(api, {
       harness, transport: values.transport, ...(values.resume ? { resume: values.resume } : {}), ...(values.label ? { label: values.label } : {}),
     });
@@ -82,7 +84,6 @@ async function main(): Promise<void> {
     return;
   } else if (route?.kind === "owner-host" && api && harness) {
     // An isolated harness: connect to its own owner host over direct WSS or its own relay environment.
-    if (values.target !== "local") throw new Error("Per-harness owner hosts are local-only until the Azure stage; use --destination container for the deployed demo host.");
     const info = await ownerHostConnection(api, harness, values.transport, values.resume);
     const launch = ownerHostCliArguments(info, values.resume);
     args.splice(0, args.length, ...launch.args);
