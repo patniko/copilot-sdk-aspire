@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1715" viewBox="0 0 1280 1715" role="img" aria-labelledby="title description">
   <title id="title">Copilot SDK and Aspire service architecture</title>
-  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The default executor pool runs unprivileged SDK runners using the inference gateway. The optional direct container host remains separate. Experimental local hybrid mode adds protected CLI provisioning, a connection broker that verifies one-use tickets and forwards CLI connections to their session's placement, and a shared in-process worker that runs many shared harnesses with PostgreSQL session files, approval modes, and web and remote MCP access through an egress filter; an operator-owned Docker controller starts one-shot execution containers and durable completion returns results to the conversation. It also starts one resumable session container per isolated conversation session, which the broker reaches with a per-allocation credential; the container keeps only allocation-scoped credentials, stops when idle, and resumes from its retained volume. Separately, the local configurator can send a description and catalog through a request-owned SDK to GitHub Copilot using server-side GitHub authentication; configuration returns to the unsaved editor and code proposals are never installed. Azure hybrid and two-real-account qualification remain open. Outbound network isolation is not enforced.</desc>
+  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The default executor pool runs unprivileged SDK runners using the inference gateway. Optional agent hosts remain separate: one deployed demo host or, locally, one owner host per isolated harness, each for one owner, reached over direct WSS (through the broker in hybrid mode) or that owner's GitHub relay environment. Experimental local hybrid mode adds protected CLI provisioning, a connection broker that verifies one-use tickets and forwards CLI connections to their session's placement, and a shared in-process worker that runs many shared harnesses with PostgreSQL session files, approval modes, and web and remote MCP access through an egress filter; an operator-owned Docker controller starts one-shot execution containers and durable completion returns results to the conversation. It also starts one resumable session container per isolated conversation session, which the broker reaches with a per-allocation credential; the container keeps only allocation-scoped credentials, stops when idle, and resumes from its retained volume. Separately, the local configurator can send a description and catalog through a request-owned SDK to GitHub Copilot using server-side GitHub authentication; configuration returns to the unsaved editor and code proposals are never installed. Azure hybrid and two-real-account qualification remain open. Outbound network isolation is not enforced.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#576574"/>
@@ -89,11 +89,11 @@
   <rect x="285" y="803" width="250" height="88" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
   <text x="410" y="829" class="heading" text-anchor="middle">Connection paths</text>
   <text x="410" y="853" class="body" text-anchor="middle">Managed WSS: ticket + key pin</text>
-  <text x="410" y="878" class="body" text-anchor="middle">GitHub: Mission Control/WPS</text>
+  <text x="410" y="878" class="body" text-anchor="middle">Relay: environment per host</text>
   <rect x="590" y="803" width="280" height="88" rx="10" fill="#fff4df" stroke="#b7791f"/>
-  <text x="730" y="829" class="heading" text-anchor="middle">agent-host</text>
+  <text x="730" y="829" class="heading" text-anchor="middle">Agent hosts</text>
   <text x="730" y="853" class="body" text-anchor="middle">Supervisor + isolated runtime</text>
-  <text x="730" y="878" class="body" text-anchor="middle">Leased through the dispatcher</text>
+  <text x="730" y="878" class="body" text-anchor="middle">Leased per harness and owner</text>
   <rect x="930" y="803" width="300" height="88" rx="10" fill="#f0eaff" stroke="#8250df"/>
   <text x="1080" y="829" class="heading" text-anchor="middle">Persistent volume</text>
   <text x="1080" y="853" class="body" text-anchor="middle">Runtime history + shared workspace</text>
@@ -105,7 +105,7 @@
   <text x="395" y="731" class="label" text-anchor="middle">managed: session capability to the gateway</text>
   <path d="M 845 803 V 743 H 1266 V 317 H 1255" class="edge"/>
   <text x="1060" y="733" class="label" text-anchor="middle">native: Copilot inference</text>
-  <text x="44" y="919" class="small">Native mode uses Copilot billing/permissions. Managed mode needs runtime qualification. Neither is per-customer isolation.</text>
+  <text x="44" y="919" class="small">Locally, one owner host per isolated harness. Native mode uses Copilot billing/permissions. Managed mode needs a qualified runtime. Neither is per-customer isolation.</text>
 
   <rect x="24" y="960" width="1231" height="400" rx="12" fill="#f6f8fa" stroke="#8250df"/>
   <text x="44" y="991" class="heading">Experimental local hybrid mode: shared harnesses, on-demand execution, session containers</text>

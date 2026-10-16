@@ -145,14 +145,17 @@ harnesses. `buildSessionOptions(..., "conversation")` omits the terminal result 
 three-argument mapping remains unchanged for batch runners. The hosted implementation is TypeScript only;
 Python/TypeScript batch parity remains required.
 
-The demo host is an isolated host for exactly one harness. [`admitHostedHarness`](../src/service-defaults/src/host-policy.ts)
+Each agent host, the demo host or a local per-harness owner host, is an isolated host for exactly one harness.
+[`admitHostedHarness`](../src/service-defaults/src/host-policy.ts)
 also refuses a harness whose `hosting.mode` is not `isolated`, isolated hosting that its effective policy does not
 allow (`hosting_mode_not_allowed`), and harness features the host does not implement (`hosting_unavailable`): remote
 MCP servers, approval modes other than `manual`, custom permission handlers, and handoffs. It never runs a harness
 without a feature it requested. `DEMO_HOST_FEATURES` in [`hosting.ts`](../src/service-defaults/src/hosting.ts) and
 `SHARED_WORKER_FEATURES` in [`shared.ts`](../contracts/src/shared.ts) record what each host implements; a slice that
 implements a feature adds it there. agent-api's [`hostingDeployment`](../src/agent-api/src/hosting-deployment.ts)
-builds the deployment's hosts from its configuration for admission and the `/v1/hosting` [views](API.md#hosting-views).
+builds the deployment's hosts from its configuration for admission and the `/v1/hosting` [views](API.md#hosting-views);
+its `ownerHosts` input takes [`readOwnerHosts`](../src/service-defaults/src/owner-hosts.ts) (`OWNER_HOSTS` plus the legacy
+`DEMO_HOST_*` host), and each managed owner host becomes one `isolatedHosts` entry owned by its API principal.
 Session containers add `SESSION_CONTAINER_FEATURES` in [`session-container.ts`](../contracts/src/session-container.ts)
 and the builder's `sessionContainers` input.
 
@@ -181,25 +184,44 @@ package. It supplies no app factories or custom provider and uses the standard M
 Keep it independent of the deferred managed-runtime flags. Its Copilot models, permissions, and billing are
 not aliases for the app's Foundry settings.
 
-Host control uses separate PostgreSQL records and versioned session inference claims. Never synthesize a job
+Host control uses separate PostgreSQL records, keyed by harness in `owner_hosts` (migration 010), and versioned
+session inference claims. Each host's dispatcher key identifies it on every control request. Never synthesize a job
 or extend an attempt token indefinitely to represent a conversation. Session grant renewal must retain usage,
 respect current policy, and be fenced by the active host epoch. The connection proxy uses one-time tickets,
-not the private listener token.
+not the private listener token; the connection broker's `/hosts/{harness}` path exchanges them through
+`/internal/broker/host-connection` for one-use upstream tickets.
 
 Run the focused host unit/store tests after building. The opt-in real-runtime test uses a real GitHub
 authentication exchange, a Linux host image and persistent Docker volume, but a fake model upstream:
 
 ```powershell
-pnpm exec vitest run --project unit tests\unit\demo-host.test.ts tests\unit\session-capability.test.ts
-pnpm exec vitest run --project integration tests\integration\host-store.test.ts
+pnpm exec vitest run --project unit tests\unit\demo-host.test.ts tests\unit\session-capability.test.ts tests\unit\owner-hosts.test.ts `
+  tests\unit\connection-broker-hosts.test.ts tests\unit\connect-route.test.ts configurator\test\owner-host-client.test.ts
+pnpm exec vitest run --project integration tests\integration\host-store.test.ts tests\integration\owner-hosts.test.ts `
+  tests\integration\host-admission.test.ts
 ```
 
-`tests/integration/host-runtime.test.ts` additionally requires `DEMO_HOST_RUNTIME_TESTS=1`,
-`DEMO_TEST_GITHUB_TOKEN`, `DEMO_TEST_GITHUB_OWNER`, and a qualified image named
-`copilot-aspire-agent-host:demo` (or `DEMO_HOST_TEST_IMAGE`). Supply credentials through your normal protected
-environment, never in test source or recordings. Build that test image from `examples/customer-config`,
+`tests/integration/host-runtime.test.ts` additionally requires `DEMO_HOST_RUNTIME_TESTS=1`, a GitHub credential
+(`DEMO_TEST_GITHUB_TOKEN`, or the signed-in `gh` account with `HYBRID_USE_GH_ACCOUNT=1`), `COPILOT_CLI_PATH` set to
+the matching Windows or host runtime for its management client, and a managed image named
+`copilot-aspire-agent-host:demo` (or `DEMO_HOST_TEST_IMAGE`) built from the `agent-host-runtime` stage with
+`DEMO_RUNTIME_DIR` naming a verified bundle. It runs two per-harness hosts on transport `both` with synthetic
+inference: each registers its own Mission Control environment, serves direct sessions, refuses the other host's
+tickets, records the client's AHP session ID, and keeps its environment, workspace, and history across container
+replacement. `OWNER_HOST_EXPECT_RUNTIME` pins the runtime revision the hosts must report; `OWNER_HOST_TEST_LOGS=1`
+prints redacted container logs. It deletes the environments it registers. Supply credentials through your normal
+protected environment, never in test source or recordings. Build that test image from `examples/customer-config`,
 not private customer data. `DEMO_HOST_TEST_SOURCE=1` is a local debugging mode that mounts the built host
 JavaScript; it does not qualify a production image or change runtime authentication requirements.
+
+`tests/integration/owner-host-cli.test.ts` (`OWNER_HOST_CLI_TESTS=1`, the same credential, image, and
+`COPILOT_CLI_PATH`, plus `HYBRID_CLI_PATH` naming the matching built CLI) drives the real CLI against one host:
+it creates a session over the host's relay environment, resumes it over direct WSS through an in-process
+connection broker, resumes it over the relay again, and resumes it directly once more with the CLI's relay client
+on, checking each replay and turn against synthetic inference. The CLI runs in a private `COPILOT_HOME`; the gate
+enables the staff-gated `RELAY_CLIENT` and `AHP_CLIENT` client features there, as an eligible profile has them.
+`OWNER_HOST_CLI_TRANSCRIPT=<file>` saves a redacted transcript, the host runtime's logs, and the CLI's process
+logs when it fails.
 
 A Docker/store test does not prove Azure Files behavior, direct CLI compatibility, or Mission Control
 attachment. Collect those results separately and keep the [known compatibility gate](DEPLOYMENT.md#demo-host-compatibility-gate)
