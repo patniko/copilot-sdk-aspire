@@ -1018,7 +1018,83 @@ Limitations:
 
 ### Stage 1: configurator hosting editor and views
 
-Pending.
+Recorded 2026-10-15 on branch `patniko-configurator-hosting-editor`: commits `6658c02` (editor, Policy cards, and
+Hosting rows), `501357c` (merge of the stage 1 integration; read availability from the API's hosting views
+instead of evaluating it locally), `c71eaaa` (Permissions presets keep the approval mode), `bf72916` (launcher actions
+for harness-driven shared mode), `92b2c6d` and `863b67e` (tests and review fixes), `1e81cd9` (documentation), merges
+of the integration branch at `9c6b918` and `4272621`, and the commit that adds this record.
+
+Delivered:
+
+- **Harness editor**: a **Hosting** tab with the interaction; mode cards with their gains and costs; promotion,
+  workers, and handoffs; the approval mode with its judge model or custom handler; and remote MCP servers and tools
+  from the operator's catalog. Choices the effective policy, the harness's interaction, or the conversation profile
+  rule out are disabled and say why. Worker and handoff targets show why other harnesses do not qualify. An
+  **In the running service** panel shows the local API's view of the saved version and flags a definition the
+  service has not loaded. Isolated hosting without handoffs removes the `hosting` block, so the digest stays as it
+  was, and switching to batch jobs removes the fields batch harnesses reject. The Permissions tab's presets now keep
+  `approvalMode`, `judgeModel`, and `handler`, which resolves that stage 1 limitation.
+- **Validation**: conversation harnesses are checked with `conversationPolicyProblems`, the same contract helper
+  hosted admission uses, against their effective per-harness policy and the latest version of each worker and
+  handoff target, without repeating problems the editor already reports. Hosting rules still apply while other
+  fields fail schema validation. Policy validation adds warnings for a development network allowance, shared modes
+  without the direct transport, inherited authority without the assisted mode, and crafting templates that name
+  unknown bindings.
+- **Policy page**: **Approval modes** (modes, and permission handlers with the ones profiles provide suggested),
+  **Remote MCP servers** (URL, description, tools, a credential by secret name with an optional header, and
+  `allowPrivateNetwork`), and **Hosting** (modes, transports, promotion approval, size catalog and default size,
+  worker limits including inherited authority, and crafting templates). Each card can be overridden per harness
+  through the existing workflow, so no policy group is left without a card. The harness editor receives the
+  catalog's server names, descriptions, and tools only, never URLs or secret references, and the secret field
+  discards input that looks like a credential.
+- **Hosting page**: per-harness rows from `GET /v1/hosting` on the local or selected Azure API, with the effective
+  mode, status, first problem and its prerequisite, host, cost note, and transports, plus workspace versions the
+  service has not loaded. Connection actions copy `pnpm host:connect --harness <name> --target <target> --transport
+  <transport>` for owner hosts the service reports and for the local shared worker over direct WSS; other actions are
+  disabled and say why. The previous shared-coordinator card now targets `--harness hybrid-coordinator`.
+- **Authoring**: for conversation harnesses whose mode runs on the shared worker, Copilot is offered only the host
+  bindings the conversation profile marks safe in process, and a draft that placement cannot run is rejected at its
+  field path. Authoring never emits hosting, MCP, or approval fields.
+
+| Exit evidence | Result |
+| --- | --- |
+| Configurator editing | [`hosting-editor.test.tsx`](../configurator/test/hosting-editor.test.tsx): mode cards, approval modes and judge models, MCP catalog selection, worker and handoff eligibility, promotion sizes and approvals, field routing to the tab, and presets keeping the approval mode. [`policy-cards.test.tsx`](../configurator/test/policy-cards.test.tsx) and [`policy-model.test.tsx`](../configurator/test/policy-model.test.tsx): the three cards, secret names only, documented defaults, and overrides that write explicit values so they do not inherit |
+| Invalid combinations and disallowed modes fail with field-scoped errors | [`hosting-editor-validation.test.ts`](../configurator/test/hosting-editor-validation.test.ts): `hosting.mode` for a disallowed mode while other fields are invalid, `runners.allowedProfiles` for the conversation profile, `mcpServers.0` for malformed entries, the policy warnings, and `tools.0.kind` for an authored Python tool on a shared harness; stage 1's [`hosting-validation.test.ts`](../configurator/test/hosting-validation.test.ts) still passes |
+| Unavailable modes name their prerequisite | [`hosting.test.tsx`](../configurator/test/hosting.test.tsx) (`harnessHostRow`: a missing shared worker disables the connection with "Needs the harness-driven shared worker"), the `ServiceViewRow` case in `hosting-editor.test.tsx`, and [`hosting-server.test.ts`](../configurator/test/hosting-server.test.ts): views are forwarded from the API and parsed with the contract schemas, never evaluated locally, and unloaded versions are listed |
+| A read-only per-harness hosting view | The Hosting page and the editor panel against a running agent-api, below |
+
+Live check: the built agent-api (`node src/agent-api/dist/main.js`) ran against a throwaway PostgreSQL 17 container
+with a synthetic workspace, a demo host configured for one harness, and a shared worker key, so its views reported an
+owner host and the shared worker without starting either. A session-local wrapper started the configurator server
+with its `hostingViewFetcher` pointed at that API and reported the local stack as running; the full Aspire stack was
+not started because it needs Foundry parameters. The rows showed ready shared and owner-host harnesses with their
+launchers, a batch harness, and a harness without a host naming its prerequisite with disabled actions, as in the
+[screenshots](CONFIGURATOR.md#hosting-approvals-and-remote-mcp). The container and processes were removed afterwards.
+
+Commands and results, Windows ARM64 with Node 24.19, pnpm 10.34.5, and Docker Desktop, on `ea87cdd` (this branch
+with the integration branch at `4272621` merged):
+
+| Command | Result |
+| --- | --- |
+| `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build` | Passed |
+| `pnpm typecheck` | Passed. The first run in this new worktree failed only because the AppHost's generated `.aspire` modules were missing; `aspire restore --apphost apphost.mts` generated them, as the [developer guide](DEVELOPER-GUIDE.md#build-and-check) describes |
+| `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint` | Passed |
+| `pnpm test:unit` | 550 passed, 1 skipped |
+| `pnpm test:integration` | 61 passed, 10 opt-in skipped |
+| `pnpm exec vitest run --project unit configurator/test` | 25 files, 244 passed |
+
+Limitations:
+
+- The configurator does not evaluate deployments. The editor shows the running service's view of the saved and
+  loaded version only, so unsaved edits show policy problems but not host availability until they are saved and
+  reloaded.
+- Local rows need the local stack running. Azure rows read the selected target's deployed API; no Azure target was
+  exercised, because this work is local only.
+- Connection actions cover owner hosts the service reports and the local shared worker. Per-session containers, and
+  shared hosting on Azure, stay disabled until the launcher and later stages support them.
+- The configurator never handles remote MCP credentials. The secret-name field's credential check guards against
+  accidental pastes and is not a secret scanner.
+- No controls exist for policy ceilings on handoff approval or history, which stage 6 may add.
 
 ### Stage 2: connection broker
 
@@ -1294,7 +1370,95 @@ Limitations:
 
 ### Stage 3: session containers
 
-Pending.
+Recorded 2026-10-15 on branch `patniko-session-containers` (implementation commit `a7d44b7`; merged with the broker
+placement interface `b0cc328`, the integration branch at `78db20c` (stage 1), `9c6b918` (the shared-mode session
+model, adopted in `d0e67e4`) and `6a62235` (the connection broker, adopted in `00317fd`); launcher path `301f428`).
+Local only: Windows ARM64 host, Docker Desktop with linux/arm64 containers, disposable PostgreSQL 17.
+
+Delivered:
+
+- The allocation ledger's `session` kind (migration `011_session_containers.sql`): an allocation request names one
+  application session, its purpose, a size resolved from the effective policy's catalog, and the volumes it mounts;
+  admission counts it with job allocations against `executionContainers` and `containersPerPrincipal` in one
+  transaction. The controller binds the immutable image, an HMAC-derived allocation credential and ingress
+  credential, and named volumes (`execution_volumes`, labeled with the controller namespace), then creates, observes,
+  and retires containers: idle stop, maximum lifetime, stale heartbeats, exits before readiness, and closure. Volumes
+  are retained and released on close, never deleted; orphan containers are removed and unknown labeled volumes
+  reported.
+- Mode-1 sessions are `shared_sessions` rows with placement `container` (the broker's placement table). Their
+  definition is stage 2's `SharedSessionDefinition`: model, limits (the shared worker's budget and deadline rules,
+  with the container's idle stop), and the harness reference with `mode: "isolated"` and the policy digest;
+  `session_containers` keeps the admitted snapshot and size. `POST /v1/sessions` (`{ harness, version?, label }`)
+  evaluates the harness with stage 1's hosting view and routes `container` placement here; connection
+  (`{ transport }`) requests an allocation, waits for readiness, and returns stage 2's `SharedConnection` with
+  `destination: "container"` and a ticket bound to the allocation and placement generation. Views come from the
+  shared store's `record()` for every placement (`SessionDirectory`), with an optional `container` status on
+  `SharedSessionView`; the shared worker refuses to activate or authorize container-placed sessions. Clients attach
+  through the connection broker: `PlacementStore.consumeTicket` routes the `container` kind with the allocation's
+  internal ingress origin and credential, and the broker's `containerUpstream()` forwards with that credential in
+  `x-internal-key`; the container's ingress accepts nothing else. `pnpm host:connect --harness` takes this path when
+  session containers offer the requested transport.
+- The session-container image (`deploy/SessionContainer.Dockerfile`, package `src/session-container`): a root
+  supervisor holding only the allocation and ingress credentials, and an owner as uid 10001 running the locally built
+  runtime in-process with `buildSessionOptions(..., "conversation")`, packaged tools, skills, sub-agents and the
+  hosted permission policy (moved unchanged to `harness-hosting`), on the volume's real filesystem. Inference uses
+  two-minute session grants fenced by the allocation; the dispatcher's allocation-scoped routes serve the spec,
+  readiness, heartbeats and grants.
+- Docs: [architecture](ARCHITECTURE.md#session-containers) and its diagram, [deployment](DEPLOYMENT.md#session-containers),
+  [API](API.md#session-containers), [security](SECURITY.md#session-container-boundaries), the developer guide, and REST
+  examples.
+
+Runtime artifacts: Linux bundle `hybrid-linux-arm64-verified` (runtime `0a32c39595f734b28cb1930f1af9cb7ead50091b`,
+hosting `b20e188cd895852d046f80ca9630480be82aff57`, mxc `622d4f197739692686f94ed6cd78ef4e5e03c82f`, `fast`
+configuration; SHA-256 `copilot-runtime` `4e34c560…`, `runtime.node` `abe1e751…`, `sdk.tgz` `3707195d…`), image
+`copilot-session-container:patniko-session-containers` `sha256:c70b9929…` (3.9 GB, built from `00317fd`; the packaged
+sources are unchanged since). The real-CLI gates used the CLI built at the same runtime revision
+(`dist-cli/index.js`); the shared-worker gates and the AppHost used the Windows pair with the workspace path fix
+(`copilot-runtime.exe` `d843b17a…`, `runtime.node` `ed6e2dda…`).
+
+Exit evidence after the `6a62235` merge, each command passing:
+
+- Baseline: `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`, `pnpm typecheck`,
+  `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint`, `pnpm test:unit`
+  (519 passed, 1 opt-in skipped) and `pnpm test:integration` (69 passed, 11 opt-in skipped).
+- `pnpm exec vitest run --project integration tests\integration\session-containers.test.ts` (5 tests): allocation
+  lifecycle with a one-use ticket, idle stop that keeps the volume, reallocation from the same volume, retirement on
+  close with capacity zero; controller replacement that adopts a running container, removes an orphan, and retires a
+  vanished one; concurrent requests capped by deployment and principal limits, also blocking job reservations;
+  allocation and job credentials refused on each other's routes, cross-session tickets refused, grants charged once
+  per request and revoked on close, the shared worker refusing a container session; other principals denied; the
+  stored definition carries the harness reference with `mode: "isolated"` and the policy digest, and no legacy fields.
+- `HYBRID_SESSION_CONTAINER_TESTS=1 HYBRID_USE_GH_ACCOUNT=1` with `HYBRID_CLI_PATH` set:
+  `pnpm exec vitest run --project integration tests\integration\session-container-runtime.test.ts` passed in 58 s. A
+  mode-1 session ran in its own container (environment limited to the allocation credentials and service URLs, one
+  named volume at `/data`, `CapDrop: ALL`, `no-new-privileges`, 2 CPUs and 4 GiB from the policy's `large` size; uid
+  10001 cannot read the supervisor's environment); its published ingress refused the client's ticket presented
+  directly and a wrong credential (401); the real CLI attached through an in-process connection broker over direct
+  WSS with a pinned key and the approved account, and the broker logged both attaches as `container` routes; the
+  shell tool wrote a file as uid 10001 in `/data/execution/workspace`; the container stopped
+  when idle; a new container resumed from the volume, the CLI replayed history, and the next model request contained
+  the earlier turn and the file's content; capacity returned to zero after close with the volume retained. While
+  parallel sessions held the host above 85% CPU, one run took 298 s and another timed out waiting 60 s for the
+  replayed history; that wait now matches the gate's other 120-second CLI waits.
+- `HYBRID_DEPLOYMENT_TESTS=1` `tests\integration\hybrid-deployment.test.ts` still passed (61 s), as did the shared
+  worker's opt-in suites, `HYBRID_SESSION_RUNTIME_TESTS=1` (`shared-service`, `shared-session-runtime`,
+  `shared-egress-runtime`) and `HYBRID_CLI_TESTS=1` (`shared-cli`): 4 files, 5 tests. One earlier `shared-cli` run
+  under load failed only on a Windows temporary-directory cleanup race (`EBUSY`) and passed on rerun.
+- AppHost: `aspire start --apphost apphost.mts --isolated` with `hybrid-hosting`, `session-containers`,
+  `session-container-image` set to the image above, synthetic Foundry parameters, and the Windows runtime pair
+  started every resource healthy, including the connection broker. `GET /v1/hosting` reported session containers
+  on `direct` and `interactive-demo` as isolated, container, ready; `POST /v1/sessions {"harness":"interactive-demo"}`
+  created a dormant `small` (0.5 CPU, 1 GiB) container session; its connection started a container in 5 s and
+  returned `destination: "container"` with the broker's `/sessions/{id}` URL; a WebSocket upgrade with that ticket
+  opened through the broker to the container, and replaying the ticket was refused; `transport: "github"` returned
+  409 `hosting_unavailable`; closing removed the container and kept the volume, which the run then deleted.
+
+Remaining: Azure reachability through an outbound tunnel (plan D14; locally the broker reaches a host-loopback port)
+and an Azure backend; egress control; hosting features (`SESSION_CONTAINER_FEATURES` is empty: no
+remote MCP, approval modes beyond `manual`, custom handlers, or handoffs); a per-harness size field for isolated
+hosting (the policy's default size applies); a per-turn token budget inside containers (the aggregate budget and turn
+deadline apply); automated volume retention; a real-CLI run through `pnpm host:connect --harness` (unit-tested; the
+gate drives the CLI directly); synthetic inference only, with one real account.
 
 ### Stage 3: per-harness owner hosts and relay
 

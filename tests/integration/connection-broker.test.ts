@@ -17,7 +17,7 @@ import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
 import { buildSharedHost } from "../../src/session-host/src/server.js";
 import type { SharedSessionService } from "../../src/session-host/src/service.js";
 import { buildBroker } from "../../src/connection-broker/src/broker.js";
-import { DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/connection-broker/src/sessions.js";
+import { containerUpstream, DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../src/connection-broker/src/sessions.js";
 
 const principal = `broker-${randomUUID()}`;
 const apiKey = "synthetic-broker-api-key-".repeat(2);
@@ -95,7 +95,7 @@ beforeAll(async () => {
   await shared.listen({ port: 0, host: "127.0.0.1" });
   ({ app: broker } = buildBroker({
     families: [sessionRoutes(new DispatcherDirectory(url(dispatcher), brokerKey))],
-    upstreams: { shared: sharedUpstream(new URL(url(shared)), brokerKey) },
+    upstreams: { shared: sharedUpstream(new URL(url(shared)), brokerKey), container: containerUpstream() },
     checkMilliseconds: 100,
   }));
   await broker.listen({ port: 0, host: "127.0.0.1" });

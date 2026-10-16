@@ -8,7 +8,7 @@ network isolation than the implementation provides.
 
 ## System overview
 
-![Default jobs and optional hosts, local hybrid services, and separate local configurator authoring through GitHub Copilot](images/architecture.svg)
+![Default jobs and optional hosts, local hybrid services including session containers, and separate local configurator authoring through GitHub Copilot](images/architecture.svg)
 
 | Component | Owns | Source |
 | --- | --- | --- |
@@ -18,8 +18,9 @@ network isolation than the implementation provides.
 | `agent-executor` | Polling slots, runner uid/workspace isolation, protocol validation, deadlines/cancellation, result validation | [Main](../src/agent-executor/src/main.ts), [attempt](../src/agent-executor/src/attempt.ts), [isolation](../src/agent-executor/src/isolation.ts) |
 | `agent-host` (opt-in, experimental) | Long-lived SDK owner, AHP transports, retained conversations/workspace, execution-grant renewal | [Supervisor](../src/agent-host/src/main.ts), [owner](../src/agent-host/src/owner.ts) |
 | `session-host` (local hybrid opt-in) | One in-process runtime serving many shared harnesses: harness admission, protected session provisioning, per-harness turn scheduling, the shared base tools, approval modes, provider-backed files, eviction and completion delivery | [Service](../src/session-host/src/service.ts), [admission](../src/session-host/src/admission.ts), [tools](../src/session-host/src/toolkit.ts), [permissions](../src/session-host/src/permissions.ts), [scheduler](../src/session-host/src/scheduler.ts) |
-| `connection-broker` (local hybrid opt-in) | One stable WebSocket path per session, ticket consumption through the dispatcher, byte forwarding to the session's current placement, "moved" closes | [Broker](../src/connection-broker/src/broker.ts), [session routes](../src/connection-broker/src/sessions.ts), [placement contract](../contracts/src/placement.ts) |
-| `execution-controller` (local hybrid opt-in) | Durable allocation admission, operator-owned Docker lifecycle, orphan reconciliation and teardown | [Controller](../src/execution-controller/src/controller.ts), [allocation store](../src/job-store/src/allocations.ts) |
+| `connection-broker` (local hybrid opt-in) | One stable WebSocket path per session, ticket consumption through the dispatcher, byte forwarding to the session's current placement (shared worker or session container), "moved" closes | [Broker](../src/connection-broker/src/broker.ts), [session routes](../src/connection-broker/src/sessions.ts), [placement contract](../contracts/src/placement.ts) |
+| `execution-controller` (local hybrid opt-in) | Durable allocation admission, operator-owned Docker lifecycle for one-shot job and resumable session containers, volumes, orphan reconciliation and teardown | [Controller](../src/execution-controller/src/controller.ts), [allocation store](../src/job-store/src/allocations.ts) |
+| Session container (local hybrid opt-in) | One isolated conversation session per container: root supervisor with an allocation credential, unprivileged agent loop on a retained volume, broker-only AHP ingress | [Supervisor](../src/session-container/src/supervisor.ts), [owner](../src/session-container/src/owner.ts) |
 | Runner | One SDK attempt with harness tools, skills, sub-agents, and permission handlers | [TypeScript](../src/harness-hosting/src/runner.ts), [Python](../execution-profiles/python-agent/runner.py) |
 | `inference-gateway` | Approved chat-completions route, capability checks, upstream identity, token-usage reporting | [Gateway](../src/inference-gateway/src/server.ts), [routes](../src/inference-gateway/src/routes.ts) |
 | Configurator | Customer-workspace authoring, optional server-side Copilot drafting, plus platform build/run/deploy controls; not part of the deployed request path | [Companion server](../configurator/server/app.ts), [draft service](../configurator/server/authoring.ts) |
@@ -114,7 +115,7 @@ global, principal, and per-harness concurrency, with one active turn per convers
 queued-turn ceilings keep one harness from taking every slot. Idle eviction retains the conversation;
 interrupted work is not automatically replayed.
 
-Each conversation runs one published harness whose mode is `shared`. Creation evaluates the harness against the
+Each shared conversation runs one published harness whose mode is `shared`. Creation evaluates the harness against the
 deployment and its effective policy, then stores the admitted snapshot (the harness definition, its digest, the
 policy digest, the admitted model, limits, and any delegation targets) in the session row. Every activation
 re-checks that snapshot's integrity and the current policy, so a narrowed policy stops an existing session without
@@ -182,12 +183,12 @@ flowchart TD
 With the qualified runtime the host participant still prompts after a judge approval; the runtime work recorded in
 the [hosting modes plan](HOSTING-MODES-PLAN.md#stage-2-harness-driven-shared-mode) lets it approve.
 
-Each session records a placement in the ledger: its kind (only `shared` exists today) and a generation that
-increases on every change ([contract](../contracts/src/placement.ts)). Tickets bind to the generation. When it
-changes, the broker ends attached clients with WebSocket close code `4301` (`moved`) after any frame in flight,
-and an upstream close is replaced with `moved` when the placement changed underneath it. No current code path
-changes a placement; promotion and session containers are proposed in the
-[hosting modes plan](HOSTING-MODES-PLAN.md#4-proposed-topology).
+Each session records a placement in the ledger: its kind (`shared`, or `container` for
+[session containers](#session-containers)) and a generation that increases on every change
+([contract](../contracts/src/placement.ts)). Tickets bind to the generation. When it changes, the broker ends
+attached clients with WebSocket close code `4301` (`moved`) after any frame in flight, and an upstream close is
+replaced with `moved` when the placement changed underneath it. No current code path moves a session between
+placements; promotion is proposed in the [hosting modes plan](HOSTING-MODES-PLAN.md#4-proposed-topology).
 
 Delegation records, child jobs, input snapshots and aggregate budget reservations commit atomically.
 SDK tool-call identity deduplicates acceptance. Completion-driven turns cannot create nested delegations.
@@ -207,6 +208,83 @@ replaying a model turn. Closing prevents continuations and optionally requests c
 This is local demonstrator evidence, not hostile multi-customer isolation, transparent failover, or exact
 spending enforcement. See [Security](SECURITY.md#local-hybrid-boundaries), [API](API.md#experimental-shared-conversations),
 and [local deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment).
+
+### Session containers
+
+With `Parameters:session-containers=true`, a session created through `POST /v1/sessions` with a conversation
+harness whose hosting mode is `isolated` (the default) runs in its own resumable container, started by the same
+controller. This is per-session mode 1 of the [hosting modes plan](HOSTING-MODES-PLAN.md#71-mode-1-isolated-container);
+other modes still need their hosts and are rejected with the [hosting errors](API.md#errors-and-retry-decisions).
+
+Container sessions share the application-session record, view, and routes with shared sessions. The session
+definition holds the admitted model, limits, and harness reference (mode `isolated`, with the policy digest);
+the admitted harness snapshot stays with the container placement, and the shared worker refuses to activate or
+authorize container-placed sessions. `pnpm host:connect --harness` takes this path when session containers offer
+the requested transport.
+
+```mermaid
+flowchart LR
+    CLI["Copilot CLI"] -->|"1. create / connect"| API["agent-api"]
+    API -->|"admission, allocation request,<br/>one-use ticket"| DB[("PostgreSQL<br/>sessions, allocations,<br/>volumes, grants")]
+    Controller["Execution controller"] -->|"bind image, credential,<br/>volume; reconcile"| DB
+    Controller -->|"create / stop / remove"| Box
+    subgraph Box["Session container"]
+        Supervisor["Supervisor (root)<br/>allocation credential,<br/>ingress :8080"]
+        Owner["Owner (uid 10001)<br/>runtime + harness tools,<br/>AHP on loopback"]
+        Supervisor -->|"IPC: start, grants"| Owner
+    end
+    Box --- Volume[("Named volume /data<br/>history + workspace")]
+    CLI -->|"2. broker WSS: ticket,<br/>pinned key, GitHub auth"| Broker["connection-broker"]
+    Broker -->|"consume ticket"| Dispatcher["job-dispatcher"]
+    Broker -->|"forward with per-allocation<br/>ingress credential"| Supervisor
+    Supervisor -->|"spec, readiness,<br/>heartbeats, grants"| Dispatcher
+    Dispatcher --> DB
+    Owner -->|"session capability"| Gateway["inference-gateway"]
+    Gateway --> Foundry["Foundry"]
+```
+
+Connecting requests a session allocation if the session has none: one transaction checks the deployment and
+per-principal container limits, which job allocations share, and records an unbound row. The controller binds it
+to the immutable session image, an HMAC-derived allocation credential and ingress credential, and the session's
+named volume (labeled with the controller namespace), then creates the container with the size the effective
+policy's catalog resolved at creation, `no-new-privileges`, and only the capabilities needed to start the
+unprivileged owner. The supervisor fetches its session's admitted harness snapshot, starts the owner, reads the
+AHP server key over loopback, and reports readiness. The API then issues a 60-second one-use ticket bound to that
+allocation and the session's placement generation, and returns the connection broker's `/sessions/{id}` URL with
+the server key. The broker consumes the ticket through the dispatcher, which routes the `container` placement to
+the allocation's ingress, and forwards the connection with the per-allocation ingress credential; the container
+accepts nothing else.
+
+The owner runs the agent loop in-process with the locally built runtime, using
+`buildSessionOptions(..., "conversation")`, packaged tool bindings, skills, sub-agents, and the hosted
+permission policy, on the real filesystem under `/data/execution`. The application provisions the session: the
+first allocation creates it, later allocations resume it from the volume, and the AHP host publishes it for the
+expected GitHub account. Inference uses two-minute session grants fenced by the allocation, and usage is charged
+once per gateway request to the session budget.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Dormant: create session
+    Dormant --> Starting: connect, capacity admitted
+    Starting --> Running: listener ready
+    Starting --> Dormant: exited or startup limit
+    Running --> Stopping: idle, lifetime, exit, or stale heartbeat
+    Stopping --> Dormant: container removed, volume retained
+    Dormant --> Closed: close
+    Starting --> Closed: close
+    Running --> Closed: close
+    Closed --> [*]
+```
+
+Idle means no turn, session event, or new connection for the session's idle period; an attached but silent CLI is
+disconnected, as with shared eviction. Stopping is graceful so the runtime flushes its history before removal.
+Interrupted turns are not replayed. A replacement controller adopts running containers, removes labeled
+containers without a ledger allocation, and retires allocations whose container vanished. Volumes are never
+deleted automatically: closing marks them released for operator retention, and unknown labeled volumes are only
+reported.
+
+Locally the broker reaches the container's ingress on its host-loopback published port. The Azure direction, an
+outbound tunnel from the container (plan D14), is not implemented.
 
 ## Optional demo agent host
 

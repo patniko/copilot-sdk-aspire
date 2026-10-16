@@ -254,3 +254,24 @@ Not covered: traffic that does not use the filter, including the runtime's own n
 the process, and every container, so egress remains unenforced there. The filter is not a network sandbox
 and does not contain a compromised worker; the Azure design adds an egress proxy in front of the shared
 worker. Fetched pages and remote MCP tool descriptions, schemas, and results remain untrusted model input.
+
+### Session container boundaries
+
+Per-session containers ([architecture](ARCHITECTURE.md#session-containers)) separate sessions by container,
+process user, and Docker named volume. They are not VM or hostile-tenant isolation: containers share the host
+kernel, the Docker daemon, and its default network, and egress is **not** enforced. Docker labels identify the
+controller's containers and volumes for reconciliation; they are not a security boundary.
+
+| Concern | Control |
+| --- | --- |
+| Credentials in the container | The supervisor receives an allocation-scoped credential and a per-allocation ingress credential, both derived with the controller's signing key. Dispatcher routes accept the allocation credential only for its own session: its spec, readiness, heartbeat, and inference grants. No database, Docker, signing, provider, broker, or relay credential is present, and job allocation credentials cannot use these routes (nor session credentials the job routes) |
+| Agent loop and tools | The runtime, shell, file tools, and packaged tools run as uid 10001 under `no-new-privileges`, with the supervisor's environment unreadable to that user. They hold the private loopback listener token and short-lived session inference grants, so tools can obtain the current grant, as batch runners can obtain their job capability |
+| Supervisor | Runs as root to start the owner as uid 10001; the controller drops every capability except `SETUID`, `SETGID`, `CHOWN`, `DAC_OVERRIDE`, and `KILL`. A compromised supervisor can use its allocation credential for its own session only |
+| Client attachment | Clients attach through the connection broker, which consumes the 60-second one-use ticket (bound to the allocation and placement generation) through the dispatcher and forwards to the container's ingress, published on host loopback, with the per-allocation ingress credential in `x-internal-key`. The ledger stores that credential for the broker; the container refuses public tickets and query strings. It reaches only the AHP handshake: the runtime still requires sealed authentication as the session's bound GitHub account against a pinned server key |
+| Inference | Two-minute session grants are fenced by the allocation, the session's open state, and its aggregate budget, and rechecked against current policy models. Usage is charged once per gateway request. Like other grants, these are admission and accounting controls, not exact spending caps |
+| Data at rest | Runtime history and workspace files persist in the session's named volume, which outlives every container. Closing a session releases its volume for retention; nothing deletes it automatically. Protect the Docker host's volume storage like runtime history and backups |
+| Policy changes | Narrowed policy blocks new containers for an existing session and stops new inference grants for models it no longer approves; it does not stop a running container |
+
+The local gate verified the credential and environment scoping, uid, capability, and mount checks, and the refusal
+of tickets presented directly at the container, against a real container. Azure container reachability (the
+broker reaches a host-loopback port locally) and egress control remain unimplemented.

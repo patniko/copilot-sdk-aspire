@@ -7,7 +7,7 @@ import { JobEventListener, JobStore, PlacementStore, SessionFileStore, SharedSto
 import { Admission, ApiKeyAuthenticator, signSessionCapability } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../../src/agent-api/src/server.js";
 import { buildBroker } from "../../../src/connection-broker/src/broker.js";
-import { DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../../src/connection-broker/src/sessions.js";
+import { containerUpstream, DispatcherDirectory, sessionRoutes, sharedUpstream } from "../../../src/connection-broker/src/sessions.js";
 import { buildDispatcher } from "../../../src/job-dispatcher/src/server.js";
 import { buildGateway } from "../../../src/inference-gateway/src/server.js";
 import { parseRoutes } from "../../../src/inference-gateway/src/routes.js";
@@ -113,7 +113,7 @@ export async function sharedStack(options: {
   await host.listen({ port: 0, host: "127.0.0.1" });
   const { app: broker } = buildBroker({
     families: [sessionRoutes(new DispatcherDirectory(address(dispatcher), brokerKey))],
-    upstreams: { shared: sharedUpstream(new URL(address(host)), brokerKey) },
+    upstreams: { shared: sharedUpstream(new URL(address(host)), brokerKey), container: containerUpstream() },
   });
   apps.push(broker);
   await broker.listen({ port: 0, host: "127.0.0.1" });

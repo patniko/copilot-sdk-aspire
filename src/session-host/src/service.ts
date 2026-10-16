@@ -199,6 +199,7 @@ export class SharedSessionService {
     if (this.#stopping) throw new StoreError("invalid_state", "The shared service is stopping.");
     const row = await this.get(principal, id);
     if (row.view.closed) throw new StoreError("not_found", "The shared conversation is closed.");
+    if (row.placement !== "shared") throw new StoreError("not_found", "The conversation runs in a session container; connect through the application API.");
     const opening = this.#opening.get(id);
     if (opening) return opening;
     const resident = this.#residents.get(id);

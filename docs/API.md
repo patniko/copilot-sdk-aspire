@@ -145,21 +145,22 @@ An already-forwarded request can overshoot, and unknown consumption remains expl
 
 ## Experimental shared conversations
 
-These routes exist only when `agent-api` is connected to the opt-in shared worker. They are distinct from
-the singleton `/v1/host` APIs and from job IDs. The operator maps API principals to fixed numeric GitHub
-account IDs; clients cannot supply or replace that binding. Retained principals cannot be rebound.
+These routes exist only when `agent-api` is connected to the opt-in shared worker or to session containers.
+They are distinct from the singleton `/v1/host` APIs and from job IDs. The operator maps API principals to fixed
+numeric GitHub account IDs; clients cannot supply or replace that binding. Retained principals cannot be rebound.
 
-Each session runs one published conversation harness whose `hosting.mode` is `shared`. Creation admits a snapshot
-of that harness version: its instructions, prompt mode, model options, skills, sub-agents, tools, limits, and
-permissions, with the first of its models that the effective policy approves. One worker serves many harnesses.
-The [hosting views](#hosting-views) show whether a harness can be created here before you try.
+Each session runs one published conversation harness. Creation admits a snapshot of that harness version: its
+instructions, prompt mode, model options, skills, sub-agents, tools, limits, and permissions, with the first of its
+models that the effective policy approves. A `shared` harness runs on the shared worker, which serves many harnesses
+in one runtime; an `isolated` harness runs in its own [session container](#session-containers) when they are
+deployed. The [hosting views](#hosting-views) show whether a harness can be created here before you try.
 
 | Method | Path | Behavior |
 | --- | --- | --- |
-| `POST` | `/v1/sessions` | Body `{ "harness": "<published conversation harness>", "version": "<optional>", "label": "<optional>" }`; `201` with a retained session, including its harness, mode, placement, and current segment, and `Location`. Does not allocate an execution container or activate a runtime session. |
+| `POST` | `/v1/sessions` | Body `{ "harness": "<published conversation harness>", "version": "<optional>", "label": "<optional>" }`; the harness's hosting mode decides placement (`shared` on the shared worker, `isolated` in a [session container](#session-containers)). `201` with a retained session, including its harness, mode, placement, and current segment, and `Location`. Does not allocate an execution container or activate a runtime session. |
 | `GET` | `/v1/sessions` | `{ sessions }`, up to 100 recent principal-owned sessions, including closed ones |
-| `GET` | `/v1/sessions/{id}` | The session view: `harness` (`name`, `version`, `digest`), `mode`, `placement` (`shared`), the current `segment` (`generation`, `placement`, `harness`, `ahpSessionId`, `startedAt`), admitted model, limits, activity timestamp, closed/online state, used/reserved/remaining budget, and jobs and continuation counts |
-| `POST` | `/v1/sessions/{id}/connection` | Body `{ "transport": "direct" }` (the default; `github` returns `422 transport_unsupported`). Activate/resume, then return `{ sessionId, destination: "shared", transport: "direct", ahpSessionId, url, token, expiresAt, serverKey }` with `Cache-Control: no-store`. `url` is the connection broker's `/sessions/{id}` path; resume `ahpSessionId` after attaching |
+| `GET` | `/v1/sessions/{id}` | The session view: `harness` (`name`, `version`, `digest`), `mode`, `placement` (`shared` or `container`), the current `segment` (`generation`, `placement`, `harness`, `ahpSessionId`, `startedAt`), a session container's `container` status, admitted model, limits, activity timestamp, closed/online state, used/reserved/remaining budget, and jobs and continuation counts |
+| `POST` | `/v1/sessions/{id}/connection` | Body `{ "transport": "direct" }` (the default; `github` returns the harness's hosting error, such as `422 transport_unsupported` for shared hosting). Activate/resume, then return `{ sessionId, destination, transport: "direct", ahpSessionId, url, token, expiresAt, serverKey }` with `Cache-Control: no-store`. `destination` is `shared` or `container`; `url` is the connection broker's `/sessions/{id}` path; resume `ahpSessionId` after attaching |
 | `GET` | `/v1/sessions/{id}/jobs` | Child job IDs/states and completion-notification state/error, including `needs_review` |
 | `POST` | `/v1/sessions/{id}/close` | Body `{ "cancelChildren": false }` by default; prevents new work and disconnects runtime residency without deleting retained data |
 
@@ -176,23 +177,23 @@ idempotent: retain its returned UUID rather than automatically repeating a lost 
 
 Creation and connection report the [hosting problem codes](#hosting-views) as errors before anything is activated:
 an unknown harness or version is `404 harness_not_found`; a batch harness, a mode or transport the policy does not
-allow, a reserved tool name, or an unimplemented binding or permission handler is `422`; a harness in another mode,
-or one that needs a feature the worker lacks, is `409 hosting_unavailable` with its `prerequisite`; and the GitHub
-relay is `422 transport_unsupported`. Activation re-checks the harness against the current effective policy, so a
-narrowed policy refuses an existing session with the same codes, or with `409 policy_revoked` when its admitted
-model was removed.
-Sessions created before harness-driven hosting cannot be activated (`409 invalid_state`); create a new one.
+allow, or (on the shared worker) a reserved tool name or an unimplemented binding or permission handler is `422`; a
+harness whose mode needs a host the deployment lacks, or a feature its host lacks, is `409 hosting_unavailable` with
+its `prerequisite`; and the GitHub relay for a shared harness is `422 transport_unsupported`. The shared worker
+re-checks a session's harness against the current effective policy on every activation, so a narrowed policy
+refuses an existing session with the same codes, or with `409 policy_revoked` when its admitted model was removed.
+Shared sessions created before harness-driven hosting cannot be activated (`409 invalid_state`); create a new one.
 
 Approvals and questions in a shared session go to the attached client, not to the job input-request API. The
 harness's approval mode decides how ([security](SECURITY.md#shared-conversation-approvals)): `manual` prompts the
 attached person, `assisted` asks the runtime's LLM judge first, `allow-all` runs requests without asking except
-those the harness's permissions deny, and `custom` asks an operator-registered handler. The client can switch only among the modes the effective
-policy allows. With nobody attached, a request that needs a person does not run.
+those the harness's permissions deny, and `custom` asks an operator-registered handler. The client can switch only
+among the modes the effective policy allows. With nobody attached, a request that needs a person does not run.
 
 If a session's placement changes while a client is attached, the broker closes the WebSocket with code `4301`
 and reason `moved` after any frame already in flight. Request a new connection for the same session and
-reconnect to the same URL. Only the `shared` placement exists today and no current operation changes it, so
-clients do not receive this close in ordinary use yet. Other closes, such as idle eviction, pass through unchanged.
+reconnect to the same URL. No current operation moves a session between the `shared` and `container` placements,
+so clients do not receive this close in ordinary use yet. Other closes, such as idle eviction, pass through unchanged.
 
 Idle eviction disconnects the CLI but preserves history/files. Closure does not cancel already-admitted
 children unless `cancelChildren` is true. Child outputs remain available through job/artifact endpoints.
@@ -210,6 +211,34 @@ names, artifacts have SHA-256 digests, and downloads use attachment disposition 
 The coordinator can explicitly import an output into its session filesystem; overwriting an existing file
 requires its exact current etag. Arbitrary attempt files and runtime history are not exported.
 
+### Session containers
+
+When session containers are deployed, creating a session for a published `interaction: "conversation"` harness whose
+hosting mode is `isolated` (and allowed by its effective policy) places it in its own container. Views keep the
+same shape for every placement; a container session has `placement: "container"`, `mode: "isolated"`, and a
+`container` status (`state`: `dormant`, `starting`, `running`, `stopping` or `closed`; size, CPUs, memory, idle
+seconds and activation count). Its admitted harness snapshot, model, limits and size are retained with the session.
+Limits follow the shared worker's rules, including the operator's session ceilings; `idleSeconds` is the
+container's idle stop. A container enforces the aggregate token budget and the turn deadline but no separate
+per-turn budget, so its `turnTokenBudget` reports the aggregate cap.
+
+The first connection, and the first after an idle stop, starts the session's container and waits up to about
+two minutes for it to become ready. Only the `direct` transport is offered; other transports return the hosting
+error for that harness. The response has `destination: "container"`, `transport: "direct"`, the connection broker's
+`url` like shared sessions, and `ahpSessionId` equal to the session ID; the container accepts only connections the
+broker forwards. Closing retires the container and releases its retained volume.
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| `404` | `harness_not_found` | The harness or version is not published |
+| `409` | `hosting_unavailable` | The deployment lacks the host the harness's mode needs (session containers for `isolated`), or the transport needs another host |
+| `422` | `policy_rejected`, `hosting_mode_not_allowed` | A batch harness, or a harness that the effective policy rejects |
+| `429` | `quota_exceeded` | No container capacity for the deployment or principal, or the retained-session limit |
+| `503` | `container_starting` | The container is still starting; retry the connection |
+| `503` | `container_unavailable` | The container stopped before becoming ready; the message names the reason |
+
+Container sessions have no delegated jobs, so their jobs route returns an empty list.
+
 ## Hosting views
 
 `GET /v1/hosting` and `GET /v1/hosting/{harness}` report where each published harness's agent loop would run and
@@ -217,18 +246,19 @@ whether this deployment can host it, from the harness's optional `hosting` block
 policy plus any override), and the hosts the deployment provides. They are read-only: they create no session, issue
 no connection material, and change nothing. Any authenticated principal can read them; transports are evaluated for
 the calling principal. The [hosting modes plan](HOSTING-MODES-PLAN.md) describes the modes. Today conversations run
-in `isolated` mode on the optional [demo host](#experimental-demo-host-control) and in `shared` mode on the local
-hybrid worker ([shared conversations](#experimental-shared-conversations)); batch harnesses run as jobs.
+in `isolated` mode on the optional [demo host](#experimental-demo-host-control) or in
+[session containers](#session-containers), and in `shared` mode on the local hybrid worker
+([shared conversations](#experimental-shared-conversations)); batch harnesses run as jobs.
 Implemented in [hosting-routes.ts](../src/agent-api/src/hosting-routes.ts) with contracts in
 [hosting.ts](../contracts/src/hosting.ts).
 
 `GET /v1/hosting` returns `{ hosts, harnesses }`. `hosts` lists what the deployment provides: the batch
 `executor` (`pool` or `dedicated`), `isolatedHosts` (the managed demo host and the harness it serves, with its
-transports), `sharedWorker` (the local hybrid worker), and later `sessionContainers` and `workerContainers`. Each
-host lists the harness `features` it implements: the shared worker implements `remote-mcp`, `approval-modes`, and
-`custom-approval`; the demo host implements none, and no host implements handoffs, promotion, or workers yet.
-GitHub-native demo hosting runs Copilot's own sessions rather than a harness, so it adds no isolated host. Owner
-principals are not returned.
+transports), `sharedWorker` (the local hybrid worker), `sessionContainers` (per-session containers, when enabled), and later
+`workerContainers`. Each host lists the harness `features` it implements: the shared worker implements `remote-mcp`,
+`approval-modes`, and `custom-approval`; the demo host and session containers implement none, and no host implements
+handoffs, promotion, or workers yet. GitHub-native demo hosting runs Copilot's own sessions rather than a harness, so
+it adds no isolated host. Owner principals are not returned.
 
 Each harness view (latest version, or `?version=` on the single-harness route) contains:
 
