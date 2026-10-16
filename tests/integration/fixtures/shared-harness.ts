@@ -47,7 +47,10 @@ export async function sharedRegistry(
 
 export function sharedAdmission(
   registry: SharedRegistry,
-  options: { sessionLimits?: Partial<SharedSessionLimits>; delegation?: string[]; deployment?: HostingDeployment; handlers?: Iterable<string> } = {},
+  options: {
+    sessionLimits?: Partial<SharedSessionLimits>; delegation?: string[]; deployment?: HostingDeployment; handlers?: Iterable<string>;
+    sessionContainers?: { idleSeconds: number };
+  } = {},
 ): SharedAdmission {
   return new SharedAdmission({
     configuration: SharedConfiguration.fixed(registry),
@@ -55,5 +58,6 @@ export function sharedAdmission(
     delegationHarnesses: options.delegation ?? [],
     permissionHandlers: new Set(options.handlers ?? PERMISSION_HANDLERS.keys()),
     ...(options.deployment ? { deployment: options.deployment } : {}),
+    ...(options.sessionContainers ? { sessionContainers: options.sessionContainers } : {}),
   });
 }

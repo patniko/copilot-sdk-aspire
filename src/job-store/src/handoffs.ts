@@ -285,13 +285,16 @@ export class HandoffStore {
   }
 
   /**
-   * Links an accepted handoff into a container to the promotion of kind `handoff` that moves the conversation there.
-   * From then on only that promotion's outcome settles the handoff. Linking the same promotion again is a no-op.
+   * Links an accepted handoff into a container to the promotion of kind `handoff` that this handoff requested (request
+   * key `handoff:<id>`) to move the conversation there. From then on only that promotion's outcome settles the handoff.
+   * Linking the same promotion again is a no-op.
    */
   async attachMove(id: string, promotionId: string): Promise<HandoffRecord> {
     const row = (await this.pool.query<HandoffRow>(
-      `UPDATE session_handoffs SET promotion_id=$2,updated_at=clock_timestamp()
-       WHERE id=$1 AND state='accepted' AND to_placement='container' AND (promotion_id IS NULL OR promotion_id=$2) RETURNING *`,
+      `UPDATE session_handoffs h SET promotion_id=$2,updated_at=clock_timestamp()
+       WHERE h.id=$1 AND h.state='accepted' AND h.to_placement='container' AND (h.promotion_id IS NULL OR h.promotion_id=$2)
+         AND EXISTS (SELECT 1 FROM session_promotions p WHERE p.id=$2 AND p.session_id=h.session_id AND p.kind='handoff' AND p.request_key='handoff:' || h.id)
+       RETURNING h.*`,
       [id, promotionId])).rows[0];
     if (!row) throw new StoreError("invalid_state", "The handoff cannot take this move.");
     return record(row);

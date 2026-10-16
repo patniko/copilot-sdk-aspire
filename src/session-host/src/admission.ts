@@ -8,6 +8,7 @@ import {
   WORKER_TOOLS,
 } from "@copilot-agent/contracts";
 import { canonicalJson, handoffToolName, hostingError, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
+import { containerHandoffTarget, type ContainerHandoffTarget } from "./handoff-container.js";
 import type { SharedConfiguration, SharedRegistry } from "./configuration.js";
 import type { HandoffOffer } from "./handoff-tools.js";
 
@@ -66,6 +67,8 @@ export interface SharedHandoffPlan {
   approval: HostingApproval;
   /** The target's admitted session definition. A handoff never raises the session's aggregate ceilings. */
   definition: SharedSessionDefinition;
+  /** For a target that runs in its own session container: its snapshot, size, and container-rule definition. */
+  container?: ContainerHandoffTarget;
 }
 
 /** A handoff check failed before any effect; the source stays in control. */
@@ -82,6 +85,8 @@ export interface SharedAdmissionOptions {
   /** Custom permission handlers this worker implements. */
   permissionHandlers: ReadonlySet<string>;
   deployment?: HostingDeployment;
+  /** The session containers this worker can move conversations into, for handoff targets that run in one: their idle stop. */
+  sessionContainers?: { idleSeconds: number };
 }
 
 const DELEGATION_BINDINGS = new Set<string>(SHARED_WORKER_BINDINGS);
@@ -185,9 +190,15 @@ export class SharedAdmission {
       throw new HandoffRefusal("handoff_not_allowed", `The operator policy does not allow '${history}' history for ${source.name}'s handoffs.`);
     }
     let admitted: SharedSessionDefinition;
+    let container: ContainerHandoffTarget | undefined;
     try {
-      const evaluation = this.#evaluate(registry, target, targetPolicy, input.principal);
-      admitted = this.#admitted(registry, snapshot, targetPolicy, evaluation.mode);
+      if (placement === "container") {
+        container = this.#containerTarget(registry, snapshot, targetPolicy, input.principal, input.session.limits);
+        admitted = container.definition;
+      } else {
+        const evaluation = this.#evaluate(registry, target, targetPolicy, input.principal);
+        admitted = this.#admitted(registry, snapshot, targetPolicy, evaluation.mode);
+      }
     } catch (error) {
       if (!(error instanceof HttpError)) throw error;
       const prerequisite = HostingPrerequisite.safeParse((error.details as { prerequisite?: unknown } | undefined)?.prerequisite);
@@ -195,6 +206,9 @@ export class SharedAdmission {
         ? new HandoffRefusal("handoff_unavailable", error.message, prerequisite.success ? prerequisite.data : undefined)
         : new HandoffRefusal("handoff_not_allowed", error.message);
     }
+    const resolved = { name: target.name, version: target.version, digest: snapshot.digest, mode };
+    // Session-container rules already keep the aggregate budget and run no jobs.
+    if (container) return { target: resolved, placement, history, approval, definition: container.definition, container };
     // A handoff never raises the session's aggregate ceilings; per-turn limits are the target's.
     const current = input.session.limits;
     const tokenBudget = Math.min(current.tokenBudget, admitted.limits.tokenBudget);
@@ -206,7 +220,27 @@ export class SharedAdmission {
         maxContinuations: Math.min(current.maxContinuations, admitted.limits.maxContinuations),
       },
     });
-    return { target: { name: target.name, version: target.version, digest: snapshot.digest, mode }, placement, history, approval, definition };
+    return { target: resolved, placement, history, approval, definition };
+  }
+
+  /**
+   * Admits a handoff target that runs in its own session container as `POST /v1/sessions` admits it there: its hosting
+   * under current policy and this deployment, then its definition under session-container rules. Throws the hosting
+   * problem, or `hosting_unavailable` when this worker cannot move conversations into session containers.
+   */
+  #containerTarget(
+    registry: SharedRegistry, snapshot: HarnessSnapshot, policy: ExecutionPolicy, principal: string, current: SharedSessionLimits,
+  ): ContainerHandoffTarget {
+    const evaluation = this.#evaluation(registry, snapshot.definition, policy, principal);
+    const problem = evaluation.problems[0] ?? connectionProblem(evaluation, "direct");
+    if (problem) throw hostingError(problem);
+    if (evaluation.placement !== "container" || !this.#deployment.sessionContainers || !this.options.sessionContainers) {
+      throw new HttpError(409, "hosting_unavailable", `'${snapshot.definition.name}' runs in a session container, and this worker cannot move conversations into one.`,
+        { prerequisite: { kind: "host", name: "session-containers" } });
+    }
+    return containerHandoffTarget({
+      snapshot, policy, ceilings: this.options.sessionLimits, idleSeconds: this.options.sessionContainers.idleSeconds, current,
+    });
   }
 
   /** The predefined targets an activation at `from` offers, with the approval and resolved history of each. */
@@ -215,7 +249,10 @@ export class SharedAdmission {
     return (definition.hosting?.handoffs ?? []).map((entry) => {
       const target = registry.harnesses.get(entry.harness)?.[0];
       const to = target ? startingPlacement(hostingModeOf(target.definition)) : from;
-      return { harness: entry.harness, description: entry.description, approval: entry.approval ?? "ask", history: handoffHistoryFor(entry.history, from, to) };
+      return {
+        harness: entry.harness, description: entry.description, approval: entry.approval ?? "ask", history: handoffHistoryFor(entry.history, from, to),
+        ...(to === "container" && from !== "container" ? { container: true } : {}),
+      };
     });
   }
 

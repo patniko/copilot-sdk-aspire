@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionRequest, Tool } from "@github/copilot-sdk";
 import type { HandoffRecord } from "@copilot-agent/job-store";
-import { HandoffRefusal, type SharedApprovalPlan } from "../../src/session-host/src/admission.js";
+import { HandoffRefusal, sharedWorkerDeployment, type SharedApprovalPlan } from "../../src/session-host/src/admission.js";
 import { handoffTools, type HandoffOffer } from "../../src/session-host/src/handoff-tools.js";
 import { workspaceDraftsHandler } from "../../src/session-host/src/permission-handlers.js";
 import { SharedPermissionPolicy, type ToolRule } from "../../src/session-host/src/permissions.js";
@@ -35,6 +35,12 @@ describe("transfer tools", () => {
     expect(run).not.toHaveBeenCalled();
     expect(await invoke(tools[0]!.tool, { reason: "Needs a checkout.", summary: "The person wants a fix." })).toBe("Handoff accepted.");
     expect(run).toHaveBeenCalledWith(offer(), { reason: "Needs a checkout.", summary: "The person wants a fix." }, expect.objectContaining({ toolCallId: "call-1" }));
+    // A target in its own container says the move is one way, to the model and in the person's prompt.
+    const [moving] = handoffTools([offer({ container: true })], context, run);
+    expect(moving!.tool.description).toContain("moves into its own container");
+    expect(moving!.tool.description).toContain("never comes back here");
+    expect(moving!.rule).toEqual({ handoff: { approval: "ask", prompt: expect.stringContaining("never comes back here") } });
+    expect(tools[0]!.tool.description).not.toContain("own container");
   });
 
   it("ask a person in every approval mode, and never let the judge or a custom handler approve", async () => {
@@ -111,9 +117,29 @@ describe("handoff admission on the shared worker", () => {
     expect(checked.definition.limits.turnTokenBudget).toBeLessThanOrEqual(50_000);
     expect(await admission.handoffOffers(triage.definition, "shared")).toEqual([
       { harness: "notes", description: "Notes.", approval: "allow", history: "full" },
-      { harness: "coder", description: "Code.", approval: "ask", history: "summary" },
+      { harness: "coder", description: "Code.", approval: "ask", history: "summary", container: true },
       { harness: "summarized", description: "Summaries.", approval: "ask", history: "summary" },
     ]);
+  });
+
+  it("admits a target that runs in its own container when this worker can move conversations there", async () => {
+    const registry = await sharedRegistry([triage, notes, coder, summarized], policy);
+    const deployment = sharedWorkerDeployment({ promotion: true });
+    const admission = sharedAdmission(registry, { sessionLimits: { tokenBudget: 400_000, maxJobs: 8 }, deployment, sessionContainers: { idleSeconds: 90 } });
+    const session = await admission.admit("alice", { harness: "triage", label: "" });
+    const checked = await admission.handoff({ principal: "alice", session: { ...session, limits: { ...session.limits, tokenBudget: 70_000 } }, from: "shared", target: "coder" });
+    expect(checked).toMatchObject({
+      target: { name: "coder", digest: coder.digest, mode: "isolated" }, placement: "container", history: "summary", approval: "ask",
+      container: { snapshot: coder, size: "small" },
+    });
+    // Session-container rules: no delegated jobs, the container's idle stop, and never a larger aggregate budget.
+    expect(checked.definition).toMatchObject({
+      harness: { name: "coder", mode: "isolated" }, limits: { tokenBudget: 70_000, maxJobs: 0, maxContinuations: 0, idleSeconds: 90 },
+    });
+    expect(checked.container!.definition).toEqual(checked.definition);
+    // Session containers deployed, but this worker cannot move conversations into them.
+    expect(await refusal(sharedAdmission(registry, { deployment }).handoff({ principal: "alice", session, from: "shared", target: "coder" })))
+      .toMatchObject({ code: "handoff_unavailable", prerequisite: { kind: "host", name: "session-containers" } });
   });
 
   it("refuses unlisted, unpublished, disallowed, unavailable, one-way, and out-of-ceiling targets with explicit codes", async () => {
@@ -123,7 +149,7 @@ describe("handoff admission on the shared worker", () => {
     expect(await refusal(admission.handoff({ principal: "alice", session, from: "shared", target: "other" }))).toMatchObject({ code: "handoff_not_allowed" });
     // An isolated target needs session containers, which this worker's deployment lacks.
     expect(await refusal(admission.handoff({ principal: "alice", session, from: "shared", target: "coder" })))
-      .toMatchObject({ code: "handoff_unavailable", prerequisite: { kind: "host" } });
+      .toMatchObject({ code: "handoff_unavailable", prerequisite: { kind: "host", name: "isolated-host" } });
     // From a container, a shared target is refused before anything else.
     expect(await refusal(admission.handoff({ principal: "alice", session, from: "container", target: "notes" }))).toMatchObject({ code: "handoff_one_way" });
     expect(await refusal(admission.handoff({ principal: "alice", session, from: "shared", target: "notes", pinned: { version: "2.0.0", digest: notes.digest } })))

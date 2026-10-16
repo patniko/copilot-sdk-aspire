@@ -11,6 +11,8 @@ export interface HandoffOffer {
   description: string;
   approval: HostingApproval;
   history: HandoffHistory;
+  /** The target runs in its own session container: the conversation moves there, one way. */
+  container?: boolean;
 }
 
 /** Performs one transfer after its arguments validated: checks, approval, and the ledger. Resolves with the model's text. */
@@ -31,18 +33,19 @@ export function handoffTools(offers: readonly HandoffOffer[], context: SharedAct
   return offers.map((offer): SharedTool => {
     const schema = handoffArguments(offer.history);
     const name = handoffToolName(offer.harness);
+    const moves = offer.container ? " The conversation moves into its own container, with a shell and the workspace files, and never comes back here." : "";
     return {
       rule: {
         handoff: {
           approval: offer.approval,
-          prompt: `Transfer this conversation to the ${offer.harness} harness (${offer.history} history). It takes over from the current agent.`,
+          prompt: `Transfer this conversation to the ${offer.harness} harness (${offer.history} history). It takes over from the current agent.${moves}`,
         },
       },
       tool: {
         name,
         description: [
           offer.description,
-          `Transfers control of this conversation to the '${offer.harness}' harness${offer.approval === "ask" ? " after the person approves" : ""}; it takes over when your turn ends.`,
+          `Transfers control of this conversation to the '${offer.harness}' harness${offer.approval === "ask" ? " after the person approves" : ""}; it takes over when your turn ends.${moves}`,
           HISTORY_NOTE[offer.history],
         ].join(" ").slice(0, 2000),
         parameters: z.toJSONSchema(schema),

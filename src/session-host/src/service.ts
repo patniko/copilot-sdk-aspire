@@ -10,7 +10,8 @@ import {
   type HandoffRecord, type HandoffRequest, type PromotionStore, type SessionFileLease, type SharedSessionRecord, type SharedTurn,
 } from "@copilot-agent/job-store";
 import { handoffToolName, HttpError, readServerKey, type AhpProxyTarget } from "@copilot-agent/service-defaults";
-import { HandoffRefusal, type SharedActivationPlan, type SharedAdmission, type SharedApprovalPlan } from "./admission.js";
+import { HandoffRefusal, type SharedActivationPlan, type SharedAdmission, type SharedApprovalPlan, type SharedHandoffPlan } from "./admission.js";
+import { HandoffMoves } from "./handoff-container.js";
 import type { HandoffOffer } from "./handoff-tools.js";
 import { sharedSessionSettings } from "./harness-session.js";
 import { residencyVictim } from "./residency.js";
@@ -107,6 +108,8 @@ export class SharedSessionService {
   #stopping = false;
   #healthy = false;
   readonly #promotions?: SharedPromotions;
+  /** Moves into handoff targets' own session containers, when this worker can start them. */
+  readonly #moves?: HandoffMoves;
 
   constructor(private readonly options: SharedServiceOptions) {
     options.principals = SharedPrincipalBindings.parse(options.principals);
@@ -131,6 +134,13 @@ export class SharedSessionService {
         ...(options.promotion.pollMs ? { pollMs: options.promotion.pollMs } : {}),
         ...(options.promotion.readyTimeoutMs ? { readyTimeoutMs: options.promotion.readyTimeoutMs } : {}),
       });
+      if (options.handoffs) {
+        this.#moves = new HandoffMoves({
+          handoffs: options.handoffs, ledger: options.promotion.store, driver: this.#promotions, limits: options.limits, report: options.report,
+          settled: (handoff) => this.#moveSettled(handoff),
+          ...(options.promotion.pollMs ? { pollMs: options.promotion.pollMs } : {}),
+        });
+      }
     }
   }
 
@@ -246,6 +256,9 @@ export class SharedSessionService {
       throw new HttpError(409, "promotion_unavailable", "This deployment cannot start session containers for promotion.",
         { prerequisite: { kind: "host", name: "session-containers" } });
     }
+    if (await this.options.handoffs?.open(id)) {
+      throw new HttpError(409, "handoff_in_progress", "The conversation is being handed off to another harness; it cannot be promoted now.");
+    }
     const latest = await this.options.promotion.store.latest(principal, id);
     if (latest && (latest.state === "committed" || row.placement !== "shared")) {
       return PromotionResponse.parse({ sessionId: id, created: false, promotion: latest.view });
@@ -306,9 +319,14 @@ export class SharedSessionService {
     const pending = await this.options.handoffs?.open(id);
     if (pending) {
       await this.#cutover(pending.id);
+      // A move into the target's own container is under way: neither harness runs here until it settles.
+      if ((await this.options.handoffs!.byId(pending.id))?.state === "accepted") {
+        throw new HttpError(409, "handoff_in_progress", "The conversation is moving to its handoff target; request a connection again shortly.");
+      }
       if (this.#residents.get(id)?.connection || this.#opening.has(id)) return this.#opening.get(id);
       row = await this.get(principal, id);
       if (row.view.closed) throw new StoreError("not_found", "The shared conversation is closed.");
+      if (row.placement !== "shared") throw new StoreError("not_found", "The conversation runs in a session container; connect through the application API.");
     }
     const operation = this.activate(row);
     this.#opening.set(id, operation);
@@ -482,10 +500,25 @@ export class SharedSessionService {
     });
   }
 
+  /**
+   * Checks a handoff from this shared conversation now, before any effect: current policy and this deployment through
+   * admission, and for a target that runs in its own container, this worker's moves and the deployment's capacity.
+   */
+  async #checkHandoff(row: SharedSessionRecord, target: string): Promise<SharedHandoffPlan> {
+    const checked = await this.options.admission.handoff({ principal: row.principal, session: row.definition, from: "shared", target });
+    if (checked.placement === "container") {
+      if (!this.#moves) {
+        throw new HandoffRefusal("handoff_unavailable", "This worker cannot move conversations into session containers.", { kind: "host", name: "session-containers" });
+      }
+      if (!(await this.#moves.hasCapacity(row.principal))) throw new HandoffRefusal("handoff_unavailable", "No session container capacity is available now.");
+    }
+    return checked;
+  }
+
   /** Why a handoff would be refused now, before a person is asked to approve it; undefined when it can go ahead. */
   async #handoffPrecheck(row: SharedSessionRecord, offer: HandoffOffer): Promise<string | undefined> {
     try {
-      await this.options.admission.handoff({ principal: row.principal, session: row.definition, from: "shared", target: offer.harness });
+      await this.#checkHandoff(row, offer.harness);
       return undefined;
     } catch (error) {
       if (error instanceof HandoffRefusal) return `Handoff refused (${error.code}): ${error.message} You remain in control of the conversation.`;
@@ -505,9 +538,9 @@ export class SharedSessionService {
     if (recorded) return handoffOutcome(recorded);
     if (resident.handoff) throw new Error("This conversation is already being handed off; end your turn.");
     let refusal: HandoffRequest["refusal"];
-    let checked: Awaited<ReturnType<SharedAdmission["handoff"]>> | undefined;
+    let checked: SharedHandoffPlan | undefined;
     try {
-      checked = await this.options.admission.handoff({ principal: row.principal, session: row.definition, from: "shared", target: offer.harness });
+      checked = await this.#checkHandoff(row, offer.harness);
     } catch (error) {
       if (!(error instanceof HandoffRefusal)) throw error;
       refusal = { code: error.code, message: error.message, ...(error.prerequisite ? { prerequisite: error.prerequisite } : {}) };
@@ -556,16 +589,19 @@ export class SharedSessionService {
   }
 
   /**
-   * The same-placement cutover: re-check the pinned target under current policy, commit the target's segment in the
-   * ledger (the broker then closes attached clients with "moved"), close the source's activation, and open the
-   * target's, which prepares storage and receives the handoff notice as its first turn. A failed re-check fails the
-   * handoff and leaves the source in control.
+   * The cutover once the source's turn has ended: re-check the pinned target under current policy, then either commit
+   * the target's segment in the ledger for a target on this worker (the broker then closes attached clients with
+   * "moved"; the source's activation closes and the target's opens, preparing storage and receiving the handoff notice
+   * as its first turn), or start the move into the target's own container. A failed re-check fails the handoff and
+   * leaves the source in control.
    */
   async #runCutover(handoffId: string): Promise<void> {
     const handoffs = this.options.handoffs;
     const handoff = await handoffs?.byId(handoffId);
     if (!handoffs || !handoff || handoff.state !== "accepted" || handoff.fromPlacement !== "shared") return;
     const { sessionId: id, principal } = handoff;
+    // A move already started settles from its promotion, here or after a restart.
+    if (handoff.promotionId) return this.#moves?.watch(handoffId);
     // The turn that accepted the handoff is still running; its idle event starts the cutover again.
     if (this.#scheduler.busy(id) && this.#residents.has(id)) return;
     const row = await this.options.store.get(principal, id);
@@ -579,7 +615,7 @@ export class SharedSessionService {
     if (!row || row.view.closed || row.placement !== "shared" || row.view.segment.generation !== handoff.fromGeneration) {
       return release("session_changed", "The conversation closed or moved before the handoff completed.");
     }
-    let checked: Awaited<ReturnType<SharedAdmission["handoff"]>>;
+    let checked: SharedHandoffPlan;
     try {
       checked = await this.options.admission.handoff({
         principal, session: row.definition, from: "shared", target: handoff.target.name,
@@ -589,8 +625,31 @@ export class SharedSessionService {
       if (!(error instanceof HandoffRefusal)) throw error;
       return release(error.code, error.message);
     }
-    if (checked.placement !== "shared" || checked.history !== handoff.history) {
-      return release("handoff_unavailable", "The target can no longer start in this conversation's placement with the accepted history.");
+    if (checked.placement !== handoff.toPlacement || checked.history !== handoff.history) {
+      return release("handoff_unavailable", "The target can no longer start in the accepted placement with the accepted history.");
+    }
+    if (checked.container) {
+      if (!this.#moves) return release("handoff_unavailable", "This worker cannot move conversations into session containers.");
+      const { workspacePath } = await this.#runtime.storageAreas(id);
+      try {
+        await this.#moves.start(handoff, {
+          target: checked.container,
+          runtimeSessionId: handoff.history === "full" ? row.view.segment.ahpSessionId : randomUUID(),
+          notice: handoffNotice({
+            id: handoff.id, source: handoff.source.name, target: handoff.target.name, history: handoff.history, payload: handoff.payload,
+            move: { previousWorkspace: workspacePath },
+          }),
+        });
+      } catch (error) {
+        // The ledger refused the move before it started: the handoff fails and the source stays in control.
+        const current = await handoffs.byId(handoffId);
+        if (error instanceof StoreError && current?.state === "accepted" && !current.promotionId) {
+          return release("handoff_failed", `The move into the target's container could not start: ${error.message}`);
+        }
+        throw error;
+      }
+      this.options.report("session.handoff_moving", id);
+      return;
     }
     const ahpSessionId = handoff.history === "full" ? row.view.segment.ahpSessionId : randomUUID();
     try {
@@ -609,6 +668,16 @@ export class SharedSessionService {
     if (this.#stopping) return;
     await this.ensure(principal, id);
     this.#notify(principal, id);
+  }
+
+  /**
+   * A move into a target's own container settled. After a commit the conversation runs there and the container sends
+   * the notice; after a failure the source is in control again and is told why.
+   */
+  #moveSettled(handoff: HandoffRecord): void {
+    const resident = this.#residents.get(handoff.sessionId);
+    if (resident?.handoff === handoff.id) resident.handoff = undefined;
+    if (handoff.state === "failed") this.#notify(handoff.principal, handoff.sessionId);
   }
 
   /** Delivers a pending handoff notice to the session in the background: the target's first turn, or a failure to the source. */
@@ -691,9 +760,9 @@ export class SharedSessionService {
       }
     }
     // A handoff whose turn ended without its cutover (a lost activation or a restart) moves now, and notices that had to
-    // wait for a busy conversation are retried.
+    // wait for a busy conversation are retried. Only principals this worker serves are its own.
     for (const handoff of await this.options.handoffs?.pending("shared") ?? []) {
-      if (this.#cutovers.has(handoff.id) || this.busy(handoff.sessionId)) continue;
+      if (!this.options.principals[handoff.principal] || this.#cutovers.has(handoff.id) || this.busy(handoff.sessionId)) continue;
       void this.#cutover(handoff.id).catch(() => this.options.report("session.handoff_cutover_failed", handoff.sessionId));
     }
     for (const [id, principal] of this.#noticeRetries) {
@@ -711,6 +780,7 @@ export class SharedSessionService {
     await Promise.allSettled([...this.#cutovers.values(), ...this.#notices.values()]);
     // Open promotions and moves stay recorded; the next run of this worker resumes them from their last step.
     await this.#promotions?.stop();
+    await this.#moves?.stop();
     try { await Promise.all([...this.#residents.keys()].map((id) => this.deactivate(id))); }
     finally { await this.#runtime.stop(); }
   }

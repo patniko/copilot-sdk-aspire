@@ -41,7 +41,8 @@ for (const name of delegationHarnesses) {
   const harness = initial.harnesses.get(name)?.[0];
   if (!harness || harness.definition.interaction === "conversation") throw new Error("SHARED_JOB_HARNESSES must identify published batch harnesses.");
 }
-// With session containers deployed, `promotable` conversations can move into them one way.
+// With session containers deployed, `promotable` conversations can move into them one way, as can handoffs to targets
+// that run in their own container.
 const sessionSettings = optionalEnv("SESSION_CONTAINER_SETTINGS", "");
 const sessionContainers = sessionSettings ? SessionContainerSettings.parse(JSON.parse(sessionSettings)) : undefined;
 const admission = new SharedAdmission({
@@ -50,6 +51,7 @@ const admission = new SharedAdmission({
   delegationHarnesses,
   permissionHandlers: new Set(PERMISSION_HANDLERS.keys()),
   deployment: sharedWorkerDeployment({ promotion: !!sessionContainers, workerContainers: !!workerContainers }),
+  ...(sessionContainers ? { sessionContainers: { idleSeconds: sessionContainers.idleSeconds } } : {}),
 });
 const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);

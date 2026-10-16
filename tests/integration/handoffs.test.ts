@@ -189,8 +189,15 @@ describe("handoff ledger", () => {
     for (const outcome of ["committed", "failed"] as const) {
       const owner = await session();
       const { handoff } = await handoffs.request(request(owner, { target: coder, toPlacement: "container" }));
+      // Only the handoff's own move, recorded under its request key with kind `handoff`, can settle it.
+      const stray = await promotions.request({
+        principal: owner.principal, sessionId: owner.id, source: "tool", requestKey: "stray", size: "small", resources,
+      });
+      await expect(handoffs.attachMove(handoff.id, stray.promotion.id)).rejects.toMatchObject({ code: "invalid_state" });
+      await promotions.fail(stray.promotion.id, "promotion_not_allowed", "Not this one.");
       const { promotion } = await promotions.request({
         principal: owner.principal, sessionId: owner.id, source: "tool", requestKey: `handoff:${handoff.id}`, size: "small", resources,
+        kind: "handoff", history: false,
       });
       expect(await handoffs.attachMove(handoff.id, promotion.id)).toMatchObject({ state: "accepted", promotionId: promotion.id });
       expect(await handoffs.attachMove(handoff.id, promotion.id)).toMatchObject({ promotionId: promotion.id });
@@ -207,7 +214,8 @@ describe("handoff ledger", () => {
         continue;
       }
       // The promotion's cutover, as PromotionStore.commit records a move of kind 'handoff'.
-      const runtime = randomUUID();
+      const runtime = promotion.runtimeSessionId;
+      expect(runtime).not.toBe(owner.id);
       await shared.transaction(async (db) => {
         await db.query("UPDATE shared_sessions SET placement='container',placement_generation=2 WHERE id=$1", [owner.id]);
         await db.query(
