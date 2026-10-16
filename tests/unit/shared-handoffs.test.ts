@@ -59,8 +59,8 @@ describe("transfer tools", () => {
       expect(policy.preToolUse("transfer_to_notes"), approval.mode).toEqual({ permissionDecision: "allow" });
       for (const kind of ["hook", "custom-tool"] as const) {
         const request = { kind, toolName: "transfer_to_coding_agent", toolArgs: {}, args: {} } as unknown as PermissionRequest;
-        expect(await policy.handle(request, { sessionId: "session", toolArgs: {} }), `${approval.mode} ${kind}`).toEqual({ kind: "no-result" });
-        expect(await policy.handle({ ...request, toolName: "transfer_to_notes" } as PermissionRequest, { sessionId: "session", toolArgs: {} })).toEqual({ kind: "approve-once" });
+        expect(await policy.handle(request, { sessionId: "session" }), `${approval.mode} ${kind}`).toEqual({ kind: "no-result" });
+        expect(await policy.handle({ ...request, toolName: "transfer_to_notes" } as PermissionRequest, { sessionId: "session" })).toEqual({ kind: "approve-once" });
       }
     }
     expect(judge).not.toHaveBeenCalled();
