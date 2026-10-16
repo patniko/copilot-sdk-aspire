@@ -126,6 +126,9 @@ describe("policy page model", () => {
     expect(formatPolicyValue("hosting", { modes: ["isolated", "shared"], defaultSize: "small", promotion: { approval: ["ask"] } })).toBe(
       "modes isolated, shared; default size small; promotion ask",
     );
+    expect(formatPolicyValue("hosting", { handoffs: { approval: ["ask", "allow"], history: ["summary", "none"] } })).toBe(
+      "modes isolated; handoff approval ask, allow; handoff history summary, none",
+    );
     const policy = { ...base, hosting: { modes: ["shared" as const] } };
     expect(differencesFromBase("hosting", policy, base)).toEqual([
       { field: "hosting", label: "Hosting", base: "defaults (isolated only)", value: "modes shared" },
@@ -140,6 +143,7 @@ describe("policy page model", () => {
       defaultSize: "small",
       workers: { maxConcurrentPerSession: 4, maxPerSession: 16, maxPerPrincipal: 8, idleSeconds: 900, maxLifetimeSeconds: 3600, allowInheritedAuthority: false, allowCoordinatorAnswers: false },
       promotion: { approval: ["ask"] },
+      handoffs: { approval: ["ask"], history: ["full", "summary", "none"] },
       crafting: { templates: {} },
     };
     expect(effectiveHosting(undefined, defaults)).toEqual(defaults);
@@ -147,6 +151,7 @@ describe("policy page model", () => {
     expect(custom.defaultSize).toBe("tiny");
     expect(custom.workers).toEqual({ ...defaults.workers, maxPerSession: 2 });
     expect(custom.modes).toEqual(["isolated"]);
+    expect(effectiveHosting({ handoffs: { history: ["none"] } }, defaults).handoffs).toEqual({ approval: ["ask"], history: ["none"] });
     expect(smallestSize({ b: { cpus: 1, memoryMiB: 1024 }, a: { cpus: 1, memoryMiB: 1024 } })).toBe("a");
   });
 

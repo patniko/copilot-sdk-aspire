@@ -26,6 +26,7 @@ const defaults: EffectiveHostingPolicy = {
   defaultSize: "small",
   workers: { maxConcurrentPerSession: 4, maxPerSession: 16, maxPerPrincipal: 8, idleSeconds: 900, maxLifetimeSeconds: 3600, allowInheritedAuthority: false, allowCoordinatorAnswers: false },
   promotion: { approval: ["ask"] },
+  handoffs: { approval: ["ask"], history: ["full", "summary", "none"] },
   crafting: { templates: {} },
 };
 
@@ -132,5 +133,30 @@ describe("hosting ceilings card", () => {
     expect(toggle(html, "Let coordinators answer worker questions")).toContain('checked=""');
     const locked = renderToStaticMarkup(<HostingCeilingsCard {...shell} locked policy={custom} defaults={defaults} bindings={[]} />);
     expect(locked).toContain('<fieldset disabled=""');
+  });
+
+  it("shows handoff approval and history ceilings, with their defaults, and keeps one of each allowed", () => {
+    /** The markup from `heading` to the next control group. */
+    const group = (html: string, heading: string) => {
+      const start = html.indexOf(`>${heading}<`);
+      expect(start).toBeGreaterThan(-1);
+      const end = html.indexOf('class="label !mb-0"', start + heading.length);
+      return html.slice(start, end < 0 ? undefined : end);
+    };
+    const defaultsHtml = renderToStaticMarkup(<HostingCeilingsCard {...shell} policy={policy} defaults={defaults} bindings={[]} />);
+    const approvals = group(defaultsHtml, "Handoff approval");
+    expect(toggle(approvals, "Ask a person")).toContain('checked=""');
+    expect(toggle(approvals, "Ask a person")).toContain('disabled=""');
+    expect(toggle(approvals, "Automatic")).not.toContain('checked=""');
+    expect(approvals).toContain("the safety judge and handlers cannot");
+    const histories = group(defaultsHtml, "Handoff history");
+    for (const label of ["Full", "Summary", "None"]) {
+      expect(toggle(histories, label), label).toContain('checked=""');
+      expect(toggle(histories, label), label).not.toContain('disabled=""');
+    }
+    const narrowed = renderToStaticMarkup(<HostingCeilingsCard {...shell} policy={{ ...policy, hosting: { handoffs: { approval: ["ask", "allow"], history: ["summary"] } } }} defaults={defaults} bindings={[]} />);
+    expect(toggle(group(narrowed, "Handoff approval"), "Automatic")).toContain('checked=""');
+    expect(toggle(group(narrowed, "Handoff history"), "Summary")).toContain('disabled=""');
+    expect(toggle(group(narrowed, "Handoff history"), "Full")).not.toContain('checked=""');
   });
 });

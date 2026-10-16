@@ -26,7 +26,7 @@ async function firstOf(cli: QualificationCli, markers: string[], timeout: number
   }
 }
 
-it.skipIf(!enabled)("hands a shared triage conversation to another shared harness with summary history after the person approves in the CLI", async () => {
+it.skipIf(!enabled)("hands a shared triage conversation to another shared harness with summary history once the person approves in the CLI, and not when they decline", async () => {
   await localRuntimeArtifacts();
   const { credential, id: githubUserId } = await testGitHubAccount();
   const pool = new pg.Pool({ connectionString: inject("databaseUrl") });
@@ -47,7 +47,9 @@ it.skipIf(!enabled)("hands a shared triage conversation to another shared harnes
       const last = inspect.lastUser(request);
       if (serving(request) === "triage") {
         if (!last.includes("HAND ME OFF")) return { content: `TRIAGE_NOTED ${codeword}` };
-        if (request.messages.at(-1)?.role === "tool") return { content: "TRIAGE_FINISHED" };
+        if (request.messages.at(-1)?.role === "tool") {
+          return { content: inspect.results(request).at(-1)?.includes("Handoff accepted") ? "TRIAGE_FINISHED" : "TRIAGE_STAYED" };
+        }
         return { call: { name: "transfer_to_cli_notes", arguments: { reason: "The person wants notes kept.", summary: `SUMMARY_FROM_TRIAGE: the codeword is ${codeword}.` } } };
       }
       if (serving(request) === "notes") return { content: last.includes("[handoff:") ? "NOTES_TOOK_OVER" : "NOTES_ANSWERED" };
@@ -76,10 +78,27 @@ it.skipIf(!enabled)("hands a shared triage conversation to another shared harnes
     await triage.send(`Remember ${codeword}.`);
     await triage.waitFor(`TRIAGE_NOTED ${codeword}`, 120_000);
 
-    // The transfer asks the person in the CLI; they approve it.
+    // The transfer asks the person in the CLI. First they decline: control stays with triage and nothing is recorded.
     await triage.send("HAND ME OFF to the notes harness.");
-    expect(await firstOf(triage, ["Approve once", "TRIAGE_FINISHED"], 120_000)).toBe("Approve once");
+    expect(await firstOf(triage, ["Approve once", "TRIAGE_STAYED"], 120_000)).toBe("Approve once");
     expect(triage.screen).toContain(`SUMMARY_FROM_TRIAGE: the codeword is ${codeword}`);
+    await triage.press("\x1b[B");
+    await triage.press("\r");
+    await triage.waitFor("Denial feedback", 30_000);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await triage.press("Not yet");
+    await triage.press("\r");
+    await triage.waitFor("TRIAGE_STAYED", 120_000);
+    expect((await stack.api.inject({ method: "GET", url: `/v1/sessions/${session.id}/handoffs`, headers })).json()).toEqual({ handoffs: [] });
+    expect(SharedSessionView.parse((await stack.api.inject({ method: "GET", url: `/v1/sessions/${session.id}`, headers })).json()))
+      .toMatchObject({ harness: { name: "cli-triage" }, segment: { generation: 1, ahpSessionId: session.id } });
+
+    // Then they approve a second request.
+    for (const deadline = Date.now() + 30_000; triage.screen.includes("Approve once"); await new Promise((resolve) => setTimeout(resolve, 100))) {
+      if (Date.now() > deadline) throw new Error(`The declined prompt stayed on screen:\n${triage.screen}`);
+    }
+    await triage.send("HAND ME OFF to the notes harness, now.");
+    expect(await firstOf(triage, ["Approve once", "TRIAGE_FINISHED"], 120_000)).toBe("Approve once");
     const prompt = triage.screen;
     await triage.press("\r");
     const handoff = await (async () => {
