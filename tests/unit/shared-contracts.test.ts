@@ -58,6 +58,17 @@ describe("shared deployment contracts", () => {
     expect(SHARED_WORKER_BINDINGS.every((binding) => binding.startsWith("shared:"))).toBe(true);
   });
 
+  it("defaults to budgets that fit real multi-tool turns, within finite bounds", () => {
+    // Real turns of a few tool calls used 21,000 to 38,000 tokens; the turn budget and deadline leave room for more.
+    expect(SharedSessionLimits.parse({})).toEqual({
+      tokenBudget: 500_000, turnTokenBudget: 100_000, maxTurnSeconds: 300, idleSeconds: 300, maxJobs: 16, maxParallelJobs: 2, maxContinuations: 16,
+    });
+    expect(SharedSessionLimits.safeParse({ turnTokenBudget: 1_000_001 }).success).toBe(false);
+    expect(SharedSessionLimits.safeParse({ maxTurnSeconds: 3601 }).success).toBe(false);
+    // An operator can still lower either ceiling.
+    expect(SharedSessionLimits.parse({ turnTokenBudget: 20_000, maxTurnSeconds: 180 })).toMatchObject({ turnTokenBudget: 20_000, maxTurnSeconds: 180 });
+  });
+
   it("rejects unsupported controls and enforces finite bounds", () => {
     expect(SharedWorkerLimits.safeParse({ warmContainers: 2 }).success).toBe(false);
     expect(SharedWorkerLimits.safeParse({ activeTurns: 0 }).success).toBe(false);

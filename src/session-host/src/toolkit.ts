@@ -7,6 +7,7 @@ import type { ToolRule } from "./permissions.js";
 import { remoteMcpToolFor } from "./remote-mcp-tools.js";
 import type { SharedActivationContext } from "./runtime.js";
 import type { SharedEgress } from "./shared-egress.js";
+import { boundedTool } from "./tool-output.js";
 import { delegationTools, taskListTools, workspaceTools, type DelegationDependencies, type SharedTool } from "./tools.js";
 import { workerTools, type WorkerToolDependencies } from "./worker-tools.js";
 
@@ -33,7 +34,8 @@ const urlOf = (args: unknown) => (args && typeof args === "object" && "url" in a
  * The base tool set for one shared activation (docs/HOSTING-MODES-PLAN.md, sections 7.2 to 7.5): workspace files for
  * `files`, filtered `web_fetch` for `web`, approved remote MCP tools, the task list, the harness's in-process host
  * bindings, `promote_session` for promotable harnesses, an orchestrator coordinator's worker tools, and a transfer tool
- * per predefined handoff target. Remote MCP sessions end with the activation.
+ * per predefined handoff target. Remote MCP sessions end with the activation. Every tool's result stays inline: each sizes
+ * its own output, and a hard ceiling cuts anything larger (see `tool-output.ts`).
  */
 export async function sharedToolset(
   plan: SharedActivationPlan,
@@ -94,5 +96,5 @@ export async function sharedToolset(
     if (rules.has(entry.tool.name)) throw new Error(`Two shared tools are named '${entry.tool.name}'.`);
     rules.set(entry.tool.name, entry.rule);
   }
-  return { tools: entries.map((entry) => entry.tool), rules };
+  return { tools: entries.map((entry) => boundedTool(entry.tool)), rules };
 }

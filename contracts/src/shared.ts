@@ -11,11 +11,16 @@ const DIGEST = /^sha256:[a-f0-9]{64}$/;
  * Operator ceilings for one shared session. A harness narrows them: the session's token budget is the smallest of
  * these, the harness's `limits.maxInferenceTokens`, and its policy's `maxInferenceTokensPerJob`; the turn deadline
  * likewise uses `limits.maxDurationSeconds` and the policy's `maxDurationSeconds`.
+ *
+ * The defaults fit ordinary multi-tool turns with a real model. Every model request in a turn resends the conversation,
+ * about 4,200 tokens of base prompt plus the turn's tool results so far, so real turns of a few tool calls used 21,000 to
+ * 38,000 tokens. A turn may use up to 100,000 tokens and 300 seconds; a conversation's 500,000 tokens cover a dozen or more
+ * such turns. A turn that has used its budget gets no further model requests.
  */
 export const SharedSessionLimits = z.object({
   tokenBudget: z.number().int().min(100).max(10_000_000).default(500_000),
-  turnTokenBudget: z.number().int().min(100).max(1_000_000).default(20_000),
-  maxTurnSeconds: z.number().int().min(1).max(3600).default(180),
+  turnTokenBudget: z.number().int().min(100).max(1_000_000).default(100_000),
+  maxTurnSeconds: z.number().int().min(1).max(3600).default(300),
   idleSeconds: z.number().int().min(1).max(86_400).default(300),
   maxJobs: z.number().int().min(0).max(100).default(16),
   maxParallelJobs: z.number().int().min(1).max(16).default(2),

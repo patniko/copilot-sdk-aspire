@@ -180,10 +180,14 @@ a harness field that conversations see, update both mappings and the parity case
 the conversation profile's `toolBindings` and `inProcessBindings`; batch and demo-host admission reject these
 bindings. A custom approval handler is reviewed code registered by name in
 [`permission-handlers.ts`](../src/session-host/src/permission-handlers.ts); the profile's `permissionHandlers` and
-the policy must also name it. Shared-worker unit suites need no runtime:
+the policy must also name it. A shared tool must keep its result inline: size it with the helpers in
+[`tool-output.ts`](../src/session-host/src/tool-output.ts) (`fileChunk` for file parts, `listPage` for listings,
+`utf8Prefix` for long text) and say how to get what it left out. The toolkit's 18 KiB ceiling is only a backstop,
+because with a client attached the runtime moves a result above 20 KiB into a file no shared tool can read.
+Shared-worker unit suites need no runtime:
 
 ```powershell
-pnpm exec vitest run --project unit tests\unit\shared-admission.test.ts tests\unit\shared-permissions.test.ts tests\unit\shared-tools.test.ts tests\unit\shared-api.test.ts tests\unit\shared-residency.test.ts
+pnpm exec vitest run --project unit tests\unit\shared-admission.test.ts tests\unit\shared-permissions.test.ts tests\unit\shared-tools.test.ts tests\unit\shared-api.test.ts tests\unit\shared-residency.test.ts tests\unit\shared-tool-output.test.ts
 ```
 
 GitHub-native mode instead starts host-owned sessions through the released CLI server pinned in the host
@@ -437,6 +441,9 @@ requests the `assisted` judge declines to the CLI's approval prompt, approves on
 the judge approves without a prompt, and checks that the CLI's picker offers exactly the policy's modes and that a
 switch to another mode is refused. The approval gates need runtime `d89cfe45b29` (host `006b030`) or later, whose
 SDK passes the judge's verdict to the handler and whose host enforces `startAhpHost({ approvalModes })`.
+`shared-large-output-cli.test.ts` drives a workspace read, a search, a page of three-byte characters through
+`web_fetch`, and a large remote MCP result in one turn while the CLI is attached, and checks that each result stays
+inline and bounded with a note on how to continue.
 
 Run these gates without the variables a Copilot host application injects into its child processes (`COPILOT_*`
 feature and session settings and `AUTO_APPROVAL`), which can mask a missing runtime flag; keep only the

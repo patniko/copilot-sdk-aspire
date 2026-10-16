@@ -126,6 +126,8 @@ harness requests: workspace file tools (read, write, edit, list, search) over th
 a task list kept in session storage, the filtered `web_fetch`, approved remote MCP tools, `ask_user` when the
 harness enables questions, and the delegation bindings that the conversation profile lists in `inProcessBindings`.
 Each harness's remote MCP sessions open on activation and close with it; the server credential stays in the worker.
+Every tool keeps its result within 16 KiB, with a note on how to read on, because with a client attached the runtime
+would move a larger result into a file that no shared tool can read.
 
 Clients attach only through the connection broker, which gives each session one stable path
 (`/sessions/{id}`). The API asks the shared worker to activate the session and issue a one-use ticket, then

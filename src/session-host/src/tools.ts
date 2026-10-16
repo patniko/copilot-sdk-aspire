@@ -11,6 +11,7 @@ import { DelegationStore, JobStore, StoreError, type SharedSessionRecord, type S
 import { Admission, canonicalJson, sha256Hex } from "@copilot-agent/service-defaults";
 import type { SharedActivationContext } from "./runtime.js";
 import type { ToolRule } from "./permissions.js";
+import { fileChunk, listPage, SHARED_TOOL_OUTPUT_BYTES, utf8Length, utf8Prefix } from "./tool-output.js";
 
 /** An application tool and how the harness's permission rules apply to it. */
 export interface SharedTool {
@@ -29,7 +30,7 @@ const EditFile = z.object({
   path: ArtifactPath, oldText: z.string().min(1).max(32 * 1024), newText: z.string().max(32 * 1024),
   replaceAll: z.boolean().default(false), ifMatch: z.string().max(200).optional(),
 }).strict();
-const ListFiles = z.object({ path: ArtifactPath.optional() }).strict();
+const ListFiles = z.object({ path: ArtifactPath.optional(), offset: z.number().int().min(0).max(100_000).default(0) }).strict();
 const SearchFiles = z.object({
   query: z.string().min(1).max(200), path: ArtifactPath.optional(), caseSensitive: z.boolean().default(false),
   maxResults: z.number().int().min(1).max(200).default(50),
@@ -42,6 +43,11 @@ const Task = z.object({
 }).strict();
 const TaskList = z.object({ tasks: z.array(Task).max(50) }).strict();
 const StoredTaskList = z.object({ tasks: z.array(Task.required({ id: true })), updatedAt: z.iso.datetime() }).strict();
+/** A stored task list's largest JSON, so that reading it back always fits a tool result. */
+const TASK_LIST_BYTES = 12 * 1024;
+/** A delegated job's result is returned whole up to this size, and otherwise as a preview of the next. */
+const JOB_RESULT_BYTES = 8 * 1024;
+const JOB_RESULT_PREVIEW_BYTES = 4 * 1024;
 
 /** Bounded, provider-backed access to one activation's workspace; never the host filesystem. */
 class WorkspaceAccess {
@@ -89,12 +95,12 @@ export function workspaceTools(context: SharedActivationContext): SharedTool[] {
       rule: read,
       tool: {
         name: SHARED_TOOLS.readFile,
-        description: "Read a bounded portion of a file in this conversation's workspace. Returns an etag for conflict-safe changes.",
+        description: "Read part of a file in this conversation's workspace, up to about 15 KiB per call; when more remains, call again with the returned nextOffset. Returns an etag for conflict-safe changes.",
         parameters: z.toJSONSchema(ReadFile),
         handler: async (value) => {
           const args = ReadFile.parse(value);
           const content = await workspace.bytes(args.path);
-          return { ...preview(content, args.offset, args.length), etag: etag(content) };
+          return { ...fileChunk(content, args.offset, args.length, SHARED_TOOLS.readFile), etag: etag(content) };
         },
       },
     },
@@ -136,9 +142,12 @@ export function workspaceTools(context: SharedActivationContext): SharedTool[] {
       rule: read,
       tool: {
         name: SHARED_TOOLS.listFiles,
-        description: "List a directory in this conversation's workspace, not the host filesystem.",
+        description: "List a directory in this conversation's workspace, not the host filesystem. A long listing is returned in pages; continue with the returned nextOffset.",
         parameters: z.toJSONSchema(ListFiles),
-        handler: async (value) => ({ entries: await workspace.list(ListFiles.parse(value).path) }),
+        handler: async (value) => {
+          const args = ListFiles.parse(value);
+          return listPage(await workspace.list(args.path), args.offset, SHARED_TOOLS.listFiles);
+        },
       },
     },
     {
@@ -153,26 +162,41 @@ export function workspaceTools(context: SharedActivationContext): SharedTool[] {
           const contains = (text: string) => (args.caseSensitive ? text : text.toLowerCase()).includes(needle);
           const matches: Array<{ path: string; line?: number; text?: string }> = [];
           const pending = [args.path];
+          const budget = SHARED_TOOL_OUTPUT_BYTES - 1024;
+          let used = 0;
           let visited = 0;
-          let truncated = false;
-          while (pending.length && !truncated) {
+          let stopped: string | undefined;
+          // Keeps a match unless the result already holds maxResults matches or its size limit.
+          const add = (match: (typeof matches)[number]) => {
+            const cost = utf8Length(JSON.stringify(match)) + 1;
+            if (matches.length >= args.maxResults) stopped = `Stopped at maxResults (${args.maxResults}); narrow the query or search a subdirectory to see others.`;
+            else if (used + cost > budget) stopped = "Stopped at the result size limit; narrow the query or search a subdirectory to see others.";
+            else {
+              used += cost;
+              matches.push(match);
+            }
+            return stopped === undefined;
+          };
+          while (pending.length && stopped === undefined) {
             const directory = pending.shift();
             for (const entry of await workspace.list(directory)) {
               const path = directory ? `${directory}/${entry.name}` : entry.name;
-              if (++visited > MAX_SEARCH_FILES) { truncated = true; break; }
+              if (++visited > MAX_SEARCH_FILES) { stopped = `Stopped after ${MAX_SEARCH_FILES} files; search a subdirectory to see others.`; break; }
               if (entry.type === "directory") { pending.push(path); continue; }
-              if (contains(path)) matches.push({ path });
+              if (contains(path) && !add({ path })) break;
               let content: Buffer;
               try { content = await workspace.bytes(path); }
               catch { continue; }
               if (content.length > MAX_SEARCH_FILE_BYTES || content.subarray(0, 1024).includes(0)) continue;
-              content.toString("utf8").split(/\r?\n/).forEach((line, index) => {
-                if (matches.length < args.maxResults && contains(line)) matches.push({ path, line: index + 1, text: line.slice(0, 300) });
-              });
-              if (matches.length >= args.maxResults) { truncated = true; break; }
+              const lines = content.toString("utf8").split(/\r?\n/);
+              for (let index = 0; index < lines.length && stopped === undefined; index++) {
+                if (contains(lines[index]!)) add({ path, line: index + 1, text: lines[index]!.slice(0, 300) });
+              }
+              if (stopped !== undefined) break;
+              if (matches.length >= args.maxResults) { stopped = `Stopped at maxResults (${args.maxResults}); narrow the query or search a subdirectory to see others.`; break; }
             }
           }
-          return { matches: matches.slice(0, args.maxResults), truncated };
+          return { matches, truncated: stopped !== undefined, ...(stopped ? { note: stopped } : {}) };
         },
       },
     },
@@ -209,7 +233,14 @@ export function taskListTools(context: SharedActivationContext): SharedTool[] {
             updatedAt: new Date().toISOString(),
           });
           if (new Set(stored.tasks.map((task) => task.id)).size !== stored.tasks.length) throw new Error("Task ids must be unique.");
-          await context.workspace.sessionFs.writeFile(path, JSON.stringify(stored));
+          const json = JSON.stringify(stored);
+          if (utf8Length(json) > TASK_LIST_BYTES) {
+            return {
+              resultType: "failure" as const,
+              textResultForLlm: `The task list would take ${Math.ceil(utf8Length(json) / 1024)} KiB; keep it within ${TASK_LIST_BYTES / 1024} KiB by shortening notes or removing finished tasks. The previous list is unchanged.`,
+            };
+          }
+          await context.workspace.sessionFs.writeFile(path, json);
           return stored;
         },
       },
@@ -238,6 +269,8 @@ export function delegationTools(
   deps: DelegationDependencies,
 ): SharedTool[] {
   const workspace = new WorkspaceAccess(context);
+  // The harness names its bindings, so notes refer to the artifact reader by the name it gave.
+  const artifactReader = requests.find((request) => request.kind === "host" && request.binding === "shared:read-job-artifact")?.name;
   const related = async (jobId: string) => {
     if (!(await deps.delegations.list(session.principal, session.id)).some((job) => job.jobId === jobId)) {
       throw new StoreError("not_found", "The job does not belong to this conversation.");
@@ -293,10 +326,18 @@ export function delegationTools(
           await related(jobId);
           const job = await deps.jobs.getJob(session.principal, jobId);
           if (!job) throw new Error("The delegated job was not found.");
-          const result = JSON.stringify(job.result);
-          return { ...job, result: result && result.length <= 16_000 ? job.result : undefined,
-            ...(result && result.length > 16_000 ? { resultPreview: result.slice(0, 4000), resultTruncated: true } : {}),
-            artifacts: await deps.delegations.artifacts(session.principal, jobId) };
+          const { result, error, ...rest } = job;
+          const json = result === undefined ? undefined : JSON.stringify(result);
+          const whole = json === undefined || utf8Length(json) <= JOB_RESULT_BYTES;
+          return {
+            ...rest,
+            ...(json === undefined ? {} : whole ? { result } : {
+              resultPreview: utf8Prefix(json, JOB_RESULT_PREVIEW_BYTES), resultTruncated: true,
+              note: `The result is ${Math.ceil(utf8Length(json) / 1024)} KiB, so only its start is shown. Long output belongs in the job's outputs/ files${artifactReader ? `, which ${artifactReader} reads in parts` : ""}.`,
+            }),
+            ...(error ? { error: { ...error, message: utf8Prefix(error.message, 2048) } } : {}),
+            artifacts: await deps.delegations.artifacts(session.principal, jobId),
+          };
         },
       },
     }),
@@ -309,7 +350,7 @@ export function delegationTools(
           await related(args.jobId);
           const file = await deps.delegations.artifact(session.principal, args.jobId, args.artifactId);
           if (!file) throw new Error("The artifact was not found.");
-          return { path: file.path, sha256: file.sha256, ...preview(file.content, args.offset, args.length) };
+          return { path: file.path, sha256: file.sha256, ...fileChunk(file.content, args.offset, args.length, request.name) };
         },
       },
     }),
@@ -333,11 +374,3 @@ export function delegationTools(
   });
 }
 
-function preview(content: Buffer, offset: number, length: number): { size: number; offset: number; data: string; encoding: string; truncated: boolean } {
-  const part = content.subarray(offset, offset + length);
-  let data: string;
-  let encoding = "utf-8";
-  try { data = new TextDecoder("utf-8", { fatal: true }).decode(part); }
-  catch { data = part.toString("base64"); encoding = "base64"; }
-  return { size: content.length, offset, data, encoding, truncated: offset + part.length < content.length };
-}

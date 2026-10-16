@@ -4,6 +4,7 @@ import type { PermissionRequest, ToolInvocation, ToolResultObject } from "@githu
 import { afterEach, describe, expect, it } from "vitest";
 import { EgressFilter } from "@copilot-agent/service-defaults";
 import { htmlToText, webFetchPermissionRequest, webFetchTool } from "../../src/session-host/src/web-fetch.js";
+import { SHARED_TOOL_OUTPUT_BYTES } from "../../src/session-host/src/tool-output.js";
 
 const servers: Server[] = [];
 afterEach(async () => {
@@ -131,6 +132,32 @@ describe("filtered web_fetch tool", () => {
       expect(result.textResultForLlm).toContain(phrase);
       expect(result.textResultForLlm).not.toMatch(/169\.254\.169\.254|10\.0\.0\.8|::1\]/);
     }
+  });
+
+  // The runtime moves a result above 20 KiB to a file no shared tool can read once a client attaches. 20,000 characters
+  // of CJK text are about 60 KB, so web_fetch bounds bytes, not characters, and says where to continue.
+  it("keeps a long page within the shared output budget in bytes, and continues it with start_index", async () => {
+    const text = "中文字符".repeat(10_000);
+    const { port } = await site((_request, response) => { response.writeHead(200, { "content-type": "text/plain; charset=utf-8" }).end(text); });
+    const tool = webFetchTool({ egress: egress(), urlRule: "allow" });
+    const url = `http://docs.example:${port}/cjk`;
+    const first = await fetchWith(tool, { url, max_length: 20_000 });
+    expect(Buffer.byteLength(first.textResultForLlm, "utf8")).toBeLessThanOrEqual(SHARED_TOOL_OUTPUT_BYTES);
+    const end = Number(/start_index=(\d+)/.exec(first.textResultForLlm)?.[1]);
+    expect(end).toBeGreaterThan(5000);
+    expect(end).toBeLessThan(20_000);
+    expect(first.textResultForLlm).toContain(`Characters 0-${end} of ${text.length}.`);
+    expect(first.textResultForLlm).toContain(`\n${text.slice(0, end)}\n\n[Content truncated. Call web_fetch with start_index=${end} to continue.]`);
+    const second = await fetchWith(tool, { url, max_length: 20_000, start_index: end });
+    expect(second.textResultForLlm).toContain(`Characters ${end}-`);
+    expect(second.textResultForLlm).toContain(text.slice(end, end + 100));
+    // The default length of ASCII text fits whole.
+    const ascii = await site((_request, response) => { response.writeHead(200, { "content-type": "text/plain" }).end("a".repeat(30_000)); });
+    const plain = await fetchWith(tool, { url: `http://docs.example:${ascii.port}/` });
+    expect(plain.textResultForLlm).toContain("Characters 0-5000 of 30000.");
+    const long = await fetchWith(tool, { url: `http://docs.example:${ascii.port}/`, max_length: 20_000 });
+    expect(Buffer.byteLength(long.textResultForLlm, "utf8")).toBeLessThanOrEqual(SHARED_TOOL_OUTPUT_BYTES);
+    expect(long.textResultForLlm).toMatch(/start_index=1[56]\d{3} to continue/);
   });
 
   it("returns clear failures for binary content, HTTP errors, oversized pages, and invalid arguments", async () => {

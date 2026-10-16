@@ -15,3 +15,4 @@ export { PERMISSION_HANDLERS, workspaceDraftsHandler, type CustomPermissionDecis
 export { sharedToolset, type SharedToolkitOptions, type SharedToolset } from "./toolkit.js";
 export { workspaceTools, taskListTools, delegationTools, type DelegationDependencies, type SharedTool } from "./tools.js";export { SharedPromotions, PromotionRefused, type SharedPromotionsOptions } from "./promotion/coordinator.js";
 export { promotionTool } from "./promotion/tool.js";
+export { boundedTool, boundToolResult, fileChunk, jsonStringPrefix, listPage, utf8Prefix, SHARED_TOOL_OUTPUT_BYTES, SHARED_TOOL_RESULT_LIMIT_BYTES, type FileChunk, type ListPage } from "./tool-output.js";

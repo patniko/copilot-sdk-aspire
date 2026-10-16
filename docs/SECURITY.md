@@ -303,11 +303,15 @@ from tool descriptions, schemas, results, and errors. Redaction guards against a
 can always disclose its own credential deliberately. A server's read-only hint never relaxes approval.
 
 The Copilot runtime moves a tool result above 20 KiB into a temporary file and gives the model a pointer to view it
-with tools that shared placement does not have. Shared sessions disable that, which holds for turns no client drives;
-with a client attached, runtime `d89cfe45b29` moves large results anyway. Remote MCP results are therefore bounded to
-16 KiB of UTF-8 text, with a note asking for a narrower result, and stay inline. A `web_fetch` page near its
-20,000-character maximum or a workspace read above 20 KiB can still be moved while a client is attached; smaller
-pages and ranges avoid it.
+with tools that shared placement does not have, naming a path on the worker. Shared sessions disable that, which holds
+for turns no client drives; with a client attached, runtime `d89cfe45b29` moves large results anyway. Every shared tool
+therefore keeps its result within 16 KiB of UTF-8 and says how to get the rest
+([`tool-output.ts`](../src/session-host/src/tool-output.ts)): file reads (`read_workspace_file`, `read_job_artifact`,
+`read_shared_file`) return parts with a `nextOffset`, listings return pages, searches stop at the size limit,
+`web_fetch` bounds bytes rather than characters and gives the `start_index` to continue, remote MCP results end with
+a note asking for a narrower result, `get_job` and `get_worker` shorten long results, and a task list is limited to
+12 KiB. The worker also cuts any result still above 18 KiB, with a note. Results of the runtime's own tools, such as a
+sub-agent's reply, are not covered, and neither is a client configured with a lower threshold.
 
 An operator can set `allowPrivateNetwork` on one catalog server for development. Only that exact origin may
 then use a local or single-label host name, resolve to loopback, private, shared, or unique-local

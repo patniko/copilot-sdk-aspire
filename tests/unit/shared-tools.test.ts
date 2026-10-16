@@ -11,7 +11,8 @@ import { BUILTIN_AGENTS, sharedSessionSettings } from "../../src/session-host/sr
 import type { SharedActivationContext } from "../../src/session-host/src/runtime.js";
 import type { SharedEgress } from "../../src/session-host/src/shared-egress.js";
 import { sharedToolset } from "../../src/session-host/src/toolkit.js";
-import { taskListTools, workspaceTools } from "../../src/session-host/src/tools.js";
+import { delegationTools, taskListTools, workspaceTools } from "../../src/session-host/src/tools.js";
+import { SHARED_TOOL_OUTPUT_BYTES, SHARED_TOOL_RESULT_LIMIT_BYTES } from "../../src/session-host/src/tool-output.js";
 import { SessionWorkspace } from "../../src/session-host/src/workspace.js";
 import { sharedHarness } from "../integration/fixtures/shared-harness.js";
 import { fixtureFilesystem } from "../runtime/filesystem.js";
@@ -87,6 +88,91 @@ describe("shared workspace tools", () => {
     await expect(call(tools.get(SHARED_TOOLS.updateTasks), { tasks: Array.from({ length: 51 }, (_, index) => ({ title: `T${index}`, status: "pending" })) })).rejects.toThrow();
     expect(await call(byName(workspaceTools(context)).get(SHARED_TOOLS.listFiles), {})).toEqual({ entries: [] });
   });
+
+  // The runtime moves a result above 20 KiB to a file no shared tool can read, even for shared sessions once a client
+  // attaches, so every result stays within the shared output budget and says how to get the rest.
+  it("keeps large reads, listings, searches, and task lists inline, with a note on how to continue", async () => {
+    const json = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
+    const tools = byName(workspaceTools(context));
+    const line = (index: number) => `${String(index).padStart(4, "0")} "needle" café 中文 😀 ${"a".repeat(240)}\n`;
+    const text = Array.from({ length: 110 }, (_, index) => line(index)).join("");
+    expect(Buffer.byteLength(text, "utf8")).toBeGreaterThan(30_000);
+    await call(tools.get(SHARED_TOOLS.writeFile), { path: "big.md", content: text });
+    let offset = 0;
+    let read = "";
+    for (let reads = 0; ; reads++) {
+      expect(reads).toBeLessThan(10);
+      const part = await call(tools.get(SHARED_TOOLS.readFile), { path: "big.md", offset, length: 32 * 1024 });
+      expect(json(part)).toBeLessThanOrEqual(SHARED_TOOL_OUTPUT_BYTES);
+      read += part.data as string;
+      if (!part.truncated) break;
+      expect(part.note).toContain(`call ${SHARED_TOOLS.readFile} with offset ${part.nextOffset}`);
+      offset = part.nextOffset as number;
+    }
+    expect(read).toBe(text);
+
+    const search = await call(tools.get(SHARED_TOOLS.searchFiles), { query: "needle", maxResults: 200 });
+    expect(json(search)).toBeLessThanOrEqual(SHARED_TOOL_OUTPUT_BYTES);
+    expect(search).toMatchObject({ truncated: true, note: expect.stringContaining("result size limit") });
+    expect((search.matches as unknown[]).length).toBeLessThan(110);
+
+    for (let index = 0; index < 150; index++) {
+      await call(tools.get(SHARED_TOOLS.writeFile), { path: `many/${String(index).padStart(3, "0")}-${"n".repeat(100)}.md`, content: "x" });
+    }
+    const first = await call(tools.get(SHARED_TOOLS.listFiles), { path: "many" });
+    expect(json(first)).toBeLessThanOrEqual(SHARED_TOOL_OUTPUT_BYTES);
+    expect(first).toMatchObject({ total: 150, truncated: true, nextOffset: (first.entries as unknown[]).length });
+    const rest = await call(tools.get(SHARED_TOOLS.listFiles), { path: "many", offset: first.nextOffset });
+    expect(rest).toMatchObject({ offset: first.nextOffset });
+    expect((first.entries as unknown[]).length + (rest.entries as unknown[]).length).toBe(150);
+
+    const tasks = byName(taskListTools(context));
+    await call(tasks.get(SHARED_TOOLS.updateTasks), { tasks: [{ title: "Keep", status: "pending" }] });
+    const crowded = { tasks: Array.from({ length: 50 }, (_, index) => ({ title: `Task ${index}`, status: "pending", notes: "n".repeat(1000) })) };
+    expect(await call(tasks.get(SHARED_TOOLS.updateTasks), crowded)).toMatchObject({
+      resultType: "failure", textResultForLlm: expect.stringContaining("keep it within 12 KiB"),
+    });
+    expect(await call(tasks.get(SHARED_TOOLS.getTasks), {})).toMatchObject({ tasks: [{ title: "Keep" }] });
+  });
+});
+
+describe("delegation tools", () => {
+  it("bound a delegated job's result, error, and artifact reads so that they stay inline", async () => {
+    const json = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
+    const jobId = "11111111-1111-4111-8111-111111111111";
+    const artifactId = "22222222-2222-4222-8222-222222222222";
+    const job = {
+      id: jobId, state: "failed", harness: { name: "child", version: "1.0.0", digest: `sha256:${"a".repeat(64)}` }, profile: "node-ts-agent",
+      createdAt: "2026-10-16T00:00:00.000Z", updatedAt: "2026-10-16T00:00:00.000Z", maxDurationSeconds: 60, attempts: 1, maxAttempts: 1,
+      acknowledgedGaps: [], usage: { inputTokens: 1, outputTokens: 1, requests: 1 }, pendingInputs: 0,
+      result: { summary: "中".repeat(10_000) }, error: { code: "runner_failed", message: "e".repeat(5000) },
+    };
+    const deps = {
+      admission: async () => { throw new Error("Not used."); }, profiles: async () => new Map(), maxOpenJobs: 2,
+      jobs: { getJob: async () => job },
+      delegations: {
+        list: async () => [{ jobId }], artifacts: async () => [],
+        artifact: async () => ({ path: "outputs/report.md", sha256: "b".repeat(64), content: Buffer.from("x\n".repeat(20_000), "utf8") }),
+      },
+    };
+    const requests = [
+      { name: "get_job", kind: "host", binding: "shared:get-job", description: "Read a job." },
+      { name: "read_output", kind: "host", binding: "shared:read-job-artifact", description: "Read an output." },
+    ];
+    const tools = byName(delegationTools(requests as never, { id: "session", principal: "alice" } as SharedSessionRecord, [], context,
+      () => { throw new Error("No turn."); }, deps as never));
+    const viewed = await call(tools.get("get_job"), { jobId });
+    expect(json(viewed)).toBeLessThanOrEqual(SHARED_TOOL_OUTPUT_BYTES);
+    expect(viewed).toMatchObject({ id: jobId, state: "failed", resultTruncated: true, note: expect.stringContaining("which read_output reads in parts") });
+    expect(viewed.result).toBeUndefined();
+    expect((viewed.resultPreview as string).startsWith("{\"summary\":\"中中")).toBe(true);
+    expect((viewed.error as { message: string }).message).toHaveLength(2048);
+    job.result = { summary: "small" };
+    expect(await call(tools.get("get_job"), { jobId })).toMatchObject({ result: { summary: "small" } });
+    const part = await call(tools.get("read_output"), { jobId, artifactId, length: 32 * 1024 });
+    expect(json(part)).toBeLessThanOrEqual(SHARED_TOOL_OUTPUT_BYTES);
+    expect(part).toMatchObject({ path: "outputs/report.md", truncated: true, note: expect.stringContaining("call read_output with offset") });
+  });
 });
 
 describe("shared base tool set", () => {
@@ -138,6 +224,17 @@ describe("shared base tool set", () => {
     // A remote server's read-only hint is untrusted, so no remote tool runs quietly under `ask`.
     for (const name of ["mcp_docs_search_search", "mcp_docs_search_delete"]) expect(toolset.rules.get(name)?.quietUnderAsk, name).toBeUndefined();
     expect(toolset.rules.get("mcp_docs_search_delete")!.target!({})).toBe("docs-search:delete");
+  });
+
+  it("holds every tool's result to the shared ceiling, whichever tool returns it", async () => {
+    const huge: SharedEgress = {
+      webFetch: () => ({ name: "web_fetch", description: "Huge.", parameters: { type: "object" }, handler: async () => "w".repeat(100_000) }),
+      connectMcp: async () => { throw new Error("Not used."); },
+    };
+    const toolset = await sharedToolset(plan({ builtinTools: ["web"] }), record, context, () => { throw new Error("No turn."); }, { egress: huge });
+    const result = await toolset.tools.find((tool) => tool.name === "web_fetch")!.handler!({}, {} as never) as string;
+    expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(SHARED_TOOL_RESULT_LIMIT_BYTES);
+    expect(result).toContain("[Result truncated at 18 KiB by the shared worker");
   });
 
   it("gives every shared session the task list, and refuses tools it cannot provide", async () => {
