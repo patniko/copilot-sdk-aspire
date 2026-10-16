@@ -426,6 +426,10 @@ admissible on a host only when that host lists it in its features; until then ad
 `hosting_unavailable` naming it. A new hosted feature that batch runners would also see needs TypeScript and Python
 runner parity, or the batch rejection above.
 
+The configurator validates these fields with the same contract helpers but never evaluates a deployment: its
+[harness editor and Hosting page](CONFIGURATOR.md#hosting-approvals-and-remote-mcp) read availability from the
+running agent-api's [hosting views](API.md#hosting-views), so a host that gains a feature needs no configurator change.
+
 A catalog server's `allowPrivateNetwork: true` is an operator-only development allowance: its exact configured origin,
 never a redirect, may be a private, loopback, or container address, and its credential may then travel over `http`.
 Without it, a server that receives a credential must use `https`. The shared-placement egress filter, not the
