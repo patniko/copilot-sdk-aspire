@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { superviseSessionCli } from "./cli-supervisor.js";
 import { hostConnection } from "./host-client.js";
-import { harnessConnectRoute } from "./connect-route.js";
+import { harnessConnectRoute, reprovisionSession } from "./connect-route.js";
 import { ownerHostCliArguments, ownerHostConnection } from "./owner-host-client.js";
 import { Settings } from "./settings.js";
 import { StatusService } from "./status.js";
@@ -68,12 +69,17 @@ async function main(): Promise<void> {
     const connection = await sharedConnection(api, {
       harness, transport: values.transport, ...(values.resume ? { resume: values.resume } : {}), ...(values.label ? { label: values.label } : {}),
     });
-    const url = new URL(connection.url);
-    env.COPILOT_AHP_SERVER_KEY = JSON.stringify({ endpoint: url.href, ...connection.serverKey });
-    url.searchParams.set("tkn", connection.token);
-    args.push("--ahp", url.href, "--ahp-authenticate-with-github", "--resume", connection.ahpSessionId);
     console.log(`Connecting to ${kind} ${connection.sessionId} (${harness}) through the connection broker with a one-use ticket. This explicitly authorizes GitHub identity authentication to the provisioned host.`);
     console.log(`Resume later with: pnpm host:connect --harness ${harness} --resume ${connection.sessionId}`);
+    // The launcher stays attached: when the session moves (for example after promotion), it re-provisions the same
+    // session through the same routing and restarts the CLI in this terminal.
+    const script = /\.(?:cjs|mjs|js)$/i.test(values.cli);
+    const requested = values.transport;
+    process.exitCode = await superviseSessionCli({
+      command: script ? process.execPath : values.cli, args: [...(script ? [resolve(values.cli)] : []), ...args], env, connection,
+      provision: () => reprovisionSession(api, harness, requested, connection.sessionId),
+    });
+    return;
   } else if (route?.kind === "owner-host" && api && harness) {
     // An isolated harness: connect to its own owner host over direct WSS or its own relay environment.
     if (values.target !== "local") throw new Error("Per-harness owner hosts are local-only until the Azure stage; use --destination container for the deployed demo host.");

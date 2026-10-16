@@ -28,6 +28,8 @@ export const SupervisorMessage = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("start"), config: OwnerConfiguration }).strict(),
   z.object({ kind: z.literal("token"), id: z.string().uuid(), token: z.string().min(1).max(8192).optional(), error: z.string().max(500).optional() }).strict(),
   z.object({ kind: z.literal("stop") }).strict(),
+  /** The promotion's cutover committed: tell the agent once where the conversation now runs. */
+  z.object({ kind: z.literal("promoted"), id: z.string().uuid() }).strict(),
 ]);
 export type SupervisorMessage = z.infer<typeof SupervisorMessage>;
 

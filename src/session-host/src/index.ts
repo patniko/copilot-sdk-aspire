@@ -7,10 +7,11 @@ export { SharedSessionRuntime, type SharedSessionOptions, type SharedActivationC
 export { SharedSessionService, approvalManagedSettings, type SharedServiceOptions } from "./service.js";
 export { SharedTurnScheduler } from "./scheduler.js";
 export { buildSharedHost } from "./server.js";
-export { SharedAdmission, SHARED_WORKER_DEPLOYMENT, admittedModel, approvalPlan, type SharedActivationPlan, type SharedAdmissionOptions, type SharedApprovalPlan } from "./admission.js";
+export { SharedAdmission, SHARED_WORKER_DEPLOYMENT, sharedWorkerDeployment, admittedModel, approvalPlan, type SharedActivationPlan, type SharedAdmissionOptions, type SharedApprovalPlan } from "./admission.js";
 export { SharedConfiguration, type SharedRegistry } from "./configuration.js";
 export { sharedSessionSettings, BUILTIN_AGENTS, type SharedSessionSettings } from "./harness-session.js";
 export { SharedPermissionPolicy, ruleFor, type JudgeResponder, type SharedPermissionContext, type ToolRule, type ToolPermissionKind, type PreToolDecision } from "./permissions.js";
 export { PERMISSION_HANDLERS, workspaceDraftsHandler, type CustomPermissionDecision, type CustomPermissionHandler, type CustomPermissionRequest } from "./permission-handlers.js";
 export { sharedToolset, type SharedToolkitOptions, type SharedToolset } from "./toolkit.js";
-export { workspaceTools, taskListTools, delegationTools, type DelegationDependencies, type SharedTool } from "./tools.js";
+export { workspaceTools, taskListTools, delegationTools, type DelegationDependencies, type SharedTool } from "./tools.js";export { SharedPromotions, PromotionRefused, type SharedPromotionsOptions } from "./promotion/coordinator.js";
+export { promotionTool } from "./promotion/tool.js";

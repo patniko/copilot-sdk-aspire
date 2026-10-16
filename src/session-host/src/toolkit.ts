@@ -14,6 +14,8 @@ export interface SharedToolkitOptions {
   egress?: SharedEgress;
   /** One-shot container delegation; required for harnesses that request the delegation bindings. */
   delegation?: DelegationDependencies;
+  /** `promote_session` for promotable harnesses; the shared worker supplies it when it can promote. */
+  promotion?: (plan: SharedActivationPlan, session: SharedSessionRecord) => SharedTool;
   /** Orchestrator workers; required for orchestrator coordinators. */
   workers?: WorkerToolDependencies;
 }
@@ -27,9 +29,10 @@ const DELEGATION = new Set<string>(SHARED_WORKER_BINDINGS);
 const urlOf = (args: unknown) => (args && typeof args === "object" && "url" in args && typeof args.url === "string" ? args.url : undefined);
 
 /**
- * The base tool set for one shared activation (docs/HOSTING-MODES-PLAN.md, sections 7.2 and 7.4): workspace files for
+ * The base tool set for one shared activation (docs/HOSTING-MODES-PLAN.md, sections 7.2 to 7.4): workspace files for
  * `files`, filtered `web_fetch` for `web`, approved remote MCP tools, the task list, the harness's in-process host
- * bindings, and an orchestrator coordinator's worker tools. Remote MCP sessions end with the activation.
+ * bindings, `promote_session` for promotable harnesses, and an orchestrator coordinator's worker tools. Remote MCP
+ * sessions end with the activation.
  */
 export async function sharedToolset(
   plan: SharedActivationPlan,
@@ -71,6 +74,10 @@ export async function sharedToolset(
   if (bindings.length) {
     if (!options.delegation) throw new Error("Container delegation is not configured on this shared worker.");
     entries.push(...delegationTools(bindings, session, plan.delegation, context, currentTurn, options.delegation));
+  }
+  if (hostingModeOf(definition) === "promotable") {
+    if (!options.promotion) throw new Error("Promotion is not configured on this shared worker.");
+    entries.push(options.promotion(plan, session));
   }
   if (hostingModeOf(definition) === "orchestrator") {
     if (!options.workers) throw new Error("Orchestrator workers are not configured on this shared worker.");

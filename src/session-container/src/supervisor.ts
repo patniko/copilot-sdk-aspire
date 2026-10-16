@@ -4,8 +4,9 @@ import { chown, mkdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { SessionContainerHeartbeatResult, SessionContainerSpec } from "@copilot-agent/contracts";
-import { createLogger, createService, optionalEnv, readServerKey, registerAhpProxy, requireEnv, serviceUrl } from "@copilot-agent/service-defaults";
+import { SessionContainerHeartbeatResult, SessionContainerReadyResult, SessionContainerSpec } from "@copilot-agent/contracts";
+import { createLogger, createService, optionalEnv, PromotionRestoreError, readServerKey, registerAhpProxy, requireEnv, serviceUrl } from "@copilot-agent/service-defaults";
+import { restorePromotion } from "./promotion.js";
 import { EXECUTION_UID, INGRESS_PORT, OWNER_PORT, OwnerMessage, type OwnerConfiguration } from "./protocol.js";
 
 /**
@@ -52,6 +53,19 @@ if ((await stat(execution)).uid !== EXECUTION_UID) await chown(execution, EXECUT
 const temporary = join(execution, "tmp");
 await mkdir(temporary, { recursive: true, mode: 0o700 });
 if ((await stat(temporary)).uid !== EXECUTION_UID) await chown(temporary, EXECUTION_UID, EXECUTION_UID);
+if (spec.promotion) {
+  // Started to promote a shared session: seed the volume from its snapshot, then resume it like a retained session.
+  try {
+    const restored = await restorePromotion(spec, execution, post);
+    log("info", "Restored the promotion snapshot.", { promotion: spec.promotion.id, ...restored });
+  } catch (error) {
+    log("error", "The promotion snapshot could not be restored.", { promotion: spec.promotion.id });
+    await post("promotion-failed", {
+      code: "restore_failed", message: error instanceof PromotionRestoreError ? error.message : "The container could not restore the promotion snapshot.",
+    }, z.object({ failed: z.literal(true) }).strict()).catch(() => undefined);
+    throw error;
+  }
+}
 const listenerToken = randomBytes(32).toString("base64url");
 let ready = false;
 let stopping = false;
@@ -149,11 +163,13 @@ child.on("message", (value: unknown) => {
   if (message.kind === "ready") {
     void (async () => {
       const serverKey = await readServerKey(OWNER_PORT, listenerToken);
-      await post("ready", { serverKey }, z.object({ ready: z.literal(true) }).strict());
+      const result = await post("ready", { serverKey }, SessionContainerReadyResult);
       if (stopping) return;
       ready = true;
       heartbeat = setInterval(() => { void beat(); }, spec.heartbeatSeconds * 1000);
       log("info", "Session container ready.");
+      // The readiness committed a promotion's cutover: the agent is told once where it now runs.
+      if (result.promoted && child?.connected) child.send({ kind: "promoted", id: result.promoted });
     })().catch(() => {
       log("error", "The session container could not publish its readiness.");
       void shutdown(1);

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, inject, it } from "vitest";
-import { SharedSessionDefinition, SharedSessionLimits, SharedWorkerLimits, type PromotionSnapshotManifest } from "@copilot-agent/contracts";
+import { HarnessDefinition, SharedSessionDefinition, SharedSessionLimits, SharedWorkerLimits, type PromotionSnapshotManifest } from "@copilot-agent/contracts";
 import { AllocationStore, migrate, PromotionStore, SessionFileStore, SharedStore, type PromotionStorageAreas } from "@copilot-agent/job-store";
 import { restorePromotionSnapshot } from "@copilot-agent/service-defaults";
 import { postgresSessionFilesystem } from "../../src/session-host/src/postgres-filesystem.js";
@@ -236,4 +236,46 @@ describe("promotion ledger", () => {
     await files.write(lease, "/c/worker/anchors/session/accepted.txt", Buffer.from("shared again"));
     await files.release(lease);
   });
+
+  it("continues the runtime session an earlier segment runs, and validates what a move may change", async () => {
+    const owner = await populated();
+    // An earlier segment, as a handoff records it, runs another runtime session than the application session's ID.
+    await pool.query("UPDATE shared_sessions SET placement_generation=2 WHERE id=$1", [owner.id]);
+    await pool.query("INSERT INTO session_segments(session_id,generation,placement,reason,ahp_session_id) VALUES($1,2,'shared','handoff','runtime-two')", [owner.id]);
+    expect((await shared.get(owner.principal, owner.id))!.view.segment).toMatchObject({ generation: 2, placement: "shared", ahpSessionId: "runtime-two" });
+    const base = { principal: owner.principal, sessionId: owner.id, source: "tool" as const, size: "small", resources };
+    const notice = `[handoff:${randomUUID()}]\nContinue from the summary.`;
+    const invalid = [
+      { requestKey: "a", runtimeSessionId: "runtime-three" },
+      { requestKey: "b", history: false, runtimeSessionId: "runtime-two" },
+      { requestKey: "c", runtimeSessionId: "../escape" },
+      { requestKey: "d", notice: "No marker on the first line." },
+      { requestKey: "e", notice: `${notice}${"x".repeat(20_000)}` },
+      { requestKey: "f", kind: "transfer" as never },
+      { requestKey: "g", target: { harness: { definition: {} as never, digest: `sha256:${"a".repeat(64)}` } } },
+      { requestKey: "h", target: { harness: { definition: definitionOf("target"), digest: `sha256:${"a".repeat(64)}` }, definition: SharedSessionDefinition.parse({
+        ...definition, harness: { name: "target", version: "1.0.0", digest: `sha256:${"b".repeat(64)}`, mode: "isolated" } }) } },
+    ];
+    for (const input of invalid) await expect(promotions.request({ ...base, ...input }), input.requestKey).rejects.toMatchObject({ code: "invalid_request" });
+    expect(await promotions.open(owner.id)).toBeUndefined();
+
+    const { promotion, allocationId } = await started(owner);
+    expect(promotion).toMatchObject({ kind: "promotion", history: true, runtimeSessionId: "runtime-two", fromGeneration: 2 });
+    expect(await promotions.commit(promotion.id, allocationId)).toEqual({ generation: 3 });
+    expect((await pool.query("SELECT generation,placement,reason,ahp_session_id FROM session_segments WHERE session_id=$1 ORDER BY generation", [owner.id])).rows)
+      .toEqual([
+        { generation: 2, placement: "shared", reason: "handoff", ahp_session_id: "runtime-two" },
+        { generation: 3, placement: "container", reason: "promotion", ahp_session_id: "runtime-two" },
+      ]);
+    expect((await shared.get(owner.principal, owner.id))!.view.segment).toMatchObject({ generation: 3, placement: "container", ahpSessionId: "runtime-two" });
+  });
 });
+
+function definitionOf(name: string) {
+  return HarnessDefinition.parse({
+    schemaVersion: "1", name, version: "1.0.0", description: "Synthetic move target.", interaction: "conversation", instructions: "Continue.",
+    model: { preferred: "fixture", allowed: ["fixture"] }, tools: [], input: { schema: { type: "object" } }, output: { schema: { type: "object" } },
+    limits: { maxDurationSeconds: 60, maxInferenceTokens: 1000 }, retry: { safeToRetry: false, maxAttempts: 1 },
+    runners: { allowedProfiles: ["node-ts-agent"], defaultProfile: "node-ts-agent" },
+  });
+}
