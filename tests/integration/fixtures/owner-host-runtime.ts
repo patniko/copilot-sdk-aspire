@@ -179,7 +179,17 @@ export class OwnerHostFixture {
   /** Recent container output with every fixture secret redacted. */
   logs(container: string): string {
     const result = spawnSync("docker", ["logs", "--tail", "100", container], { encoding: "utf8" });
-    let text = `${result.stdout ?? ""}${result.stderr ?? ""}`;
+    return this.redact(`${result.stdout ?? ""}${result.stderr ?? ""}`);
+  }
+
+  /** The tails of the host runtime's newest process logs on the retained volume, redacted. */
+  runtimeLogs(container: string): string {
+    const script = 'for f in $(ls -t /data/copilot-home/logs/*.log 2>/dev/null | head -n 3); do echo "== $f"; tail -n 60 "$f"; done';
+    const result = spawnSync("docker", ["exec", container, "sh", "-c", script], { encoding: "utf8" });
+    return this.redact(`${result.stdout ?? ""}${result.stderr ?? ""}`);
+  }
+
+  redact(text: string): string {
     for (const secret of [this.githubToken, this.#signingKey, ...this.keys.values(), ...this.tokens.values()]) text = text.split(secret).join("[redacted]");
     return text.replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]");
   }

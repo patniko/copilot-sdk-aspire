@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -20,6 +20,7 @@ describe.skipIf(!enabled)("real Copilot CLI on a per-harness owner host", () => 
     const { credential, login } = await testGitHubAccount();
     const fixture = new OwnerHostFixture(inject("databaseUrl"), login, credential);
     const root = await mkdtemp(join(tmpdir(), "owner-host-cli-"));
+    const home = await mkdtemp(join(tmpdir(), "owner-host-cli-home-"));
     const management = new CopilotClient({ mode: "empty", gitHubToken: credential, useLoggedInUser: false, baseDirectory: root, workingDirectory: root, logLevel: "error" });
     const apiKey = randomUUID().repeat(2);
     const harness = "interactive-demo";
@@ -34,7 +35,11 @@ describe.skipIf(!enabled)("real Copilot CLI on a per-harness owner host", () => 
       const info = await ownerHostConnection({ apiUrl, key: apiKey }, harness, transport, sessionId);
       const launch = ownerHostCliArguments(info, sessionId);
       cli = new QualificationCli(root, credential);
-      await cli.launch(launch.args, launch.serverKey ? { COPILOT_AHP_SERVER_KEY: launch.serverKey } : {}, info.token ? [info.token] : []);
+      // One private CLI home, like one client machine, leaves the user's own home untouched. It enables the staff-gated
+      // client each transport needs; the launcher's own environment turns the relay client off for direct launches.
+      await cli.launch(launch.args, {
+        COPILOT_HOME: home, COPILOT_CLI_ENABLED_FEATURE_FLAGS: transport === "github" ? "RELAY_CLIENT" : "AHP_CLIENT", ...launch.env,
+      }, info.token ? [info.token] : []);
       return info;
     };
     const turn = async (question: string, marker: string) => {
@@ -66,9 +71,9 @@ describe.skipIf(!enabled)("real Copilot CLI on a per-harness owner host", () => 
       expect(relay).toMatchObject({ transport: "github", environmentId: host.info.environmentId });
       await turn(questions.relay, markers.relay);
       await cli!.stop();
+      // The host records the CLI's own AHP session ID for the session it created; resume uses it on either transport.
+      await expect.poll(async () => (await fixture.store.list(fixture.key(harness)))[0]?.ahpSessionId, { timeout: 20_000 }).toBeTruthy();
       const [session] = await fixture.store.list(fixture.key(harness));
-      expect(session).toBeDefined();
-      expect(session!.ahpSessionId).toBeDefined();
 
       const direct = await attach("direct", session!.ahpSessionId);
       expect(direct).toMatchObject({ transport: "direct", ahpSessionId: session!.ahpSessionId });
@@ -86,10 +91,19 @@ describe.skipIf(!enabled)("real Copilot CLI on a per-harness owner host", () => 
       expect(sessions[0]!.inputTokens).toBeGreaterThan(0);
     } catch (error) {
       let diagnostic = "";
-      for (const container of fixture.containers) diagnostic += `--- host ${container.slice(0, 12)}\n${fixture.logs(container)}\n`;
+      for (const container of fixture.containers) {
+        diagnostic += `--- host ${container.slice(0, 12)}\n${fixture.logs(container)}\n--- host runtime logs\n${fixture.runtimeLogs(container)}\n`;
+      }
+      const logs = join(home, "logs");
+      const files = (await readdir(logs).catch(() => [] as string[])).filter((file) => file.endsWith(".log"));
+      const dated = await Promise.all(files.map(async (file) => ({ file, at: (await stat(join(logs, file))).mtimeMs })));
+      for (const { file } of dated.sort((a, b) => b.at - a.at).slice(0, 4)) {
+        const lines = (await readFile(join(logs, file), "utf8")).split("\n").filter((line) => !line.includes("poll loop error"));
+        diagnostic += `--- client log ${file}\n${fixture.redact(lines.slice(-50).join("\n"))}\n`;
+      }
       const sessions = await fixture.store.list(fixture.key(harness)).catch(() => []);
       diagnostic += `--- hosted sessions: ${sessions.length}; model requests: ${fixture.requests.length}\n`;
-      diagnostic += `${transcript.join("\n----\n")}\n----\n${cli?.output ?? ""}`;
+      diagnostic += `${transcript.join("\n----\n")}\n----\n${cli?.output ?? ""}\n---- screen\n${cli?.screen.split("\n").filter((line) => line.trim()).join("\n") ?? ""}`;
       diagnostic = diagnostic.split(credential).join("[redacted]");
       if (process.env.OWNER_HOST_CLI_TRANSCRIPT) await writeFile(process.env.OWNER_HOST_CLI_TRANSCRIPT, diagnostic);
       throw new Error(`Owner host CLI qualification failed:\n${diagnostic.slice(0, 3000)}\n...\n${diagnostic.slice(-6000)}`, { cause: error });
@@ -107,6 +121,7 @@ describe.skipIf(!enabled)("real Copilot CLI on a per-harness owner host", () => 
           }
           await management.stop();
           await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+          await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
         }
       }
     }

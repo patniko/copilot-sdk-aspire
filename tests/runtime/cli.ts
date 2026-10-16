@@ -32,6 +32,12 @@ export class QualificationCli {
     for (const secret of this.#secrets) output = output.split(secret).join("[redacted]");
     return output;
   }
+  /** The terminal as currently rendered, with secrets redacted. */
+  get screen(): string {
+    let screen = this.#rendered;
+    for (const secret of this.#secrets) screen = screen.split(secret).join("[redacted]");
+    return screen;
+  }
 
   async connect(connection: SharedConnection): Promise<void> {
     const url = new URL(connection.url);
@@ -78,8 +84,11 @@ export class QualificationCli {
     });
     this.#exit = new Promise((resolveExit) => this.#terminal!.onExit(() => { this.#exited = true; resolveExit(); }));
     const prompt = /(Type.*message|Ask.*anything|for shortcuts|Enter.*prompt|\u276f)/i;
-    await this.wait(() => this.#rendered.includes("Confirm folder trust") || prompt.test(this.#promptOutput), "folder trust or the CLI prompt", 120_000);
-    if (this.#rendered.includes("Confirm folder trust")) {
+    // The trust dialog also draws a \u276f selector, so look for its title in the raw stream as well as on screen.
+    const trust = () => this.#rendered.includes("Confirm folder trust") || this.#output.includes("Confirm folder trust");
+    await this.wait(() => trust() || prompt.test(this.#promptOutput), "folder trust or the CLI prompt", 120_000);
+    if (!trust()) await delay(1000);
+    if (trust()) {
       if (!this.#output.includes(this.root)) throw new Error("The CLI did not identify the task-owned fixture directory.");
       this.#promptOutput = "";
       this.#terminal.write("\r");
@@ -93,8 +102,9 @@ export class QualificationCli {
     await delay(250);
     this.#terminal.write("\r");
   }
+  /** Waits for text on the rendered screen or, when the emulator lags, in the raw stream. */
   async waitFor(marker: string, timeout = 60_000): Promise<void> {
-    await this.wait(() => this.#rendered.includes(marker), marker, timeout);
+    await this.wait(() => this.#rendered.includes(marker) || this.#output.includes(marker), marker, timeout);
   }
   private async wait(predicate: () => boolean, label: string, timeout = 60_000): Promise<void> {
     const deadline = Date.now() + timeout;

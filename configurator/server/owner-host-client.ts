@@ -48,11 +48,11 @@ export async function ownerHostConnection(
 }
 
 /**
- * Copilot CLI arguments for owner-host material. Direct WSS pins the host key for the exact endpoint, carries the
- * one-use ticket in the URL, and consents to GitHub identity authentication; the relay attaches to the harness host's
- * own environment. A verified `ahpSessionId` (or the caller's ID) resumes that session.
+ * Copilot CLI arguments and environment for owner-host material. Direct WSS pins the host key for the exact endpoint,
+ * carries the one-use ticket in the URL, and consents to GitHub identity authentication; the relay attaches to the
+ * harness host's own environment. A verified `ahpSessionId` (or the caller's ID) resumes that session.
  */
-export function ownerHostCliArguments(info: OwnerHostConnection, resume?: string): { args: string[]; serverKey?: string } {
+export function ownerHostCliArguments(info: OwnerHostConnection, resume?: string): { args: string[]; env: Record<string, string> } {
   const args = ["--experimental"];
   const session = info.ahpSessionId ?? resume;
   if (info.transport === "direct") {
@@ -61,10 +61,13 @@ export function ownerHostCliArguments(info: OwnerHostConnection, resume?: string
     url.searchParams.set("tkn", info.token!);
     args.push("--ahp", url.href, "--ahp-authenticate-with-github");
     if (session) args.push("--resume", session);
-    return { args, serverKey };
+    // A direct launch turns the CLI's relay client off. With it on, the CLI (runtime 0a32c39595f) resumes a session
+    // that was ever attached over the relay through its Mission Control environment as well, and the two attachments
+    // crash the CLI.
+    return { args, env: { COPILOT_AHP_SERVER_KEY: serverKey, RELAY_CLIENT: "false" } };
   }
   args.push("--relay", "--environment-id", info.environmentId!);
   // The relay client requires the attached form for a session ID.
   if (session) args.push(`--resume=${session}`);
-  return { args };
+  return { args, env: {} };
 }

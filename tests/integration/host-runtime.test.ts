@@ -120,6 +120,11 @@ describe.skipIf(!enabled)("real managed per-harness AHP hosts in Docker", () => 
       expect(demoSessions.map((session) => session.harness.definition.name)).toEqual(["interactive-demo"]);
       expect(reviewSessions.map((session) => session.harness.definition.name)).toEqual(["review-agent"]);
       expect(demoSessions[0]!.id).not.toBe(reviewSessions[0]!.id);
+      // Each host attributes the client's AHP session URI to the session it created, so clients can resume by it.
+      for (const [harness, uri] of [["interactive-demo", demoSession], ["review-agent", reviewSession]] as const) {
+        await expect.poll(async () => (await fixture.store.list(fixture.key(harness)))[0]?.ahpSessionId, { timeout: 20_000 })
+          .toBe(uri.replace("ahp-session:/", ""));
+      }
 
       fixture.docker("exec", "-u", "10001", demoHost.container, "node", "-e",
         "require('node:fs').writeFileSync('/data/execution/workspace/retained.txt','durable-fixture')");

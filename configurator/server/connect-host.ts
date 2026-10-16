@@ -74,8 +74,8 @@ async function main(): Promise<void> {
     const info = await ownerHostConnection(api, harness, values.transport, values.resume);
     const launch = ownerHostCliArguments(info, values.resume);
     args.splice(0, args.length, ...launch.args);
-    if (launch.serverKey) env.COPILOT_AHP_SERVER_KEY = launch.serverKey;
-    else delete env.COPILOT_AHP_SERVER_KEY;
+    delete env.COPILOT_AHP_SERVER_KEY;
+    Object.assign(env, launch.env);
     console.log(info.transport === "direct"
       ? `Connecting to the '${harness}' owner host over direct WSS with a pinned key and a one-use ticket. This explicitly authorizes GitHub identity authentication to that host.`
       : `Connecting through Mission Control to the '${harness}' owner host's own environment.`);
