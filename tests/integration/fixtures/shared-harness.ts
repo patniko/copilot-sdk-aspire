@@ -47,13 +47,13 @@ export async function sharedRegistry(
 
 export function sharedAdmission(
   registry: SharedRegistry,
-  options: { sessionLimits?: Partial<SharedSessionLimits>; delegation?: string[]; deployment?: HostingDeployment } = {},
+  options: { sessionLimits?: Partial<SharedSessionLimits>; delegation?: string[]; deployment?: HostingDeployment; handlers?: Iterable<string> } = {},
 ): SharedAdmission {
   return new SharedAdmission({
     configuration: SharedConfiguration.fixed(registry),
     sessionLimits: SharedSessionLimits.parse(options.sessionLimits ?? {}),
     delegationHarnesses: options.delegation ?? [],
-    permissionHandlers: new Set(PERMISSION_HANDLERS.keys()),
+    permissionHandlers: new Set(options.handlers ?? PERMISSION_HANDLERS.keys()),
     ...(options.deployment ? { deployment: options.deployment } : {}),
   });
 }

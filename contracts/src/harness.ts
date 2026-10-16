@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const SLUG = /^[a-z][a-z0-9-]{1,62}$/;
 export const SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const TOOL_NAME = /^[a-z][a-z0-9_]{1,62}$/;
+export const TOOL_NAME = /^[a-z][a-z0-9_]{1,62}$/;
 /** A tool name on a remote MCP server: 1-128 ASCII letters, digits, underscores, hyphens, or dots. */
 export const MCP_TOOL_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
 

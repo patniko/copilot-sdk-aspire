@@ -8,6 +8,8 @@ interface Entry {
   path: string;
   directory: boolean;
   content: Buffer | null;
+  /** The entry's own name as first created, when the provider folds the key's case. */
+  display_name: string | null;
   created_at: Date;
   updated_at: Date;
   size?: number;
@@ -18,7 +20,13 @@ export class SessionFileError extends Error {
   }
 }
 
-/** Bounded durable namespaces. Every operation checks and locks the active principal-bound lease. */
+/**
+ * Bounded durable namespaces. Every operation checks and locks the active principal-bound lease.
+ *
+ * A provider that folds key case (Windows conventions) passes the caller's `spelling` of a created path: the same
+ * path in its original case. Entries keep the name they were created with, so listings and promotion snapshots
+ * return it, while lookups stay case-insensitive. Overwriting an entry keeps its name; renaming gives it the new one.
+ */
 export class SessionFileStore {
   constructor(private readonly pool: pg.Pool) {}
 
@@ -76,32 +84,36 @@ export class SessionFileStore {
       const normalized = key(path);
       if (!(await this.#required(db, lease.id, normalized)).directory) throw new SessionFileError("ENOTDIR", "Expected a directory.");
       const prefix = normalized === "/" ? "/" : `${normalized}/`;
-      const result = await db.query<Entry>("SELECT path,directory,NULL::bytea AS content,octet_length(content) AS size,created_at,updated_at FROM session_files WHERE namespace_id=$1 AND starts_with(path,$2) AND path<>$3 ORDER BY path",
+      const result = await db.query<Entry>("SELECT path,directory,NULL::bytea AS content,display_name,octet_length(content) AS size,created_at,updated_at FROM session_files WHERE namespace_id=$1 AND starts_with(path,$2) AND path<>$3 ORDER BY path",
         [lease.id, prefix, normalized]);
       return result.rows.filter((entry) => !entry.path.slice(prefix.length).includes("/"))
-        .map((entry) => ({ name: entry.path.slice(prefix.length), ...info(entry) }));
+        .map((entry) => ({ name: entry.display_name ?? entry.path.slice(prefix.length), ...info(entry) }));
     });
   }
 
-  async write(lease: SessionFileLease, path: string, bytes: Uint8Array, append = false): Promise<void> {
+  async write(lease: SessionFileLease, path: string, bytes: Uint8Array, append = false, spelling?: string): Promise<void> {
     if (bytes.byteLength > 8 * 1024 * 1024) throw new SessionFileError("EDQUOT", "Session file exceeds eight MiB.");
     await this.#tx(lease, async (db) => {
       const normalized = key(path);
       if (normalized === "/") throw new SessionFileError("EISDIR", "Cannot write the namespace root.");
-      await this.#mkdir(db, lease.id, posix.dirname(normalized), true);
+      const spelled = spellingOf(normalized, spelling);
+      await this.#mkdir(db, lease.id, posix.dirname(normalized), true, spelled && posix.dirname(spelled));
       const current = await this.#entry(db, lease.id, normalized);
       if (current?.directory) throw new SessionFileError("EISDIR", "Cannot replace a directory with file content.");
       const content = append && current ? Buffer.concat([current.content!, bytes]) : Buffer.from(bytes);
       if (content.byteLength > 8 * 1024 * 1024) throw new SessionFileError("EDQUOT", "Session file exceeds eight MiB.");
       await db.query(
-        `INSERT INTO session_files(namespace_id,path,directory,content) VALUES($1,$2,false,$3)
+        `INSERT INTO session_files(namespace_id,path,directory,content,display_name) VALUES($1,$2,false,$3,$4)
          ON CONFLICT(namespace_id,path) DO UPDATE SET content=EXCLUDED.content,updated_at=clock_timestamp()`,
-        [lease.id, normalized, content]);
+        [lease.id, normalized, content, displayName(normalized, spelled)]);
     }, true);
   }
 
-  async mkdir(lease: SessionFileLease, path: string, recursive: boolean): Promise<void> {
-    await this.#tx(lease, (db) => this.#mkdir(db, lease.id, key(path), recursive), true);
+  async mkdir(lease: SessionFileLease, path: string, recursive: boolean, spelling?: string): Promise<void> {
+    await this.#tx(lease, (db) => {
+      const normalized = key(path);
+      return this.#mkdir(db, lease.id, normalized, recursive, spellingOf(normalized, spelling));
+    }, true);
   }
 
   async remove(lease: SessionFileLease, path: string, recursive: boolean, force: boolean): Promise<void> {
@@ -121,13 +133,18 @@ export class SessionFileStore {
     });
   }
 
-  async rename(lease: SessionFileLease, source: string, destination: string): Promise<void> {
+  async rename(lease: SessionFileLease, source: string, destination: string, spelling?: string): Promise<void> {
     await this.#tx(lease, async (db) => {
       const from = key(source);
       const to = key(destination);
       if (from === "/" || to === "/" || to.startsWith(`${from}/`)) throw new SessionFileError("EINVAL", "Invalid namespace rename.");
+      const spelled = spellingOf(to, spelling);
       const current = await this.#required(db, lease.id, from);
-      if (from === to) return;
+      if (from === to) {
+        // A case-only rename on a folding provider changes only the entry's name.
+        if (spelled) await db.query("UPDATE session_files SET display_name=$3 WHERE namespace_id=$1 AND path=$2", [lease.id, to, displayName(to, spelled)]);
+        return;
+      }
       if (!(await this.#required(db, lease.id, posix.dirname(to))).directory) throw new SessionFileError("ENOTDIR", "Destination parent is not a directory.");
       const target = await this.#entry(db, lease.id, to);
       if (target) {
@@ -137,13 +154,15 @@ export class SessionFileStore {
         await db.query("DELETE FROM session_files WHERE namespace_id=$1 AND path=$2", [lease.id, to]);
       }
       await db.query(
-        "UPDATE session_files SET path=$3 || substring(path from length($2)+1),updated_at=clock_timestamp() WHERE namespace_id=$1 AND (path=$2 OR starts_with(path,$4))",
-        [lease.id, from, to, `${from}/`]);
+        `UPDATE session_files SET path=$3 || substring(path from length($2)+1),updated_at=clock_timestamp(),
+           display_name=CASE WHEN path=$2 THEN $5 ELSE display_name END
+         WHERE namespace_id=$1 AND (path=$2 OR starts_with(path,$4))`,
+        [lease.id, from, to, `${from}/`, displayName(to, spelled)]);
     }, true);
   }
 
   async #entry(db: pg.PoolClient, id: string, path: string, metadataOnly = false): Promise<Entry | undefined> {
-    const fields = metadataOnly ? "path,directory,NULL::bytea AS content,octet_length(content) AS size,created_at,updated_at" : "*";
+    const fields = metadataOnly ? "path,directory,NULL::bytea AS content,display_name,octet_length(content) AS size,created_at,updated_at" : "*";
     return (await db.query<Entry>(`SELECT ${fields} FROM session_files WHERE namespace_id=$1 AND path=$2`, [id, path])).rows[0];
   }
   async #required(db: pg.PoolClient, id: string, path: string): Promise<Entry> {
@@ -151,7 +170,7 @@ export class SessionFileStore {
     if (!entry) throw new SessionFileError("ENOENT", "Session resource does not exist.");
     return entry;
   }
-  async #mkdir(db: pg.PoolClient, id: string, path: string, recursive: boolean): Promise<void> {
+  async #mkdir(db: pg.PoolClient, id: string, path: string, recursive: boolean, spelled?: string): Promise<void> {
     const current = await this.#entry(db, id, path);
     if (current) {
       if (!current.directory) throw new SessionFileError("EEXIST", "A file occupies the directory path.");
@@ -159,10 +178,10 @@ export class SessionFileStore {
     }
     if (path !== "/") {
       const parent = posix.dirname(path);
-      if (recursive) await this.#mkdir(db, id, parent, true);
+      if (recursive) await this.#mkdir(db, id, parent, true, spelled && posix.dirname(spelled));
       else if (!(await this.#required(db, id, parent)).directory) throw new SessionFileError("ENOTDIR", "Expected a directory parent.");
     }
-    await db.query("INSERT INTO session_files(namespace_id,path,directory) VALUES($1,$2,true)", [id, path]);
+    await db.query("INSERT INTO session_files(namespace_id,path,directory,display_name) VALUES($1,$2,true,$3)", [id, path, displayName(path, spelled)]);
   }
 
   async #tx<T>(lease: SessionFileLease, action: (db: pg.PoolClient) => Promise<T>, checkQuota = false): Promise<T> {
@@ -200,6 +219,21 @@ function key(path: string): string {
   const normalized = posix.normalize(path);
   if (normalized.split("/").length > 64) throw new SessionFileError("EINVAL", "Session path is too deep.");
   return normalized === "/" ? normalized : normalized.replace(/\/$/, "");
+}
+/** Validates a caller's original-case spelling of `normalized`; undefined when the caller passed none. */
+function spellingOf(normalized: string, spelling: string | undefined): string | undefined {
+  if (spelling === undefined) return undefined;
+  const spelled = key(spelling);
+  if (spelled.toLowerCase() !== normalized.toLowerCase() || spelled.split("/").length !== normalized.split("/").length) {
+    throw new SessionFileError("EINVAL", "A path's spelling must differ from its key only in letter case.");
+  }
+  return spelled;
+}
+/** The name to keep for an entry: its spelled name when that differs from the key's own name. */
+function displayName(normalized: string, spelled: string | undefined): string | null {
+  if (!spelled || normalized === "/") return null;
+  const name = posix.basename(spelled);
+  return name === posix.basename(normalized) ? null : name;
 }
 function info(entry: Entry): SessionFileInfo {
   return { directory: entry.directory, size: entry.size ?? entry.content?.length ?? 0, createdAt: entry.created_at.toISOString(), updatedAt: entry.updated_at.toISOString() };

@@ -1,4 +1,4 @@
-import type { PermissionHandler, PermissionRequest, PermissionRequestResult } from "@github/copilot-sdk";
+import { followAssistedApproval, type PermissionHandler, type PermissionRequest, type PermissionRequestResult } from "@github/copilot-sdk";
 import { permissionModeFor, type HarnessDefinition, type PermissionMode } from "@copilot-agent/contracts";
 import type { SharedApprovalPlan } from "./admission.js";
 import type { CustomPermissionDecision, CustomPermissionHandler, CustomPermissionRequest } from "./permission-handlers.js";
@@ -19,6 +19,13 @@ export interface ToolRule {
   target?: (args: unknown) => string | undefined;
 }
 
+/**
+ * Answers a request with the runtime judge's verdict when it approves, and defers everything else to `fallback`. The
+ * SDK's `followAssistedApproval` approves, attributed to `assisted_approval`, only requests the judge approved, never
+ * hooks, managed confirmations, or sandbox bypasses.
+ */
+export type JudgeResponder = (fallback?: PermissionHandler) => PermissionHandler;
+
 export interface SharedPermissionContext {
   harness: string;
   sessionId: string;
@@ -33,6 +40,8 @@ export interface SharedPermissionContext {
   handler?: CustomPermissionHandler;
   handlerTimeoutMs?: number;
   report?: (event: string) => void;
+  /** Follows the runtime judge's verdict; defaults to the SDK's `followAssistedApproval`, and `null` asks a person. */
+  followJudge?: JudgeResponder | null;
 }
 
 const DEFAULT_HANDLER_TIMEOUT_MS = 5_000;
@@ -49,8 +58,11 @@ export function ruleFor(definition: Pick<HarnessDefinition, "permissions">, kind
  * Applies a shared session's permission rules (docs/HOSTING-MODES-PLAN.md, section 3, "Approval modes"). Per-kind
  * `deny` and `allow` rules decide first, before the runtime raises any request, so a runtime in `allow-all` cannot
  * bypass a `deny`. A request the rules send to a person reaches the runtime's permission flow: `custom` asks the
- * registered handler, and every other mode answers `no-result` so the runtime's effective mode and the attached client
- * decide. The application never approves on a person's behalf, and with nobody attached the action does not run.
+ * registered handler. In every other mode the worker follows the runtime judge's verdict when the runtime attaches one
+ * (`assisted`), which the AHP host cannot do while no client has the session open, and otherwise answers `no-result`
+ * so the attached client decides. It never rejects on the judge's behalf, which would pre-empt the attached person.
+ * The application never approves on a person's behalf, and with nobody attached a request the judge did not approve
+ * does not run.
  */
 export class SharedPermissionPolicy {
   constructor(private readonly context: SharedPermissionContext) {}
@@ -71,7 +83,7 @@ export class SharedPermissionPolicy {
     return undefined;
   }
 
-  readonly handle: PermissionHandler = async (request) => {
+  readonly handle: PermissionHandler = async (request, invocation) => {
     if (request.kind !== "custom-tool" && request.kind !== "hook") {
       return reject("This kind of request is not available in shared placement.");
     }
@@ -82,8 +94,9 @@ export class SharedPermissionPolicy {
     const mode = ruleFor(this.context.definition, rule.kind);
     if (mode === "deny") return reject("Denied by the harness permission rules.");
     if (mode === "allow" || rule.quietUnderAsk) return { kind: "approve-once" };
-    if (this.context.approval.mode !== "custom") return { kind: "no-result" };
-    return this.#custom(request, name, rule.kind, rule.target);
+    if (this.context.approval.mode === "custom") return this.#custom(request, name, rule.kind, rule.target);
+    const follow = this.context.followJudge === undefined ? followAssistedApproval : this.context.followJudge;
+    return follow ? follow()(request, invocation) : { kind: "no-result" };
   };
 
   async #custom(request: PermissionRequest, tool: string, kind: ToolPermissionKind, target?: ToolRule["target"]): Promise<PermissionRequestResult> {

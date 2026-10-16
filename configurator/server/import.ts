@@ -1,4 +1,4 @@
-import { BUILTIN_TOOL_GROUPS, type BuiltinToolGroup, PROMPT_SECTIONS, REASONING_EFFORTS, SLUG } from "@copilot-agent/contracts";
+import { BUILTIN_TOOL_GROUPS, type BuiltinToolGroup, CRAFTED_WORKER_VERSION, HarnessDefinition, PROMPT_SECTIONS, REASONING_EFFORTS, SLUG } from "@copilot-agent/contracts";
 import { createFromTemplate } from "./templates.js";
 import type { ExecutionPolicy, HarnessDocument, ImportReport, ProfileSummary } from "./types.js";
 
@@ -93,6 +93,43 @@ export function mapPlannerPlan(
   report.needsWork.push("Define the job input and output schemas.");
 
   return { document, report };
+}
+
+/**
+ * Maps an exported harness definition to an unsaved document: a worker's recorded definition from
+ * `GET /v1/sessions/{id}/workers/{worker}/definition` (crafted definitions are never published automatically), or a bare
+ * definition. Nothing is written until the person creates the harness.
+ */
+export function mapHarnessDefinition(
+  input: unknown,
+  nameOverride: string | undefined,
+): { document: HarnessDocument; report: ImportReport } | { error: string } {
+  const envelope = isObject(input) && isObject(input.definition) ? input : undefined;
+  const parsed = HarnessDefinition.safeParse(envelope ? envelope.definition : input);
+  if (!parsed.success) {
+    const first = parsed.error.issues[0];
+    return { error: `${first?.path.join(".") || "(root)"}: ${first?.message ?? "Invalid harness definition."}` };
+  }
+  const report: ImportReport = { mapped: [], needsWork: [], notApplicable: [] };
+  const { instructions, skills = [], ...rest } = parsed.data;
+  const name = slugify(text(nameOverride), rest.name);
+  const version = rest.version === CRAFTED_WORKER_VERSION ? "1.0.0" : rest.version;
+  report.mapped.push("The definition's instructions, model, tools, built-in tools, and permissions were carried into the harness.");
+  if (name !== rest.name) report.mapped.push(`The harness is named '${name}' instead of '${rest.name}'.`);
+  if (version !== rest.version) report.mapped.push(`The crafted version ${rest.version} became ${version}.`);
+  if (envelope?.source === "crafted") {
+    const template = typeof envelope.template === "string" ? ` from crafting template '${envelope.template}'` : "";
+    report.needsWork.push(`A coordinator crafted this definition${template}. A model wrote its instructions; review them before saving.`);
+  }
+  return {
+    document: {
+      folder: name,
+      manifest: { ...rest, name, version, instructionsFile: "instructions.md", ...(skills.length ? { skills: skills.map((skill) => skill.name) } : {}) },
+      instructions,
+      skills,
+    },
+    report,
+  };
 }
 
 const TOOL_GROUPS: Record<string, BuiltinToolGroup> = {

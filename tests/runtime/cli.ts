@@ -102,6 +102,12 @@ export class QualificationCli {
     await delay(250);
     this.#terminal.write("\r");
   }
+  /** Sends raw keystrokes, such as "\x1b" for Escape. */
+  async press(keys: string): Promise<void> {
+    if (!this.#terminal || this.#exited) throw new Error("The CLI is not connected.");
+    this.#terminal.write(keys);
+    await delay(250);
+  }
   /** Waits for text on the rendered screen or, when the emulator lags, in the raw stream. */
   async waitFor(marker: string, timeout = 60_000): Promise<void> {
     await this.wait(() => this.#rendered.includes(marker) || this.#output.includes(marker), marker, timeout);

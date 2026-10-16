@@ -138,7 +138,7 @@ describe("policy page model", () => {
       transports: ["direct", "github"],
       sizes: { small: { cpus: 0.5, memoryMiB: 1024 }, large: { cpus: 2, memoryMiB: 4096 } },
       defaultSize: "small",
-      workers: { maxConcurrentPerSession: 4, maxPerSession: 16, maxPerPrincipal: 8, idleSeconds: 900, maxLifetimeSeconds: 3600, allowInheritedAuthority: false },
+      workers: { maxConcurrentPerSession: 4, maxPerSession: 16, maxPerPrincipal: 8, idleSeconds: 900, maxLifetimeSeconds: 3600, allowInheritedAuthority: false, allowCoordinatorAnswers: false },
       promotion: { approval: ["ask"] },
       crafting: { templates: {} },
     };

@@ -73,8 +73,10 @@ ${env:Parameters__foundry-endpoint} = "https://<resource>.openai.azure.com/opena
 ## Experimental local hybrid deployment
 
 This opt-in path keeps conversational work on one shared in-process runtime and starts Linux execution
-containers only for admitted jobs. The existing direct-container agent is independent. It requires the
-locally patched runtime/SDK/hosting sources and a matching CLI; see the
+containers only for admitted jobs. The shared worker serves every published conversation harness whose
+`hosting.mode` is `shared` and whose effective policy allows that mode; each session runs the harness's own
+instructions, model options, tools, skills, sub-agents, limits, and permissions. The existing direct-container agent
+is independent. It requires the locally patched runtime/SDK/hosting sources and a matching CLI; see the
 [build and qualification instructions](DEVELOPER-GUIDE.md#hybrid-runtime-qualification).
 
 Build the executor once before starting the controller. This uses the workstation's native Docker
@@ -89,17 +91,34 @@ docker build -f deploy\Dockerfile --target agent-executor `
 
 aspire secret set "Parameters:hybrid-hosting" "true"
 aspire secret set "Parameters:hybrid-principals" '{"dev":12345}'
-aspire secret set "Parameters:hybrid-model" "<approved Foundry deployment>"
 aspire secret set "Parameters:hybrid-runtime-path" "C:\path\to\qualified\copilot-runtime.exe"
 aspire secret set "Parameters:hybrid-harnesses" "text-summarizer,copilot-coding-agent"
 aspire run --apphost .\apphost.mts
 ```
 
 Replace `12345` with the numeric GitHub ID for the caller using the `dev` API key. This is an
-operator-controlled binding, not user-supplied identity. The model must be approved by the base policy
-and available through the configured gateway. Existing Foundry configuration is still required.
+operator-controlled binding, not user-supplied identity. Each session uses the first of its harness's models that
+the effective policy approves, through the configured gateway; existing Foundry configuration is still required.
 The runtime launcher must match the **host** OS/architecture and have its matching library beside it;
 do not point a Windows Node worker at the Linux container bundle.
+
+The worker reads harnesses and policy from the customer workspace (`CONFIG_ROOT`), like the other services. The
+examples include two shared harnesses with their policy overrides: `hybrid-coordinator` (the coordinator that
+delegates jobs to the `hybrid-harnesses`) and `shared-researcher` (workspace files and filtered web access, with
+`manual` and `assisted` approvals allowed). The workspace is seeded only when its `harnesses` or `policy` folder is
+missing, so copy them from `examples/customer-config` into an existing workspace. Harness and policy changes reach
+new activations within a few seconds without restarting the worker; a session keeps the harness version it was
+created with and is re-checked against the current policy each time it activates. Sessions created before
+harness-driven hosting cannot be resumed; create new ones.
+
+A harness's approved remote MCP servers come from the policy's `mcpServers` catalog. For each secret reference in
+that catalog (`auth.secret`), the AppHost declares a secret parameter `mcp-secret-<reference>` and gives the worker
+its value as `MCP_SECRET_<REFERENCE>` (upper case, hyphens as underscores). For example, a catalog server with
+`"auth": { "secret": "docs-search-token" }` needs:
+
+```powershell
+aspire secret set "Parameters:mcp-secret-docs-search-token" "<token for that server>"
+```
 
 The AppHost adds `connection-broker`, `session-host`, and `execution-controller` Node services, private
 worker, broker, and allocation-signing keys, and removes the always-on `agent-executor` resource. The CLI
@@ -110,13 +129,17 @@ They have no database, Docker socket, or provider credential. API/dispatcher/gat
 remain shared; optional `agent-host` compute is additional and is not counted as idle execution capacity.
 The controller requires a local Docker socket/named pipe and never silently targets a remote daemon.
 
-Connect through the provisioned API path:
+Connect through the provisioned API path, naming a shared harness:
 
 ```powershell
-pnpm host:connect --destination shared --target local --transport direct --cli C:\path\to\matching\dist-cli\index.js
+pnpm host:connect --harness shared-researcher --target local --transport direct --cli C:\path\to\matching\dist-cli\index.js
 # Resume using the application session UUID printed by the first launcher:
-pnpm host:connect --destination shared --target local --transport direct --resume <session-uuid> --cli C:\path\to\matching\dist-cli\index.js
+pnpm host:connect --harness shared-researcher --target local --transport direct --resume <session-uuid> --cli C:\path\to\matching\dist-cli\index.js
 ```
+
+`--destination shared` still works and selects `hybrid-coordinator`. The launcher checks the harness's
+[hosting view](API.md#hosting-views) first and reports why it cannot be hosted; the GitHub relay is not offered for
+shared harnesses.
 
 The shared launcher explicitly consents to GitHub identity authentication to the provisioned host.
 It connects through the broker URL that the API returns and does not expose the private listener token
@@ -134,21 +157,25 @@ without colliding with another checkout. TypeScript AppHosts do not accept `--la
 ### Hybrid controls
 
 All settings are validated server-side. Changing them through Aspire configuration requires a service
-restart; retained sessions keep their admitted definition rather than silently receiving new limits.
+restart; retained sessions keep their admitted limits rather than silently receiving new ones.
 
 | Parameter | Effect |
 | --- | --- |
-| `hybrid-worker-limits` | JSON matching `SharedWorkerLimits`: resident sessions, global/per-principal active turns, queue size/wait, retained-session count, global/per-principal containers |
-| `hybrid-session-limits` | JSON matching `SharedSessionLimits`: aggregate and per-turn tokens, turn deadline, idle time, total/parallel jobs, automatic continuation limit |
+| `hybrid-worker-limits` | JSON matching `SharedWorkerLimits`: resident sessions, global/per-principal active turns, queue size/wait, retained-session count, global/per-principal containers, and per-harness resident sessions, active turns, and queued turns (`residentSessionsPerHarness`, `activeTurnsPerHarness`, `queuedTurnsPerHarness`, with overrides by harness name in `harnesses`) |
+| `hybrid-session-limits` | JSON matching `SharedSessionLimits`: ceilings for aggregate and per-turn tokens, turn deadline, idle time, total/parallel jobs, and automatic continuations; a session also stays within its harness's limits and policy |
 | `hybrid-executor-image` | Prebuilt operator-selected image, resolved to an immutable local image ID before allocation |
-| `hybrid-harnesses` | Approved published child harnesses; version/digest snapshot retained on session creation |
+| `hybrid-harnesses` | Published batch harnesses that a shared harness's `shared:delegate-job` binding may run; version/digest snapshot retained on session creation |
+| `mcp-secret-<reference>` | One secret per `auth.secret` reference in the policy's remote MCP catalog, declared only when the catalog uses it |
 | `hybrid-principals` | API-principal to numeric GitHub account map; retained principals cannot be rebound |
 | `session-containers` | `true` adds per-session containers for `isolated` conversation harnesses ([below](#session-containers)); requires `hybrid-hosting` |
 | `session-container-image` | Prebuilt session-container image, resolved to an immutable local image ID; default `copilot-session-container:local` |
 | `session-container-settings` | JSON matching `SessionContainerSettings`: idle seconds, allocation lifetime, startup and shutdown limits, heartbeat interval |
 
 For example, `{"executionContainers":1,"activeTurns":2,"residentSessions":16}` limits child execution to
-one physical allocation while permitting two model turns. Starting and retiring allocations count too;
+one physical allocation while permitting two model turns. By default one harness can hold at most 12 resident
+sessions, one running turn, and 24 queued turns, so a busy harness cannot starve the others; for example,
+`{"activeTurns":4,"harnesses":{"shared-researcher":{"activeTurns":2}}}` lets that harness run two turns at once.
+A per-harness value never exceeds the matching worker-wide limit. Starting and retiring allocations count too;
 failed deletion does not free capacity. Zero containers disables new allocation without discarding queued
 jobs. Warm pooling is deliberately not offered: the implemented mode retires one-shot containers.
 Session containers count against the same `executionContainers` and `containersPerPrincipal` limits as jobs.
@@ -224,7 +251,7 @@ examples. Use `--build-context customer-config=examples/customer-config` only fo
 image. Do not put credentials in that context. Alternatively mount an operator-managed `/config`
 read-only and set `CONFIG_ROOT` at runtime. `PLATFORM_ROOT` remains `/platform`.
 Configure the same database, dispatcher/gateway URLs, worker key, broker key (`CONNECTION_BROKER_KEY`),
-and principal/model/harness settings as the Node service, and retain `/data`. Set `SHARED_WORKER_URL` to the
+principal, delegation-harness, limit, and `MCP_SECRET_*` settings as the Node service, and retain `/data`. Set `SHARED_WORKER_URL` to the
 container's own URL and `CONNECTION_BROKER_URL` to the broker's, as the AppHost does, so shared web and MCP egress
 refuses both listeners. Clients reach the container
 only through a connection broker configured with the same broker key and the container's URL as its

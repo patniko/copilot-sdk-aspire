@@ -80,13 +80,18 @@ Treat the output as a secret. Do not put it in documentation, screenshots, or co
 
 ## Demo agent host
 
-For the experimental shared coordinator instead, follow
+For experimental shared conversations instead, follow
 [local hybrid deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment). Use
-`pnpm host:connect --destination shared` to create a conversation, or add `--resume <session-uuid>`
-after disconnect/idle eviction. The CLI attaches through the local connection broker, so reloading harnesses
-(which restarts the API) does not disconnect it. Lightweight chat needs no job container; the coordinator can delegate
-approved work and receive completion and retained artifacts. This is distinct from `--destination container`
-(the default existing host route) and from retrying a batch job.
+`pnpm host:connect --harness <shared harness>`, such as `shared-researcher`, to create a conversation, or add
+`--resume <session-uuid>` after disconnect/idle eviction; `--destination shared` uses the `hybrid-coordinator`
+harness. Many shared harnesses run in one worker without a container per conversation. The CLI attaches through the
+local connection broker, so reloading harnesses (which restarts the API) does not disconnect it. The coordinator
+can delegate approved work and receive completion and retained artifacts. This is distinct from
+`--destination container` (the default existing host route) and from retrying a batch job.
+
+Approvals and questions appear in the CLI. The harness's approval mode decides which requests need you, and the
+CLI can switch only among the modes the operator's policy allows. While nobody is attached, a request that needs a
+person does not run. See [shared conversation approvals](SECURITY.md#shared-conversation-approvals).
 
 Shared sessions have finite turn, job and aggregate budgets. Close a session through the session API
 when finished; add `cancelChildren: true` only when you intend to cancel its admitted jobs as well.

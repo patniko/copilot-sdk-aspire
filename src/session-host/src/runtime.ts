@@ -9,7 +9,7 @@ import type { RuntimeApprovalMode } from "@copilot-agent/contracts";
 import { SessionFileStore, type SessionFileLease } from "@copilot-agent/job-store";
 import { z } from "zod";
 import type { SharedSessionSettings } from "./harness-session.js";
-import { postgresSessionFilesystem } from "./postgres-filesystem.js";
+import { postgresSessionFilesystem, providerKey } from "./postgres-filesystem.js";
 import { SessionWorkspace } from "./workspace.js";
 
 export interface SharedActivationContext {
@@ -192,12 +192,12 @@ export class SharedSessionRuntime {
         });
         if (!applied.success || applied.mode !== approval.initial) throw new Error("The runtime refused the session's approval mode.");
       }
-      const hostOptions: AhpHostOptions & { approvalModes?: { available: RuntimeApprovalMode[]; default: RuntimeApprovalMode } } = {
+      const hostOptions: AhpHostOptions = {
         computeId: options.id,
         workingDirectory: anchor,
         expectedOwner: { githubApiUrl: "https://api.github.com", userId: options.githubUserId },
         localServer: { hostname: "127.0.0.1", port: 0 },
-        // The ceiling an attached client can switch within; SDKs without the option ignore it.
+        // The ceiling an attached client can switch within; the host advertises and enforces it.
         ...(approval ? { approvalModes: { available: [...approval.available], default: approval.initial } } : {}),
         onWorkspaceResource: (request, invocation) => {
           options.onActivity?.(context);
@@ -246,10 +246,43 @@ export class SharedSessionRuntime {
     return activation.close;
   }
 
+  /**
+   * Provider keys of a session's runtime state directory and workspace anchor, derived exactly as `open` stores them:
+   * the areas a promotion snapshot reads.
+   */
+  async storageAreas(id: string): Promise<{ state: string; workspace: string }> {
+    if (!z.string().uuid().safeParse(id).success) throw new Error("Invalid shared session identity.");
+    const anchorDirectory = join(this.root, "anchors", id);
+    await mkdir(anchorDirectory, { recursive: true });
+    const conventions = process.platform === "win32" ? "windows" : "posix";
+    return {
+      state: providerKey(join(this.root, "session-state"), conventions).key,
+      workspace: providerKey(await realpath(anchorDirectory), conventions).key,
+    };
+  }
+
   async sendSystem(id: string, prompt: string): Promise<string> {
     const activation = this.#activations.get(id);
     if (!activation || activation.close || activation.lifetime.signal.aborted) throw new Error("The shared conversation is not active.");
     return activation.session.send({ prompt, source: "system" });
+  }
+
+  /** The approval mode the runtime reports in force for an active conversation. */
+  async approvalMode(id: string): Promise<string> {
+    const activation = this.#activations.get(id);
+    if (!activation || activation.close) throw new Error("The shared conversation is not active.");
+    return (await activation.session.rpc.permissions.getMode()).mode;
+  }
+
+  /**
+   * Asks the runtime for an approval mode, as an attached client's mode switch does. Managed settings refuse modes the
+   * harness's policy does not allow; the result is the mode in force afterwards.
+   */
+  async requestApprovalMode(id: string, mode: RuntimeApprovalMode): Promise<string> {
+    const activation = this.#activations.get(id);
+    if (!activation || activation.close || activation.lifetime.signal.aborted) throw new Error("The shared conversation is not active.");
+    try { return (await activation.session.rpc.permissions.setMode({ mode })).mode; }
+    catch { return (await activation.session.rpc.permissions.getMode()).mode; }
   }
 
   async hasSystemMessage(id: string, marker: string): Promise<boolean> {

@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1715" viewBox="0 0 1280 1715" role="img" aria-labelledby="title description">
   <title id="title">Copilot SDK and Aspire service architecture</title>
-  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The default executor pool runs unprivileged SDK runners using the inference gateway. Optional agent hosts remain separate: one deployed demo host or, locally, one owner host per isolated harness, each for one owner, reached over direct WSS (through the broker in hybrid mode) or that owner's GitHub relay environment. Experimental local hybrid mode adds protected CLI provisioning, a connection broker that verifies one-use tickets and forwards CLI connections to their session's placement, and a shared in-process coordinator with PostgreSQL session files; an operator-owned Docker controller starts one-shot execution containers and durable completion returns results to the coordinator. It also starts one resumable session container per isolated conversation session, which the broker reaches with a per-allocation credential; the container keeps only allocation-scoped credentials, stops when idle, and resumes from its retained volume. Separately, the local configurator can send a description and catalog through a request-owned SDK to GitHub Copilot using server-side GitHub authentication; configuration returns to the unsaved editor and code proposals are never installed. Azure hybrid and two-real-account qualification remain open. Outbound network isolation is not enforced.</desc>
+  <desc id="description">A caller authenticates to the agent API. API and dispatcher access PostgreSQL. The default executor pool runs unprivileged SDK runners using the inference gateway. Optional agent hosts remain separate: one deployed demo host or, locally, one owner host per isolated harness, each for one owner, reached over direct WSS (through the broker in hybrid mode) or that owner's GitHub relay environment. Experimental local hybrid mode adds protected CLI provisioning, a connection broker that verifies one-use tickets and forwards CLI connections to their session's placement, and a shared in-process worker that runs many shared harnesses with PostgreSQL session files, approval modes, and web and remote MCP access through an egress filter; an operator-owned Docker controller starts one-shot execution containers and durable completion returns results to the conversation. It also starts one resumable session container per isolated conversation session, which the broker reaches with a per-allocation credential; the container keeps only allocation-scoped credentials, stops when idle, and resumes from its retained volume. Separately, the local configurator can send a description and catalog through a request-owned SDK to GitHub Copilot using server-side GitHub authentication; configuration returns to the unsaved editor and code proposals are never installed. Azure hybrid and two-real-account qualification remain open. Outbound network isolation is not enforced.</desc>
   <defs>
     <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
       <path d="M 0 0 L 10 5 L 0 10 z" fill="#576574"/>
@@ -108,7 +108,7 @@
   <text x="44" y="919" class="small">Locally, one owner host per isolated harness. Native mode uses Copilot billing/permissions. Managed mode needs a qualified runtime. Neither is per-customer isolation.</text>
 
   <rect x="24" y="960" width="1231" height="400" rx="12" fill="#f6f8fa" stroke="#8250df"/>
-  <text x="44" y="991" class="heading">Experimental local hybrid mode: shared conversation, on-demand execution, session containers</text>
+  <text x="44" y="991" class="heading">Experimental local hybrid mode: shared harnesses, on-demand execution, session containers</text>
   <rect x="44" y="1020" width="240" height="96" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
   <text x="164" y="1048" class="heading" text-anchor="middle">CLI + agent-api</text>
   <text x="164" y="1073" class="body" text-anchor="middle">Principal-bound provisioning</text>
@@ -120,8 +120,8 @@
   <path d="M 284 1168 H 400 V 1118" class="edge"/>
   <rect x="334" y="1020" width="260" height="96" rx="10" fill="#f0eaff" stroke="#8250df"/>
   <text x="464" y="1048" class="heading" text-anchor="middle">session-host</text>
-  <text x="464" y="1073" class="body" text-anchor="middle">One shared in-process runtime</text>
-  <text x="464" y="1097" class="body" text-anchor="middle">Leased session FS + budgets</text>
+  <text x="464" y="1073" class="body" text-anchor="middle">Many harnesses, one runtime</text>
+  <text x="464" y="1097" class="body" text-anchor="middle">Session FS, budgets, approvals</text>
   <rect x="644" y="1020" width="260" height="96" rx="10" fill="#eaf2ff" stroke="#3572b0"/>
   <text x="774" y="1048" class="heading" text-anchor="middle">execution-controller</text>
   <text x="774" y="1073" class="body" text-anchor="middle">Operator-owned Docker access</text>
@@ -146,7 +146,7 @@
   <text x="924" y="1255" class="small">Allocation-scoped credential only:</text>
   <text x="924" y="1275" class="small">own spec, readiness, heartbeats and</text>
   <text x="924" y="1295" class="small">session inference grants</text>
-  <text x="44" y="1342" class="small">PostgreSQL owns state; the gateway owns inference credentials. No idle job pool. Azure and two-real-account gates remain open.</text>
+  <text x="44" y="1342" class="small">PostgreSQL owns state; the gateway owns inference credentials; web and remote MCP pass the worker's egress filter. No idle job pool. Azure and two-real-account gates remain open.</text>
   <rect x="24" y="1385" width="1231" height="175" rx="12" fill="#f6f8fa" stroke="#3572b0"/>
   <text x="44" y="1413" class="heading">Local assisted authoring: separate from deployed jobs and hosts</text>
   <rect x="44" y="1430" width="240" height="80" rx="10" fill="#eaf2ff" stroke="#3572b0"/>

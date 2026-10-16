@@ -206,6 +206,25 @@ describe("configurator hosting routes", () => {
     expect(body.stale).toEqual(expect.arrayContaining([{ harness: "interactive-demo", version: "1.0.0", reason: "missing" }]));
   });
 
+  it("keeps the session-container offer that the Hosting page's launcher actions follow", async () => {
+    const deployment: HostingDeployment = { executor: "pool", isolatedHosts: [], sessionContainers: { transports: ["direct"], features: [] } };
+    const overview = serviceView([conversation("chat")], deployment, { base: policy, overrides: new Map() });
+    fetcher.mockResolvedValueOnce({ status: 200, body: overview });
+    const body = (await app.inject({ method: "GET", url: "/api/hosting?target=local", headers })).json();
+    expect(body.overview.hosts.sessionContainers).toEqual({ transports: ["direct"], features: [] });
+    // The fixtures in hosting.test.tsx mirror this view: direct WSS is ready, and the relay names its missing transport.
+    expect(body.overview.harnesses[0]).toMatchObject({ harness: "chat", placement: "container", status: "ready", problems: [] });
+    expect(body.overview.harnesses[0].transports).toEqual([
+      { transport: "direct", allowed: true, available: true },
+      {
+        transport: "github",
+        allowed: true,
+        available: false,
+        problem: { code: "hosting_unavailable", message: "No host for 'chat' offers the GitHub relay.", prerequisite: { kind: "transport", name: "github" } },
+      },
+    ]);
+  });
+
   it("says why the view is unavailable instead of evaluating hosting itself", async () => {
     fetcher.mockResolvedValueOnce({ status: 404, body: {} });
     const body = (await app.inject({ method: "GET", url: "/api/hosting?target=azure", headers })).json();

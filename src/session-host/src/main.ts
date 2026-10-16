@@ -1,24 +1,33 @@
 import { join } from "node:path";
 import { z } from "zod";
-import { SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits } from "@copilot-agent/contracts";
-import { DelegationStore, JobStore, migrate, SessionFileStore, SharedStore } from "@copilot-agent/job-store";
+import {
+  SessionContainerSettings, SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits, WORKER_CONTAINER_FEATURES,
+} from "@copilot-agent/contracts";
+import { AllocationStore, DelegationStore, JobStore, migrate, SessionFileStore, SharedStore, WorkerStore } from "@copilot-agent/job-store";
 import {
   Admission, assertOverridesMatchHarnesses, createLogger, createPostgresPool, listen, listenPort, loadHarnesses, loadProfiles,
   loadPolicySet, optionalEnv, readPostgresConnection, requireEnv, serviceUrl,
 } from "@copilot-agent/service-defaults";
-import { SharedAdmission } from "./admission.js";
+import { SHARED_WORKER_DEPLOYMENT, SharedAdmission } from "./admission.js";
 import { CompletionPump } from "./completions.js";
 import { SharedConfiguration, type SharedRegistry } from "./configuration.js";
 import { PERMISSION_HANDLERS } from "./permission-handlers.js";
 import { buildSharedHost } from "./server.js";
 import { SharedSessionService } from "./service.js";
 import { createSharedEgress } from "./shared-egress.js";
+import { WorkerInboxPump } from "./worker-inbox.js";
 
 const logger = createLogger("session-host");
 const key = requireEnv("SHARED_WORKER_KEY");
 const brokerKey = requireEnv("CONNECTION_BROKER_KEY");
 const principals = SharedPrincipalBindings.parse(JSON.parse(requireEnv("SHARED_PRINCIPALS")));
 const limits = SharedWorkerLimits.parse(JSON.parse(optionalEnv("SHARED_WORKER_LIMITS", "{}")));
+// Orchestrator coordinators run here; their workers run in session containers the execution controller starts.
+const orchestratorWorkers = optionalEnv("ORCHESTRATOR_WORKERS", "false");
+if (!["true", "false"].includes(orchestratorWorkers)) throw new Error("ORCHESTRATOR_WORKERS must be true or false.");
+const workerContainers = orchestratorWorkers === "true"
+  ? SessionContainerSettings.parse(JSON.parse(requireEnv("SESSION_CONTAINER_SETTINGS")))
+  : undefined;
 const configuration = new SharedConfiguration(async () => {
   const [harnesses, profiles, policies] = await Promise.all([loadHarnesses(), loadProfiles(), loadPolicySet()]);
   assertOverridesMatchHarnesses(policies, harnesses.keys());
@@ -35,12 +44,14 @@ const admission = new SharedAdmission({
   sessionLimits: SharedSessionLimits.parse(JSON.parse(optionalEnv("SHARED_SESSION_LIMITS", "{}"))),
   delegationHarnesses,
   permissionHandlers: new Set(PERMISSION_HANDLERS.keys()),
+  ...(workerContainers ? { deployment: { ...SHARED_WORKER_DEPLOYMENT, workerContainers: { features: [...WORKER_CONTAINER_FEATURES] } } } : {}),
 });
 const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);
 const store = new SharedStore(pool);
 const jobs = new JobStore(pool);
 const delegations = new DelegationStore(pool, store, jobs);
+const workers = workerContainers ? new WorkerStore(pool, store, new AllocationStore(pool, store)) : undefined;
 const jobAdmissions = new WeakMap<SharedRegistry, Admission>();
 const port = listenPort(8083);
 // Shared egress also refuses this deployment's own listeners: this worker and the connection broker.
@@ -80,13 +91,25 @@ const service = new SharedSessionService({
       profiles: async () => (await configuration.current()).profiles,
       jobs, delegations, maxOpenJobs: initial.policies.base.maxQueuedJobsPerPrincipal,
     },
+    ...(workers && workerContainers ? {
+      workers: {
+        workers, registry: () => configuration.current(), features: WORKER_CONTAINER_FEATURES,
+        deploymentLimit: Math.max(1, limits.executionContainers),
+        containers: { limits, startupSeconds: workerContainers.startupSeconds },
+      },
+    } : {}),
   },
   permissionHandlers: PERMISSION_HANDLERS,
 });
 const app = buildSharedHost(service, key, brokerKey);
 const completions = new CompletionPump(service, delegations, jobs, logger);
-app.addHook("preClose", async () => { await completions.stop(); });
+const workerInbox = workers ? new WorkerInboxPump(service, workers, logger) : undefined;
+app.addHook("preClose", async () => {
+  await completions.stop();
+  await workerInbox?.stop();
+});
 app.addHook("onClose", async () => { await pool.end(); });
 await service.start();
 completions.start();
+workerInbox?.start();
 await listen(app, port);

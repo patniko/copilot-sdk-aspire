@@ -12,6 +12,7 @@ import {
   HostingOverview,
   HarnessHostingView,
   SHARED_WORKER_FEATURES,
+  WORKER_CONTAINER_FEATURES,
 } from "@copilot-agent/contracts";
 import type { JobEventListener, JobStore } from "@copilot-agent/job-store";
 import {
@@ -273,6 +274,10 @@ describe("hosting errors and deployment description", () => {
     expect(hostingDeployment({ executor: "pool", demoHost: demo("github"), sharedWorker: false }).isolatedHosts).toEqual([]);
     expect(hostingDeployment({ executor: "pool", demoHost: demo("disabled"), sharedWorker: false }).isolatedHosts).toEqual([]);
     expect(HostingDeployment.safeParse(hostingDeployment({ executor: "pool", demoHost: demo("both"), sharedWorker: true })).success).toBe(true);
+    const orchestrating = hostingDeployment({ executor: "on-demand", sharedWorker: true, sessionContainers: true, workerContainers: true });
+    expect(orchestrating.workerContainers).toEqual({ features: [...WORKER_CONTAINER_FEATURES] });
+    expect(HostingDeployment.safeParse(orchestrating).success).toBe(true);
+    expect(hostingDeployment({ executor: "on-demand", sharedWorker: true, sessionContainers: true }).workerContainers).toBeUndefined();
   });
 });
 
