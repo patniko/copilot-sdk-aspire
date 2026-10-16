@@ -1178,7 +1178,118 @@ Limitations:
 
 ### Stage 2: harness-driven shared mode
 
-Pending.
+Recorded 2026-10-16 on branch `patniko-harness-driven-shared-mode`: commits `e02299a` and `100f565` (session model,
+admission, base tools, approval modes, API, launcher, examples), `2a55e75` (unit and store tests, AppHost MCP
+secrets), `f22a750` (in-process approval gates), `a308c17` (CLI gates), `cfd6c66` (gates through the broker), and
+the commits that add per-harness residency tests and this record. It merges the stage-1, broker, and egress slices;
+the last merge is the integration branch at `6a62235` in `57ab4f5`. The integration branch checkpointed the session
+model at `9c6b918`.
+
+Delivered, local only and opt-in through `Parameters:hybrid-hosting`:
+
+- **Session model** ([`shared.ts`](../contracts/src/shared.ts)): `POST /v1/sessions` takes `{ harness, version?,
+  label }`. The session row stores the admitted harness snapshot (definition, digest, effective-policy digest, model,
+  limits, and delegation targets) instead of the AppHost-defined coordinator definition, keeping `model` and `limits`
+  at the top level so the ledger's SQL is unchanged. Views add `harness`, `mode`, `placement`, and `segment`
+  (`generation`, `placement`, `harness`, `ahpSessionId`, `startedAt`), and `POST /v1/sessions/{id}/connection` takes
+  `{ transport }`. Sessions of the former fixed coordinator are refused on activation (`409 invalid_state`).
+- **Admission** ([`admission.ts`](../src/session-host/src/admission.ts)): the API and the worker evaluate the harness
+  with stage 1's `evaluateHosting`, reporting `hosting_mode_not_allowed`, `transport_not_allowed`, `policy_rejected`,
+  and `hosting_unavailable` with its prerequisite, and per connection `transport_unsupported` for the GitHub relay.
+  The worker also refuses batch harnesses, reserved tool names, bindings and permission handlers it does not
+  implement, and harnesses none of whose models the policy approves. Activation re-checks the snapshot's digest and
+  the current effective policy (`policy_revoked` when the admitted model was removed). Harnesses and policy reload at
+  most every five seconds, keeping the last valid configuration.
+- **Harness-driven sessions** ([`harness-session.ts`](../src/session-host/src/harness-session.ts)): instructions and
+  prompt mode, model options, in-runtime sub-agents (built-in agents excluded), skills through a provider, questions
+  when `permissions.questions` is set, limits, and permissions come from the harness, mirroring
+  `buildSessionOptions(..., "conversation")`.
+- **Many harnesses on one worker**: per-harness resident-session, active-turn, and queued-turn ceilings (12, 1, and
+  24 by default, overridable by harness name, never above the worker-wide limits) in the ledger's turn admission and
+  the worker's residency ([`residency.ts`](../src/session-host/src/residency.ts)). A harness at its ceiling can evict
+  only its own idle sessions.
+- **Base tool set** (section 7.2 and N6; [`toolkit.ts`](../src/session-host/src/toolkit.ts),
+  [`tools.ts`](../src/session-host/src/tools.ts)): `files` maps to workspace tools over `sessionFs` (read, write, edit,
+  list, and search; D3), `web` to the egress slice's filtered `web_fetch`, `mcpServers` to remote MCP tools from the
+  operator catalog with credentials from `MCP_SECRET_*` (AppHost secret parameters `mcp-secret-<reference>`), every
+  session gets a task list in session storage, and the bindings `shared:delegate-job`, `shared:get-job`,
+  `shared:read-job-artifact`, and `shared:import-job-artifact` serve delegation. The conversation profile lists them
+  in `toolBindings` and `inProcessBindings`; batch and demo-host admission reject them. Shell, Python, and stdio MCP
+  remain rejected by the stage-1 contract.
+- **Approval modes** ([`permissions.ts`](../src/session-host/src/permissions.ts),
+  [`permission-handlers.ts`](../src/session-host/src/permission-handlers.ts)): per-kind `deny` and `allow` rules decide
+  in the pre-tool hook, before the runtime raises a request. `manual` and `assisted` leave requests to the runtime and
+  the attached client; `allow-all` lets the runtime approve; `custom` calls a handler registered by name (sample
+  `workspace-drafts`) that denies on an error, an invalid answer, or after five seconds, and keeps the runtime in
+  `manual`. The worker sets the runtime mode and judge model before publication (`permissions.setMode`), applies
+  managed settings that refuse the modes the policy disallows, and passes the allowed modes to
+  `startAhpHost({ approvalModes })` for runtimes that implement the host ceiling. `SHARED_WORKER_FEATURES` lists
+  `remote-mcp`, `approval-modes`, and `custom-approval`.
+- **Coordinator migration**: the fixed coordinator is now the example harness `hybrid-coordinator`, with a
+  `shared-researcher` example (files and web; `manual` and `assisted` allowed). The AppHost no longer takes
+  `hybrid-model`; `hybrid-harnesses` names the delegation targets.
+- **Launcher**: `pnpm host:connect --harness <name> --target local --transport direct [--resume <id>] [--label
+  <text>]`; `--destination shared` selects `hybrid-coordinator`. It checks the harness's hosting view first and
+  reports the API's hosting error codes.
+
+| Exit evidence | Result |
+| --- | --- |
+| Two shared harnesses serve two API principals on one worker over direct WSS from the CLI | [`shared-gate.test.ts`](../tests/integration/shared-gate.test.ts): two real CLIs attached through the broker, each to its own principal's session of a different harness, both resident on the worker at once. Another principal gets `404` for get, connect, and close and does not see the session in its list; a ticket for one session cannot open another through the broker (`401`), and the worker refuses tickets presented directly (`401`) |
+| A shared harness uses web access and a remote MCP tool | Same gate: `web_fetch` of a page (a public-looking name mapped to a loopback test site through the filter's test resolver) and a search on a fake Streamable HTTP MCP server, whose echoed credential the worker redacted |
+| Loopback, private, link-local, and internal addresses are refused | Same gate: the metadata address `169.254.169.254`, loopback, a private address, and a redirect to loopback were refused, and the test site received only the page and the redirecting request. The egress slice's classifier and redirect suites cover the remaining ranges and internal endpoints |
+| The CLI can switch only to allowed approval modes | Partly met. [`shared-approval-cli.test.ts`](../tests/integration/shared-approval-cli.test.ts): for a `manual`/`assisted` policy the CLI's picker never offered Allow All and `/permissions allow-all` left the session in `assisted`; [`shared-approvals.test.ts`](../tests/integration/shared-approvals.test.ts): managed settings refuse a disallowed `setMode`. With runtime `0a32c39595f` the host offers attached clients only Manual Approval for application-published sessions, so switching to Assisted from the CLI awaits the host approval ceiling (the gate's `HYBRID_APPROVAL_CEILING` checks) |
+| A GitHub relay request for a shared harness fails with `transport_unsupported` | `shared-gate.test.ts` and [`shared-api.test.ts`](../tests/unit/shared-api.test.ts): `422 transport_unsupported`, with nothing activated |
+| No containers are allocated | `shared-gate.test.ts`: no `execution_allocations` rows |
+
+| Required failure coverage | Evidence |
+| --- | --- |
+| Disallowed mode, unavailable mode, disallowed transport | [`shared-admission.test.ts`](../tests/unit/shared-admission.test.ts) (creation, activation, and connection), `shared-api.test.ts` (errors before the worker is contacted) |
+| Relay for a shared harness | Exit evidence above; relay by a non-owner of an isolated host is stage 1's `relay_owner_only` |
+| Web and MCP addresses, redirects, unapproved servers and tools, credentials | `shared-gate.test.ts`; [`shared-tools.test.ts`](../tests/unit/shared-tools.test.ts) and `shared-admission.test.ts` refuse servers and tools outside the catalog; the gate checks that the MCP credential and inference grants reach no model request, terminal, stored history, or report |
+| Judge declines | Unattended: not run (`shared-approvals.test.ts`). Attached: routed to the CLI's prompt, where the person approved one write and denied another, which did not run (`shared-approval-cli.test.ts`) |
+| Judge error | The judge's request failed with `500`; the write did not run |
+| Unattended `assisted` | Not run, even after the judge approved: the runtime's verdict does not reach the application's handler |
+| Failing or slow custom handler | Denied ([`shared-permissions.test.ts`](../tests/unit/shared-permissions.test.ts), `shared-approvals.test.ts`) |
+| `allow-all` disabled by policy | Not offered to clients, and the runtime refuses the switch |
+| Cross-principal session access | `shared-gate.test.ts` |
+
+Commands and results, Windows ARM64 with Node 24.19, pnpm 10.34.5, and Docker Desktop:
+
+| Command | Result |
+| --- | --- |
+| `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build` | Passed |
+| `pnpm typecheck`, `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint` | Passed |
+| `pnpm test:unit` | UNIT_RESULT |
+| `pnpm test:integration` | INTEGRATION_RESULT |
+| `HYBRID_SESSION_RUNTIME_TESTS=1 HYBRID_CLI_TESTS=1 HYBRID_USE_GH_ACCOUNT=1 COPILOT_AHP_FACTORY_PROFILE=managed`: `shared-service`, `shared-session-runtime`, `shared-egress-runtime`, `shared-approvals`, `shared-cli`, `shared-gate`, `shared-approval-cli`, and `connection-broker` | OPTIN_RESULT |
+| `HYBRID_CONTAINER_TESTS=1 HYBRID_DEPLOYMENT_TESTS=1 HYBRID_USE_GH_ACCOUNT=1`, images `copilot-hybrid-session-host:harness-driven-shared-mode` and `copilot-hybrid-executor:harness-driven-shared-mode`: `shared-image`, `artifact-safety`, and `hybrid-deployment` | 3 passed; the deployment gate (real CLI, broker, `hybrid-coordinator` harness, TypeScript and Python jobs in Linux containers) took 53.2 s |
+
+Inference was synthetic throughout; the judge's requests went through the inference gateway against the session's
+budget. Runtime and artifacts: the Windows in-process pair `.runtime-artifacts/cli-workspace-fix` (`copilot-runtime.exe`
+`d843b17a242886e4504bebdd39c1563cece0eec248fc3dcbfe921d209cf88c4d`, `runtime.node`
+`ed6e2dda07580c86845b9edc30c59a03f584a4ef6651de6712cc34fedb3f357b`) and the CLI `dist-cli/index.js`
+(`e520ae56fc901a56dc821bcf9795255a489bff05e9a606b5d4fa526c586ccdf9`) at runtime `0a32c39595f`, with the SDK linked
+from that checkout. The images were built from this branch with the Linux bundle `hybrid-linux-arm64-verified`
+(runtime `0a32c39595f`, hosting `b20e188`): session host `sha256:6ade6a85…`, executor `sha256:c844bf50…`.
+
+Limitations:
+
+- **Assisted approvals.** With runtime `0a32c39595f` the AHP host keeps `manual` as its preference for a session the
+  application published in `assisted` (the CLI reports the divergence), offers clients only Manual Approval, and
+  prompts the person even after the judge approves; the SDK handler does not receive the judge's verdict, so an
+  unattended `assisted` request never runs. Both fail closed. The runtime branch
+  `patniko-runtime-capabilities-for-hosting-modes` adds the host ceiling (`startAhpHost({ approvalModes })`), the
+  verdict on `onPermissionRequest`, and `followAssistedApproval`; a host fix that lets an application-set `assisted`
+  session use the judge is in progress. Until those artifacts are qualified, the gate's `HYBRID_APPROVAL_CEILING`
+  checks (a judge approval runs without a prompt; the picker offers the policy's modes) have not run.
+- One real GitHub account exists, so both API principals were bound to it. Principal isolation is proven at the API
+  and ticket level; two-real-account qualification remains open.
+- Web access was exercised against loopback test sites through the filter's test resolver and remote MCP against a
+  fake server; neither reached the internet.
+- Per-harness ceilings are fairness controls inside one worker process, not isolation.
+- The configurator's connection card still launches only `--destination shared`, and configurator validation does
+  not flag `shared:*` bindings in batch harnesses (job submission rejects them).
+- Local only: no Azure resources, TLS ingress, or multi-replica worker.
 
 ### Stage 3: session containers
 
