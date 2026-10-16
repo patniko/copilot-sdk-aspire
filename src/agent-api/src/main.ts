@@ -14,6 +14,7 @@ import {
   serviceUrl,
 } from "@copilot-agent/service-defaults";
 import { Admission } from "@copilot-agent/service-defaults";
+import { hostingDeployment } from "./hosting-deployment.js";
 import { buildApi } from "./server.js";
 
 const [harnesses, profiles, policies] = await Promise.all([loadHarnesses(), loadProfiles(), loadPolicySet()]);
@@ -26,6 +27,15 @@ const store = new JobStore(pool);
 const execution = optionalEnv("EXECUTOR_MODE", "pool");
 if (execution !== "pool" && execution !== "on-demand") throw new Error("EXECUTOR_MODE must be pool or on-demand.");
 const hostOwner = optionalEnv("DEMO_HOST_OWNER", "").toLowerCase();
+// The AppHost's generated caller key belongs to this principal; it alone controls the demo host.
+const hostPrincipal = "dev";
+const deployment = hostingDeployment({
+  executor: execution,
+  ...(hostOwner ? {
+    demoHost: { transport: requireEnv("DEMO_HOST_TRANSPORT"), harness: optionalEnv("DEMO_HOST_HARNESS", "interactive-demo"), principal: hostPrincipal },
+  } : {}),
+  sharedWorker: !!process.env.SHARED_WORKER_KEY,
+});
 const listener = new JobEventListener(pool);
 await listener.start();
 
@@ -39,10 +49,11 @@ const app = buildApi({
   console: optionalEnv("CONSOLE_ENABLED", "true") !== "false",
   execution: execution === "on-demand" ? "dedicated" : "pool",
   delegations: new DelegationStore(pool, new SharedStore(pool), store),
+  hosting: { harnesses, profiles, policies, deployment },
   ...(process.env.SHARED_WORKER_KEY ? { shared: { url: serviceUrl("session-host"), key: requireEnv("SHARED_WORKER_KEY") } } : {}),
   ...(hostOwner ? {
     host: {
-      store: new HostStore(pool), owner: hostOwner, principal: "dev",
+      store: new HostStore(pool), owner: hostOwner, principal: hostPrincipal,
       transport: requireEnv("DEMO_HOST_TRANSPORT"),
     },
   } : {}),
