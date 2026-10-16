@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SharedSessionLimits } from "@copilot-agent/contracts";
-import { SharedProvisioningError, sharedConnection } from "../server/shared-client.js";
+import { SharedProvisioningError, sessionContainersOffer, sharedConnection } from "../server/shared-client.js";
 
 const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const api = { apiUrl: "http://127.0.0.1:3000", key: "synthetic-api-key" };
@@ -49,6 +49,26 @@ describe("shared CLI provisioning client", () => {
     expect(failure).toBeInstanceOf(SharedProvisioningError);
     expect(failure).toMatchObject({ status: 422, code: "transport_unsupported" });
     expect((failure as Error).message).toContain("transport_unsupported: Shared hosting supports direct WSS only.");
+  });
+  it("provisions session-container placements through the same routes and detects them from the hosting overview", async () => {
+    const containerView = {
+      ...view, mode: "isolated", placement: "container", segment: { ...view.segment, placement: "container" },
+      container: { state: "dormant", size: "small", cpus: 0.5, memoryMiB: 1024, idleSeconds: 900, activations: 0 },
+    };
+    const containerConnection = { ...connection, destination: "container", url: `ws://127.0.0.1:49152/sessions/${id}` };
+    const hosts = (sessionContainers?: object) =>
+      Response.json({ hosts: { isolatedHosts: [], ...(sessionContainers ? { sessionContainers } : {}) }, harnesses: [] });
+    const request = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json(containerView, { status: 201 }))
+      .mockResolvedValueOnce(Response.json(containerConnection))
+      .mockResolvedValueOnce(hosts({ transports: ["direct"], features: [] }))
+      .mockResolvedValueOnce(hosts({ transports: ["direct"], features: [] }))
+      .mockResolvedValueOnce(hosts());
+    expect(await sharedConnection(api, { harness: "interactive-demo" })).toEqual(containerConnection);
+    expect(await sessionContainersOffer(api, "direct")).toBe(true);
+    expect(await sessionContainersOffer(api, "github")).toBe(false);
+    expect(await sessionContainersOffer(api, "direct")).toBe(false);
+    expect(String(request.mock.calls[2]![0])).toBe(`${api.apiUrl}/v1/hosting`);
   });
   it("rejects unsafe endpoints, expired tickets and mismatched session authority", async () => {
     const request = vi.spyOn(globalThis, "fetch");

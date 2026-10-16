@@ -37,7 +37,7 @@ POST {{baseUrl}}/v1/sessions
 Authorization: Bearer {{apiKey}}
 Content-Type: application/json
 
-{ "harness": { "name": "interactive-demo" }, "label": "isolated session" }
+{ "harness": "interactive-demo", "label": "isolated session" }
 
 @containerSessionId = {{containerSession.response.body.$.id}}
 

@@ -169,20 +169,20 @@ aspire secret set "Parameters:session-container-settings" '{"idleSeconds":900}'
 ```
 
 Add `--build-arg NPM_REGISTRY=<approved proxy>` if required. The AppHost passes the settings to the API,
-dispatcher and controller, and the principal binding and container limits to the API. The container size
+dispatcher and controller, and the principal binding, container limits and `hybrid-session-limits` to the API,
+which applies that parameter's token-budget and turn-deadline ceilings to container sessions as the shared worker
+does; the container's idle stop comes from `session-container-settings`. The container size
 comes from the effective policy's hosting size catalog (`hosting.sizes`, `hosting.defaultSize`, default the
 smallest size) and maps to Docker `--cpus` and `--memory`. Allow the harness's built-in tools and permission
 modes in policy as usual.
 
-Create a session with a harness through the API, then connect with the existing launcher, which accepts a
-container-placed session ID:
+Connect with the launcher. When the harness's hosting mode is `isolated` and session containers offer the
+transport, it creates the session through `/v1/sessions` and attaches to its container; otherwise it keeps using
+the demo host. Resume with the application session UUID it prints:
 
 ```powershell
-$api = "<agent-api URL>"
-$headers = @{ "X-API-Key" = (aspire secret get "Parameters:dev-api-key") }
-$session = Invoke-RestMethod -Method Post "$api/v1/sessions" -Headers $headers `
-  -ContentType application/json -Body '{"harness":{"name":"<isolated-conversation-harness>"}}'
-pnpm host:connect --destination shared --target local --transport direct --resume $session.id --cli C:\path\to\matching\dist-cli\index.js
+pnpm host:connect --harness <isolated-conversation-harness> --target local --transport direct --cli C:\path\to\matching\dist-cli\index.js
+pnpm host:connect --harness <isolated-conversation-harness> --target local --transport direct --resume <session-uuid> --cli C:\path\to\matching\dist-cli\index.js
 ```
 
 The first connection waits for the container to report its listener ready. A container stops after the idle

@@ -135,6 +135,12 @@ harness whose hosting mode is `isolated` (the default) runs in its own resumable
 controller. This is per-session mode 1 of the [hosting modes plan](HOSTING-MODES-PLAN.md#71-mode-1-isolated-container);
 other modes still need their hosts and are rejected with the [hosting errors](API.md#errors-and-retry-decisions).
 
+Container sessions share the application-session record, view, and routes with shared sessions. The session
+definition holds the admitted model, limits, and harness reference (mode `isolated`, with the policy digest);
+the admitted harness snapshot stays with the container placement, and the shared worker refuses to activate or
+authorize container-placed sessions. `pnpm host:connect --harness` takes this path when session containers offer
+the requested transport.
+
 ```mermaid
 flowchart LR
     CLI["Copilot CLI"] -->|"1. create / connect"| API["agent-api"]
