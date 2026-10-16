@@ -509,6 +509,8 @@ describe("policy", () => {
     expect(workspace.policyOverrides).toEqual([
       { harness: "dataset-analyst", fields: ["allowedModels", "maxDurationSeconds"], errors: 0 },
       { harness: "hybrid-coordinator", fields: ["hosting"], errors: 0 },
+      { harness: "hybrid-orchestrator", fields: ["hosting"], errors: 0 },
+      { harness: "hybrid-reviewer", fields: ["approvalModes"], errors: 0 },
       { harness: "shared-researcher", fields: ["approvalModes", "hosting"], errors: 0 },
     ]);
     expect(workspace.changes.items).toContain("A policy/harnesses/dataset-analyst.json");

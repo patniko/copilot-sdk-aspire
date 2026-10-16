@@ -74,7 +74,8 @@ ${env:Parameters__foundry-endpoint} = "https://<resource>.openai.azure.com/opena
 
 This opt-in path keeps conversational work on one shared in-process runtime and starts Linux execution
 containers only for admitted jobs. The shared worker serves every published conversation harness whose
-`hosting.mode` is `shared` and whose effective policy allows that mode; each session runs the harness's own
+`hosting.mode` is `shared` and whose effective policy allows that mode, and `promotable` harnesses when
+[session containers](#session-containers) are enabled; each session runs the harness's own
 instructions, model options, tools, skills, sub-agents, limits, and permissions. The existing direct-container agent
 is independent. It requires the locally patched runtime/SDK/hosting sources and a matching CLI; see the
 [build and qualification instructions](DEVELOPER-GUIDE.md#hybrid-runtime-qualification).
@@ -170,6 +171,7 @@ restart; retained sessions keep their admitted limits rather than silently recei
 | `session-containers` | `true` adds per-session containers for `isolated` conversation harnesses ([below](#session-containers)); requires `hybrid-hosting` |
 | `session-container-image` | Prebuilt session-container image, resolved to an immutable local image ID; default `copilot-session-container:local` |
 | `session-container-settings` | JSON matching `SessionContainerSettings`: idle seconds, allocation lifetime, startup and shutdown limits, heartbeat interval |
+| `orchestrator-workers` | `true` lets `orchestrator` conversation harnesses start workers in session containers ([below](#orchestrator-workers)); requires `session-containers` |
 
 For example, `{"executionContainers":1,"activeTurns":2,"residentSessions":16}` limits child execution to
 one physical allocation while permitting two model turns. By default one harness can hold at most 12 resident
@@ -201,12 +203,19 @@ aspire secret set "Parameters:session-container-settings" '{"idleSeconds":900}'
 ```
 
 Add `--build-arg NPM_REGISTRY=<approved proxy>` if required. The AppHost passes the settings to the API,
-dispatcher and controller, and the principal binding, container limits and `hybrid-session-limits` to the API,
+dispatcher, controller and shared worker, and the principal binding, container limits and `hybrid-session-limits` to the API,
 which applies that parameter's token-budget and turn-deadline ceilings to container sessions as the shared worker
 does; the container's idle stop comes from `session-container-settings`. The container size
 comes from the effective policy's hosting size catalog (`hosting.sizes`, `hosting.defaultSize`, default the
 smallest size) and maps to Docker `--cpus` and `--memory`. Allow the harness's built-in tools and permission
 modes in policy as usual.
+
+With session containers enabled the shared worker can also [promote](ARCHITECTURE.md#promotion) conversations of
+`promotable` harnesses into these containers, one way. Allow `promotable` in the policy's `hosting.modes` and the
+harness's promotion approval in `hosting.promotion.approval`; the promoted container uses the harness's
+`hosting.promotion.size`. Promotable harnesses connect like shared ones (`pnpm host:connect --harness <name>`), and the
+launcher stays attached so the terminal follows the move. Promoted sessions keep their volumes like other container
+sessions.
 
 Connect with the launcher. When the harness's hosting mode is `isolated` and session containers offer the
 transport, it creates the session through `/v1/sessions` and attaches to its container; otherwise it keeps using
@@ -234,6 +243,43 @@ relay credential. A local gate has exercised a real CLI attaching through the br
 inference, idle stop, resume with history and files intact, and capacity returning to zero. This is not Azure or
 paid-model evidence.
 
+### Orchestrator workers
+
+An `orchestrator` conversation harness runs its coordinator on the shared worker, which starts each worker in its
+own session container ([architecture](ARCHITECTURE.md#orchestrator-workers)). Workers use the same
+[session-container image](#session-containers), so rebuild it from the same verified bundle after upgrading; the
+controller selects the worker supervisor for worker allocations. Enable them alongside session containers:
+
+```powershell
+aspire secret set "Parameters:session-containers" "true"
+aspire secret set "Parameters:orchestrator-workers" "true"
+```
+
+The AppHost then advertises worker containers in the [hosting views](API.md#hosting-views), enables the
+[worker routes](API.md#orchestrator-workers) on the API and dispatcher, and generates a persisted
+`shared-files-key` that only the shared worker and the execution controller's file service hold. Size each
+worker through the policy's `hosting.sizes` and `hosting.workers` ceilings and the coordinator harness's
+`hosting.workers` block; crafted workers also need a `hosting.crafting.templates` entry. Workers count against the
+same `executionContainers` and `containersPerPrincipal` limits as jobs and session containers.
+
+The examples include the coordinator `hybrid-orchestrator`, whose policy override allows orchestrator hosting,
+inherited human authority, and a `notes` crafting template, and its two worker harnesses: `hybrid-builder`
+(`manual` approvals) and `hybrid-reviewer` (`assisted`, judged by `grok-4.6`). Copy them into an existing workspace
+as described [above](#experimental-local-hybrid-deployment), then connect like a shared harness:
+
+```powershell
+pnpm host:connect --harness hybrid-orchestrator --target local --transport direct --cli C:\path\to\matching\dist-cli\index.js
+```
+
+Worker approvals and questions do not appear in the CLI. Answer them through the session's
+[input requests](API.md#orchestrator-workers) while the coordinator tells you what each worker is waiting for.
+
+A worker's private volume and a conversation's shared volume are retained like session volumes: released when
+the worker stops or the coordinator closes, never deleted. File-service helper containers carry the
+`copilot.hybrid.managed=files` label and are removed after each operation. Workers are reachable only through
+their coordinator; there is no client attachment or relay for a worker. The local gate used synthetic
+inference; this is not Azure or paid-model evidence.
+
 ### Shared worker container
 
 The same worker is packaged independently; it is not the old singleton `agent-host` image.
@@ -251,7 +297,8 @@ examples. Use `--build-context customer-config=examples/customer-config` only fo
 image. Do not put credentials in that context. Alternatively mount an operator-managed `/config`
 read-only and set `CONFIG_ROOT` at runtime. `PLATFORM_ROOT` remains `/platform`.
 Configure the same database, dispatcher/gateway URLs, worker key, broker key (`CONNECTION_BROKER_KEY`),
-principal, delegation-harness, limit, and `MCP_SECRET_*` settings as the Node service, and retain `/data`. Set `SHARED_WORKER_URL` to the
+principal, delegation-harness, limit, and `MCP_SECRET_*` settings as the Node service, plus
+`SESSION_CONTAINER_SETTINGS` when it should promote into session containers, and retain `/data`. Set `SHARED_WORKER_URL` to the
 container's own URL and `CONNECTION_BROKER_URL` to the broker's, as the AppHost does, so shared web and MCP egress
 refuses both listeners. Clients reach the container
 only through a connection broker configured with the same broker key and the container's URL as its

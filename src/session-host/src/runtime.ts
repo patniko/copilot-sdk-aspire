@@ -5,7 +5,7 @@ import {
   CopilotClient, RuntimeConnection, type AhpHost, type AhpHostOptions, type CopilotSession, type PermissionHandler, type SessionConfig,
   type SessionEvent,
 } from "@github/copilot-sdk";
-import type { RuntimeApprovalMode } from "@copilot-agent/contracts";
+import { humanAuthorityMessages, type RuntimeApprovalMode } from "@copilot-agent/contracts";
 import { SessionFileStore, type SessionFileLease } from "@copilot-agent/job-store";
 import { z } from "zod";
 import type { SharedSessionSettings } from "./harness-session.js";
@@ -18,6 +18,11 @@ export interface SharedActivationContext {
   workspace: SessionWorkspace;
   /** Provider path for application state kept with the session's history, outside the user-visible workspace. */
   stateDirectory: string;
+  /**
+   * The person's own messages in this session's runtime history, exactly as sent and oldest first: the only source of
+   * inherited human authority for an orchestrator's workers.
+   */
+  humanMessages: () => Promise<string[]>;
 }
 /** The approval modes an activation starts in and offers to attached clients. */
 export interface SharedApprovalModes {
@@ -143,7 +148,13 @@ export class SharedSessionRuntime {
       await storage.mkdir(anchor, true);
       const workspace = new SessionWorkspace(anchor, storage, lifetime.signal, (operation) => this.report(`session.fs.${operation}.failed`, options.id));
       const stateDirectory = join(this.root, "session-state");
-      const context: SharedActivationContext = { lease, signal: lifetime.signal, workspace, stateDirectory };
+      const context: SharedActivationContext = {
+        lease, signal: lifetime.signal, workspace, stateDirectory,
+        humanMessages: async () => {
+          if (!session || lifetime.signal.aborted) throw new Error("The shared conversation is not active.");
+          return humanAuthorityMessages(await session.getEvents());
+        },
+      };
       const tools = typeof options.tools === "function" ? await options.tools(context) : options.tools ?? [];
       const metadataPath = join(stateDirectory, "application-snapshot.json");
       const current = snapshot.parse({
@@ -251,16 +262,18 @@ export class SharedSessionRuntime {
 
   /**
    * Provider keys of a session's runtime state directory and workspace anchor, derived exactly as `open` stores them:
-   * the areas a promotion snapshot reads.
+   * the areas a promotion snapshot reads. `workspacePath` is the anchor as the conversation's history names it.
    */
-  async storageAreas(id: string): Promise<{ state: string; workspace: string }> {
+  async storageAreas(id: string): Promise<{ state: string; workspace: string; workspacePath: string }> {
     if (!z.string().uuid().safeParse(id).success) throw new Error("Invalid shared session identity.");
     const anchorDirectory = join(this.root, "anchors", id);
     await mkdir(anchorDirectory, { recursive: true });
     const conventions = process.platform === "win32" ? "windows" : "posix";
+    const anchor = await realpath(anchorDirectory);
     return {
       state: providerKey(join(this.root, "session-state"), conventions).key,
-      workspace: providerKey(await realpath(anchorDirectory), conventions).key,
+      workspace: providerKey(anchor, conventions).key,
+      workspacePath: anchor,
     };
   }
 

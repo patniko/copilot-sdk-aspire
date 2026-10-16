@@ -1,9 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
-  policyFor, SessionContainerHeartbeat, SessionContainerReady,
-  type PolicySet, type SessionContainerHeartbeatResult, type SessionContainerSpec,
+  policyFor, PromotionContainerFailure, PromotionSnapshotPageRequest, SessionContainerHeartbeat, SessionContainerReady,
+  type PolicySet, type PromotionSnapshotPage, type SessionContainerHeartbeatResult, type SessionContainerReadyResult, type SessionContainerSpec,
 } from "@copilot-agent/contracts";
-import { StoreError, type AllocationStore, type SessionContainerStore } from "@copilot-agent/job-store";
+import { StoreError, type AllocationStore, type PromotionStore, type SessionContainerStore } from "@copilot-agent/job-store";
 import { HttpError, signSessionCapability } from "@copilot-agent/service-defaults";
 import type { z } from "zod";
 
@@ -12,6 +12,8 @@ export interface SessionContainerDispatcherDependencies {
   store: SessionContainerStore;
   policies: PolicySet;
   heartbeatSeconds: number;
+  /** The promotion ledger, for containers started to promote a shared session. */
+  promotions?: PromotionStore;
 }
 
 /**
@@ -47,11 +49,33 @@ export function registerSessionContainerRoutes(app: FastifyInstance, deps: Sessi
     reply.header("cache-control", "no-store");
     return perform(() => deps.store.spec(allocation.id, deps.heartbeatSeconds));
   });
-  app.post("/internal/session-containers/ready", async (request) => {
+  // A container started for a promotion is ready once it has restored and resumed the session: its readiness first
+  // commits the cutover, so the session's placement is this container before any client is routed here.
+  app.post("/internal/session-containers/ready", async (request): Promise<SessionContainerReadyResult> => {
     const allocation = await container(request);
     const body = parse(SessionContainerReady, request.body);
+    const promotion = await deps.promotions?.byAllocation(allocation.id);
+    if (promotion?.state === "starting") await perform(() => deps.promotions!.commit(promotion.id, allocation.id));
+    else if (promotion && promotion.state !== "committed") throw new HttpError(409, "invalid_state", "The promotion this container was started for ended.");
     await perform(() => deps.allocations.ready(allocation.id, body.serverKey));
-    return { ready: true };
+    return { ready: true, ...(promotion ? { promoted: promotion.id } : {}) };
+  });
+  // The snapshot a promotion container restores, readable only by the allocation started for it and only before cutover.
+  app.post("/internal/session-containers/promotion-snapshot", async (request, reply): Promise<PromotionSnapshotPage> => {
+    const allocation = await container(request);
+    reply.header("cache-control", "no-store");
+    if (!deps.promotions) throw new HttpError(404, "not_found", "No promotion snapshot is available to this allocation.");
+    const { from } = parse(PromotionSnapshotPageRequest, request.body ?? {});
+    const page = await perform(() => deps.promotions!.snapshotPage(allocation.id, from));
+    return { ...page, files: page.files.map((file) => ({ ordinal: file.ordinal, content: file.content.toString("base64") })) };
+  });
+  app.post("/internal/session-containers/promotion-failed", async (request) => {
+    const allocation = await container(request);
+    const body = parse(PromotionContainerFailure, request.body);
+    const promotion = await deps.promotions?.byAllocation(allocation.id);
+    if (!promotion || promotion.state !== "starting") throw new HttpError(404, "not_found", "No promotion is starting in this allocation.");
+    await perform(() => deps.promotions!.fail(promotion.id, body.code, body.message));
+    return { failed: true };
   });
   app.post("/internal/session-containers/heartbeat", async (request): Promise<SessionContainerHeartbeatResult> => {
     const allocation = await container(request);

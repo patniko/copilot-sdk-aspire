@@ -81,6 +81,11 @@ if (!['true', 'false'].includes(sessionContainersEnabled)) throw new Error('sess
 if (sessionContainersEnabled === 'true' && hybridEnabled !== 'true') {
   throw new Error('Session containers run under the local execution controller; enable hybrid-hosting as well.');
 }
+const orchestratorWorkersEnabled = await configured('Parameters:orchestrator-workers', 'false');
+if (!['true', 'false'].includes(orchestratorWorkersEnabled)) throw new Error('orchestrator-workers must be true or false.');
+if (orchestratorWorkersEnabled === 'true' && sessionContainersEnabled !== 'true') {
+  throw new Error('Orchestrator workers run in session containers; enable session-containers as well.');
+}
 const demoHostTransport = await configured('Parameters:demo-host-transport', 'disabled');
 if (!['disabled', 'direct', 'github', 'both'].includes(demoHostTransport)) {
   throw new Error('Parameters:demo-host-transport must be disabled, direct, github, or both.');
@@ -288,10 +293,24 @@ if (hybridEnabled === 'true') {
     }));
     await controller.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings);
     await dispatcher.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings);
+    // The shared worker promotes `promotable` conversations into the same session containers.
+    await shared.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings);
     await api.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings)
       .withEnvironment('SHARED_PRINCIPALS', JSON.stringify(principals))
       .withEnvironment('SHARED_WORKER_LIMITS', JSON.stringify(workerLimits))
       .withEnvironment('SHARED_SESSION_LIMITS', JSON.stringify(sessionLimits));
+    if (orchestratorWorkersEnabled === 'true') {
+      // Mode-4 workers: orchestrator coordinators run on the shared worker and start workers in session containers.
+      // The shared worker reaches a coordinator's shared volume only through the controller's file service; it already
+      // has the session-container settings, which orchestrator workers require.
+      const filesKey = await builder.addParameterWithGeneratedValue('shared-files-key', generated, { secret: true, persist: true });
+      await controller.withEnvironment('SHARED_FILES_KEY', filesKey);
+      await shared.withReference(await controller.getEndpoint('http'))
+        .withEnvironment('ORCHESTRATOR_WORKERS', 'true')
+        .withEnvironment('SHARED_FILES_KEY', filesKey);
+      await api.withEnvironment('ORCHESTRATOR_WORKERS', 'true');
+      await dispatcher.withEnvironment('ORCHESTRATOR_WORKERS', 'true');
+    }
   }
 }
 

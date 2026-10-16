@@ -66,6 +66,19 @@ Content-Type: application/json
 
 {}
 
+### Promotion (local hybrid with session containers): one-way move of a promotable shared conversation into its own container
+# Set PROMOTABLE_SESSION_ID in http/.env to a session of a harness with hosting.mode "promotable".
+POST {{baseUrl}}/v1/sessions/{{$dotenv PROMOTABLE_SESSION_ID}}/promote
+Authorization: Bearer {{apiKey}}
+Content-Type: application/json
+Idempotency-Key: promote-once
+
+{ "reason": "Run the build in a real workspace" }
+
+### The promotion's progress in the session view: promotion.state, then placement "container" and the next segment
+GET {{baseUrl}}/v1/sessions/{{$dotenv PROMOTABLE_SESSION_ID}}
+Authorization: Bearer {{apiKey}}
+
 ### Agent hosts (local per-harness owner hosts and the demo host): transport, online state, and cost inputs (resource, size)
 GET {{baseUrl}}/v1/hosts
 Authorization: Bearer {{apiKey}}
@@ -196,7 +209,8 @@ Content-Type: application/json
 
 { "kind": "question", "answer": "Use Python 3.12." }
 
-### Orchestrator workers of a shared conversation (needs the shared worker; set SHARED_SESSION_ID in http/.env)
+### Orchestrator workers of an orchestrator conversation
+# With orchestrator-workers enabled, create one with POST /v1/sessions { "harness": "hybrid-orchestrator" } and set SHARED_SESSION_ID in http/.env
 # @name workers
 GET {{baseUrl}}/v1/sessions/{{$dotenv SHARED_SESSION_ID}}/workers
 Authorization: Bearer {{apiKey}}

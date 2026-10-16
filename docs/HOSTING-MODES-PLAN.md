@@ -1587,11 +1587,321 @@ the harness; synthetic inference only, with one real account.
 
 ### Stage 4: orchestrator workers
 
-Pending.
+Recorded 2026-10-16 on branch `patniko-orchestrator-workers`: commits `ff764e7` (worker contracts and ledger),
+`9fdc798` (planning, coordinator inbox pump, worker API routes), `3533589` (coordinator tools and the coordinator
+policy recheck), `4cfafce` (workers on session-container allocations, ledger hardening), `75f6080` (dispatcher worker
+routes), `0fc7df3` (workers in session containers: supervisor and owner, approval modes, inherited authority, file
+service, AppHost), `8db3809` (real-container gate fixes and docs) and `5daec44` (examples and this record), merged
+with the integration branch at `6a62235` (connection broker, in `6c37dcf`), `3ad0c7d` (session containers, in
+`f73130d`), `27ff06c` (shared mode and this branch's phase-1 checkpoint, in `f7a720b`), `3d327f6` (owner hosts, in
+`7158243`) and `93bc644` (stage 5 promotion, in `0a6ea81`, where `supervisor.ts` stays the purpose-dispatching entry
+point and `session-supervisor.ts` takes stage 5's restore and readiness changes). Local only: Windows ARM64 host,
+Docker Desktop with linux/arm64 containers, disposable PostgreSQL 17, synthetic inference, one real GitHub account.
+
+Delivered:
+
+- The worker ledger (migration `013_orchestrator_workers.sql`): `session_workers` rows are child application sessions
+  of an orchestrator conversation, with the worker's name, listed harness or crafted definition and digest, crafting
+  template, creating tool call, size and resources, shared-volume access, approval mode, inherited authority, state
+  (`starting`, `working`, `idle`, `needs_input`, `stopped`), latest result, usage, and container time; with durable
+  coordinator messages, the coordinator inbox, the worker request queue, and authority grants. The migration widens
+  allocations with purpose `worker` (`worker_id` with an exactly-one-subject binding and one active allocation per
+  worker) and volumes with purpose `worker`, following the session-container ledger's design. Everything is
+  principal-scoped; workers stay out of `/v1/sessions`.
+- Admission and backstops: per-conversation, per-principal and deployment worker ceilings that count starting,
+  running and stopping workers until their allocation is retired, in one transaction with the allocation request
+  (which also counts against `executionContainers` and `containersPerPrincipal`); `maxPerSession`; idle time and
+  maximum lifetime; reservations from the conversation's aggregate token budget that leave the coordinator one turn's
+  budget; all workers stop when the coordinator closes. Depth one: a worker harness that creates workers, delegates
+  jobs, or hands off is refused.
+- Planning and crafting (`planWorker`): listed worker harnesses must use `isolated` hosting; crafted ones are composed
+  from the coordinator's name, bounded instructions, and subset, then checked through the `HarnessDefinition` schema,
+  hosted admission against `WORKER_CONTAINER_FEATURES`, and the coordinator's effective policy narrowed by the
+  operator template. Model-authored text cannot widen the template, choose an image, command or mount, or become a
+  handoff target. Crafted definitions are recorded, never published, and open in the configurator's **Import**
+  dialog as unsaved drafts. Each new worker rechecks the coordinator's current policy.
+- Coordinator tools, registered through the shared worker's per-harness tool assembly (`sharedToolset`):
+  `create_worker`, `send_to_worker` (`enqueue` waits, `immediate` steers at the next turn boundary), `get_worker`,
+  `list_workers`, `interrupt_worker`, `archive_worker`, `wait_for_workers` (tells the coordinator to end its turn),
+  `answer_worker_question` (questions only, when policy sets `allowCoordinatorAnswers`), and the bounded
+  `list_shared_files`, `read_shared_file`, and `write_shared_file`; `delegate_job` is unchanged. Refusals return
+  failure results the model can read.
+- The coordinator inbox: worker completions, turns without a result, requests for a person, failures, and backstop
+  stops reach the coordinator as bounded, untrusted-data continuations through `WorkerInboxPump`, which reuses the
+  completion pump's claim, marker, and retry pattern; nothing polls inside a turn.
+- Worker containers: the session-container image's entry point selects a worker supervisor
+  (`SESSION_CONTAINER_PURPOSE=worker`) that holds a worker-bound allocation credential and an unprivileged owner (uid
+  10001) that runs the worker harness in-process on its private volume at `/data` and, with shared storage, the
+  conversation's volume at `/shared`, read-write or read-only, sized from the effective subset. The dispatcher's
+  `/internal/workers/*` routes serve the spec, messages, turn reports, requests for a person, authority grants, and
+  two-minute inference grants charged to the worker's reservation. Coordinator text reaches a worker with
+  `source: "agent-<coordinatorId>"`.
+- Approvals: every worker permission request that needs a decision goes to the principal-scoped request queue
+  (`/v1/sessions/{id}/input-requests`, `/v1/worker-input-requests`); `assisted` workers use the runtime judge through
+  `followAssistedApproval`, with the queue as the fallback for anything it does not approve. The coordinator has no
+  approving tool. With `humanAuthority: "inherit"` and policy allowing it, the shared worker reads the person's own
+  messages from the coordinator's runtime history (root user messages without an agent or system source), records a
+  grant when an inheriting worker is created, before each coordinator message, and after each new message from the
+  person, and the worker applies the newest grant with `setInheritedHumanAuthority` and records what the runtime
+  accepted. `WORKER_CONTAINER_FEATURES` advertises `approval-modes`, `crafted-workers`, `inherited-authority`, and
+  `shared-storage`.
+- The controller-side file service (D10): routes on the execution controller behind a dedicated `SHARED_FILES_KEY`;
+  each operation runs in a helper container from the session image with no network, a read-only filesystem, and
+  only the conversation's shared volume (read-only unless writing), with atomic writes and etag preconditions.
+- AppHost: `Parameters:orchestrator-workers` (requires session containers) advertises `workerContainers`, enables
+  the worker routes, and generates `shared-files-key`. Examples: `hybrid-orchestrator` with workers
+  `hybrid-builder` (`manual`) and `hybrid-reviewer` (`assisted`) and a `notes` crafting template.
+- Docs: [architecture](ARCHITECTURE.md#orchestrator-workers) and its flow, [security](SECURITY.md#orchestrator-worker-boundaries),
+  [deployment](DEPLOYMENT.md#orchestrator-workers), [API](API.md#orchestrator-workers), the developer guide, the user
+  guide, product scope, and REST examples.
+
+Runtime artifacts: runtime `d89cfe45b2994fb3e955362f7e2f2c9d63879069` (branch
+`patniko-runtime-capabilities-for-hosting-modes` @ `62a6b07a10a`, which adds `setInheritedHumanAuthority`), hosting
+`006b0304155f26732b724de0a085ab81bc37e5a2`, mxc `622d4f197739692686f94ed6cd78ef4e5e03c82f`: Linux arm64 bundle
+`hybrid-linux-arm64-d89cfe45b29-host-006b030` (SHA-256 `copilot-runtime` `207690e4…`, `runtime.node` `21aebad9…`,
+`sdk.tgz` `1f056620…`) in image `copilot-session-container:patniko-orchestrator-workers` `sha256:4035b9a2…` (3.9 GB,
+rebuilt from the merged tree at `0a6ea81`; the pre-merge runs used `sha256:b3c3fc6b…` from `8db3809`), the matching
+Windows pair (`copilot-runtime.exe` `be1213d6…`, `runtime.node` `2dd77fc0…`), and `dist-cli/index.js`.
+
+Exit evidence ("A coordinator runs two differently sized workers concurrently on a shared volume, messages and
+interrupts them, receives their completions without polling, and archives them; worker requests that need approval
+reach a person, never the coordinator; with inherited human authority enabled, a request covered by the person's own
+words runs without a prompt while one only the coordinator asked for still reaches a person; capacity returns to zero;
+a crafted definition cannot exceed its template"), each command passing on the final tree:
+
+- `HYBRID_WORKER_TESTS=1 HYBRID_USE_GH_ACCOUNT=1 COPILOT_AHP_FACTORY_PROFILE=managed` with
+  `HYBRID_WORKER_IMAGE=copilot-session-container:patniko-orchestrator-workers`, `COPILOT_CLI_PATH`, and
+  `HYBRID_CLI_PATH`: `pnpm exec vitest run --project integration tests\integration\worker-runtime.test.ts` passed on
+  `8db3809` (59 s), on `5daec44` (63 s), and on the merged tree `0a6ea81` with the rebuilt image (66 s), each with 38
+  synthetic inference requests. The real CLI attached through an
+  in-process connection broker to an orchestrator coordinator on the shared worker. In one turn the coordinator wrote
+  a plan to the shared volume, was refused a crafted worker asking for the `web` tools its template lacks ("The 'web'
+  built-in tools are not in crafting template 'general'"), and started `alpha` (`manual`, `small`: 0.5 CPU, 1 GiB) and
+  `beta` (`assisted` with inherited authority, `medium`: 1 CPU, 2 GiB). Both containers ran at once, each with the
+  worker and coordinator labels, a private volume at `/data`, and the conversation's shared volume at `/shared`
+  (alpha's checked for `CapDrop: ALL`). Beta's judge saw the person's exact message as inherited evidence and allowed
+  its covered write without a prompt; the grant recorded the runtime's accepted count. Alpha's shell write waited in
+  the request queue as a `shell` permission with its command, the coordinator's tools offered no way to approve it,
+  and the person's API approval ran it. Alpha's completion and beta's interrupted turn reached the coordinator as
+  inbox continuations without polling. An `enqueue` message to alpha produced a follow-up result; an `immediate`
+  message started a long command on beta, which `interrupt_worker` aborted (`idle:interrupted`). A write only the
+  coordinator asked for ("The person said AUTHORIZE:…") was declined by the judge, whose evidence contained no such
+  human message, and reached a person, who denied it. The coordinator read both workers' files through the
+  controller's file service, and archiving both stopped them (`archived`, `capacityReleased`), removed their
+  containers, retired their allocations, recorded usage and container time, and kept their volumes.
+- Earlier gate runs found four defects, all fixed in `8db3809`: a worker pre-tool hook that answered `ask` turned
+  shell requests into generic hook prompts without their command (the hook now only denies); without managed
+  settings the in-process runtime's policy was undetermined and assisted mode failed closed (workers now state
+  managed settings for their mode); thrown tool errors reached the model only as "Tool execution failed" (refusals
+  are now failure results); and the runtime ignored `setMode("assisted")` because assisted approval sits behind its
+  experimental `AUTO_APPROVAL` flag (assisted workers now enable it in their own process).
+- Worker suites: `pnpm exec vitest run --project unit tests\unit\worker-contracts.test.ts tests\unit\worker-planning.test.ts
+  tests\unit\worker-inbox.test.ts tests\unit\worker-containers.test.ts` and `pnpm exec vitest run --project
+  integration tests\integration\workers.test.ts tests\integration\worker-routes.test.ts
+  tests\integration\worker-tools.test.ts tests\integration\worker-containers.test.ts` (37 integration tests): ledger
+  admission and ceilings under concurrency, backstops, budget reservations and settlement, inbox batching and retry,
+  request expiry and person-only answers, crafted-definition limits and the shipped example, tool registration through
+  `sharedToolset`, authority grants, the dispatcher's worker routes with credential scoping, the controller lifecycle
+  for worker allocations and volumes, and the file service over HTTP.
+- Baseline on the merged tree: `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`,
+  `pnpm typecheck`, `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint`,
+  `pnpm test:unit` (689 passed, 1 opt-in skipped) and `pnpm test:integration` (138 passed, 22 opt-in skipped); before
+  the stage 5 merge, 672 and 131 passed.
+- The opt-in suites this stage touches still pass on the merged tree with the same artifacts:
+  `HYBRID_SESSION_CONTAINER_TESTS=1` with this branch's image (`session-container-runtime`, 60 s: mode-1 sessions
+  through the new entry point), `HYBRID_PROMOTION_TESTS=1 HYBRID_CLI_TESTS=1` with this branch's image
+  (`promotion-cli`, 35 s: stage 5's promotion through the same entry point), `HYBRID_SESSION_RUNTIME_TESTS=1`
+  (`shared-approvals`, `shared-egress-runtime`, `shared-service`, `shared-session-runtime`: 8 tests), and
+  `HYBRID_CLI_TESTS=1` (`shared-approval-cli`, `shared-cli`, `shared-gate`: 3 tests).
+- AppHost, before and again after the stage 5 merge: `aspire start --apphost apphost.mts --isolated` with
+  `hybrid-hosting`, `session-containers`, `orchestrator-workers`, the image above, a non-routable Foundry endpoint,
+  and the Windows runtime pair started every resource healthy, including the generated `shared-files-key`.
+  `GET /v1/hosting` advertised `workerContainers` with its four features (and, after the merge, `promotion` on the
+  shared worker) and reported `hybrid-orchestrator` as orchestrator, shared, ready, with its effective worker
+  settings; `POST /v1/sessions` created it (mode `orchestrator`, placement `shared`); its worker and request lists were
+  empty; a direct connection returned the broker URL and a relay connection `422 transport_unsupported`; the real CLI
+  attached to the coordinator through the broker (no prompt sent) with no warnings from the shared worker; closing it
+  left no containers.
+
+Remaining: worker requests reach a person only through the request queue, not as prompts in the coordinator's
+attached CLI, and clients cannot attach to workers; a stopped worker (archived, idle, out of lifetime or budget)
+cannot be resumed, though its volume is kept; `wait_for_workers` asks the model to end its turn because a tool cannot
+end one; the shared file service has no locking between writers and starts one helper container per operation;
+inherited authority is judge guidance plus audit, not a security boundary; `hybrid-reviewer` is not available as a
+standalone session because session containers do not implement approval modes; worker containers have the same
+unenforced egress and local-only reachability as session containers; Azure is not implemented. Synthetic inference
+only (including the judge), with one real account. The shared worker's own assisted sessions need the runtime's
+`AUTO_APPROVAL` flag in its environment, which this machine's user environment supplies; a packaged shared worker
+without it refuses assisted sessions (not changed in this stage).
 
 ### Stage 5: promotion
 
-Pending.
+Recorded 2026-10-16 on branch `patniko-stage-5-promotion`. Commits:
+
+- `2c18da8`: case-preserving session file names, the promotion contract, and the ledger migration.
+- `db62dc8`: the history-transplant gate and the ledger.
+- `4e90e7d`: launcher supervision.
+- `e001655`: the end-to-end protocol.
+- `a988307`: protocol tests.
+- `ae08dfe`: promoted sessions resume after an idle stop.
+- `3fc0470`: the real-CLI gate.
+- `1bb9e43`: unit tests.
+- `319176f`: moves generalized for stage-6 handoffs, checkpointed early for the handoffs session.
+- `011e59d`: docs.
+- `cbe76c1`: the crash-after-cutover gate step and the supervisor's stale re-provisioning fix.
+- The commit that adds this record: docs.
+
+Merges of the integration branch: `3ad0c7d` (session containers, merged as `aef4040`), `27ff06c` (final shared mode and
+workers phase 1, `c15bb3d`), and `3d327f6` (per-harness owner hosts, `f8466af`).
+
+Environment: local only, Windows ARM64 host, Docker Desktop with linux/arm64 containers, disposable PostgreSQL 17, and
+synthetic inference.
+
+Delivered:
+
+- **History transplant**, the decisive gate. A conversation written through the PostgreSQL-backed `sessionFs` resumes
+  as the same runtime session on a real filesystem, at a different absolute path and on another OS, with no rebase
+  option:
+  - The snapshot carries the provider namespace's flat `sessionStatePath`, restored to
+    `<COPILOT_HOME>/session-state/<id>/`, and the workspace anchor's files, restored to the container workspace.
+  - The owner resumes with `workingDirectory` there and `continuePendingWork: false`, and the AHP host starts on the
+    same directory.
+  - The runtime rewrites `workspace.yaml`'s `cwd` but not history, so the container sends one move note mapping the
+    shared worker's path to its own.
+  - Windows provider keys are case-folded. `session_files.display_name` (migration `014_session_promotion.sql`) keeps
+    each entry's created spelling, and listings and snapshots return it.
+- **Ledger** (`PromotionStore`, migration `014`): one-way moves with states `requested`, `moving`, `starting`,
+  `committed`, and `failed`.
+  - Requests are idempotent per request key. A session has one open move and one committed promotion at most.
+  - Capture runs in one transaction that holds the namespace lock under a fresh lease. It leaves out the consent files
+    (`permissions.json`, `settings.json`, `config.json`) and `temp/`, records per-file SHA-256 and a manifest digest,
+    and stays within the session storage limits.
+  - Allocation joins the admission transaction: purpose `session`, the session volume at `/data`, and the harness
+    snapshot in `session_containers`. Snapshot pages are served only to that allocation while starting.
+  - The cutover commit sets placement `container` at generation + 1, replaces and pins the lease epoch, removes tickets
+    and the activation, and records a segment. Failure retires the allocation.
+  - A trigger refuses any return to `shared` placement and any generation decrease.
+  - For stage 6, moves also carry a kind (`promotion` or `handoff`), a history flag, a runtime session, an opening
+    notice, and a target harness and definition. Segments record the runtime session and reason, and views and both
+    connection paths take `ahpSessionId` from the latest segment.
+- **Shared worker**:
+  - `promote_session` registers through the per-harness toolset for `promotable` harnesses. Its rule is a person
+    under `ask` and none under `allow`, and its request key is `tool:<toolCallId>`.
+  - `SharedPromotions` checks current policy and capacity at request time and starts the move when the turn ends, or
+    at once for an idle API request. It recovers open moves after a restart; deactivates, captures, and allocates; and
+    waits for the cutover. On failure it tells the agent once (handoffs excepted).
+  - Turns and shared connections are refused while a move is open (`409 promotion_in_progress`).
+  - The worker offers the `promotion` feature only with `SESSION_CONTAINER_SETTINGS`, which the AppHost now passes it.
+- **Session container**:
+  - The supervisor restores the snapshot, digest-checked, with exclusive creates into fresh directories owned by uid
+    10001, and reports `promotion-failed` when it cannot.
+  - Readiness commits the cutover in the dispatcher's ready route.
+  - The owner sends the move note once, deduplicated by its first line.
+- **API**: `POST /v1/sessions/{id}/promote` takes an `Idempotency-Key` and returns 202 or 200, refusing with 409 or 429.
+  Views carry `promotion`, and promoted sessions connect to their container, including after an idle stop.
+- **Broker and launcher**:
+  - While a move is open, placements are marked `moving`, so the broker closes shared routes with `4301` as the move
+    begins.
+  - `pnpm host:connect` runs the CLI under a loopback relay supervisor (`configurator/server/cli-supervisor.ts`), the
+    first step of N5. On `moved`, or when a new ticket carries another server key, it stops the CLI and re-provisions
+    through `connect-route.ts` (`reprovisionSession`). It retries while a move is in progress and stops on a permanent
+    route change. It then restarts the CLI with `--resume` and the new key in the same terminal. A re-provisioning
+    result that began before the CLI was last replaced is discarded, since it can name a crashed container the
+    controller has not yet retired.
+- **Docs**: [architecture](ARCHITECTURE.md#promotion) (the flow moved from 7.3), [API](API.md#promotion),
+  [security](SECURITY.md#promotion-boundaries), deployment, the developer, user, and configurator guides, product scope,
+  and REST examples.
+
+Runtime artifacts:
+
+- The SDK links `copilot-agent-runtime-hybrid` at `62a6b07a10a` (`patniko-runtime-capabilities-for-hosting-modes`),
+  with native artifacts from `d89cfe45b29` and hosting crate `006b030`.
+- Windows pair for the in-process shared worker: `copilot-runtime.exe` `be1213d6…`, `runtime.node` `2dd77fc0…`. The CLI
+  is `dist-cli/index.js` from the same build.
+- Linux bundle `hybrid-linux-arm64-d89cfe45b29-host-006b030`: `copilot-runtime` `207690e4…`, `runtime.node`
+  `21aebad9…`, `sdk.tgz` `1f056620…`.
+- Images built from `319176f`'s sources: `copilot-hybrid-session-host:stage-5-promotion` `sha256:71a830d2…` and
+  `copilot-session-container:stage-5-promotion` `sha256:8a111bce…`. The executor image
+  `copilot-hybrid-executor:connection-broker` was reused.
+- The first transplant spike ran on runtime `0a32c39595f` and was repeated on `62a6b07a10a`.
+
+Exit evidence; each command passed:
+
+- **Baseline** on `cbe76c1`: `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`,
+  `aspire restore --apphost apphost.mts`, `pnpm typecheck`, `pnpm typecheck:tests`,
+  `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint`, `pnpm test:unit` (682 passed, 1 opt-in skipped), and
+  `pnpm test:integration` (135 passed, 21 opt-in skipped).
+- **Exit gate**, `promotion-cli.test.ts` with `HYBRID_PROMOTION_TESTS=1 HYBRID_CLI_TESTS=1 HYBRID_USE_GH_ACCOUNT=1`
+  (`HYBRID_SESSION_CONTAINER_IMAGE` and `HYBRID_EXECUTOR_IMAGE` set as above): passed 3 of 3 final runs, in 40 to 51 s
+  of test time each. Five earlier runs without the crash step had also passed, at 25 to 29 s.
+  1. In one pseudo-terminal, the launcher's supervisor ran the real CLI.
+  2. The shared conversation wrote `Notes/MixedCase.md` through `write_workspace_file` (no shell was offered in
+     shared placement), called `promote_session`, and ended its turn.
+  3. The broker closed the CLI's connection with `4301` as the move began, and the promotion committed: placement
+     `container`, generation 2, segment `promotion`.
+  4. The supervisor printed one move notice, re-provisioned through `connect-route`, and restarted the CLI with
+     `--resume` in the same terminal.
+  5. The container's continuation ran `bash` on the restored file, name and content intact, in
+     `/data/execution/workspace`. Its first model request held the earlier turn and the move note.
+  6. A later turn typed in the same terminal wrote and listed files with the shell.
+  7. `docker kill` then crashed the container after cutover. The next connection started a replacement from the
+     session volume, and the supervisor restarted the CLI against the replacement's new server key, in the same
+     terminal. A further turn read both files with the shell; placement stayed `container` at generation 2.
+  8. There is no demotion route (404), and the trigger refused a return to `shared`.
+
+  Four earlier runs of the crash step failed only on the restart-count assertion. Windows ConPTY repaints earlier
+  output when the screen changes, so launcher lines appeared twice; the test now numbers them. The investigation also
+  found a real race, fixed in `cbe76c1`: a slow re-provisioning that started before the restart could trigger a second,
+  stale restart. `cli-supervisor.test.ts` reproduces it with a fake CLI that times out handshakes.
+- **Transplant gate**, `promotion-transplant.test.ts` with `HYBRID_PROMOTION_TESTS=1` and
+  `HYBRID_SESSION_IMAGE=copilot-hybrid-session-host:stage-5-promotion`: 2 passed, one from the Windows-hosted worker
+  and one from the Linux shared-worker image, each into a Linux container at `/workspace`. History replayed, the next
+  request held the earlier turn, and mixed-case names were preserved.
+- **Ordinary suites**:
+  - `promotions.test.ts` (6), the ledger, including moves that continue an earlier segment's runtime session.
+  - `promotion-protocol.test.ts` (5): the coordinator, the real dispatcher, broker route checks, the API, and the
+    shared worker with a simulated container. It covers a handoff-shaped move and a cross-principal refusal.
+  - `session-files.test.ts`: case preservation.
+  - `cli-supervision.test.ts` (1): the real broker with a test-only generation bump.
+  - Unit: `promotion.test.ts` (9), `cli-supervisor.test.ts` (7), and `connect-route.test.ts` (7).
+- **Opt-in regression** for the other affected suites, on the same images and artifacts (`HYBRID_SESSION_RUNTIME_TESTS`,
+  `HYBRID_CLI_TESTS`, `HYBRID_SESSION_CONTAINER_TESTS`, `HYBRID_CONTAINER_TESTS`, and `HYBRID_DEPLOYMENT_TESTS`):
+  13 files and 18 tests passed in 342 s. The files: `shared-service`, `shared-session-runtime`, `shared-egress-runtime`,
+  `shared-approvals` (4), `shared-cli`, `shared-gate`, `shared-approval-cli`, `promotion-transplant` (2),
+  `promotion-cli`, `session-container-runtime`, `shared-image`, `artifact-safety`, and `hybrid-deployment`. This run was
+  on `011e59d`; the later commit changed only the supervisor and tests, and its gates were rerun as above.
+- **Without the app's environment.** The same 13 files were rerun on `166eaa3` with every `COPILOT_*` variable removed
+  except `COPILOT_CLI_PATH` and `COPILOT_AHP_FACTORY_PROFILE`, and with `AUTO_APPROVAL` removed (`GH_TOKEN` and
+  `GH_HOST` kept). 15 tests passed, including `promotion-cli` with the crash step (41 s), `promotion-transplant` (2),
+  `session-container-runtime`, and the shared, image, and deployment suites. The three `assisted`-mode approval tests
+  (`shared-approvals` 2, `shared-approval-cli` 1) failed with "The runtime refused the session's approval mode" when
+  opening an `assisted` session. That is a stage-2 runtime dependency on the injected feature flags, which this slice
+  does not touch; they pass with the flags present.
+
+Failure coverage (section 14):
+
+- Duplicate tool calls and API retries join one promotion (ledger, protocol, and API tests).
+- A failure at each step before cutover leaves the session shared, writable, and accepting turns, with the allocation
+  retired and a tool-initiated agent told once. The steps covered are storage still held, restore failed, the container
+  stopped, readiness timed out, a stale snapshot, a closed session, and refusals for policy and capacity.
+- A crash after cutover is covered by the real gate (step 7) and by a simulated idle stop.
+- Stale shared writes after fencing fail with `ESTALE`, and no shared worker can take a writable lease again.
+- Demotion attempts: there is no route, and the trigger refuses `placement='shared'` and any generation decrease.
+- Another principal cannot promote, see, or snapshot the session: API 404, ledger `not_found`, and allocation-scoped
+  snapshot access.
+
+Remaining:
+
+- `approval: "ask"` reaches a person only under the `manual` approval mode. Under `assisted`, `allow-all`, or `custom`,
+  the runtime or handler decides as for any request, which is not separately verified.
+- No per-session host key moves with the session (N5): continuity depends on the launcher, the restarted CLI may ask
+  for folder trust again, and clients without the launcher reconnect themselves.
+- Shared clients are closed when the move begins, not at cutover. Interrupted turns are not replayed, and the crash was
+  injected while idle.
+- The shared namespace and stored snapshots have no automated retention or deletion.
+- The container's fresh-session path (moves without history, opening notices, or non-default runtime sessions) is
+  covered at the ledger and spec level only; stage 6 exercises it.
+- Not yet exercised: Azure, the GitHub relay (promotable is direct WSS only), paid models, and two real accounts.
 
 ### Stage 6: handoffs
 

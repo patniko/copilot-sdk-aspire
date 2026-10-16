@@ -289,3 +289,50 @@ controller's containers and volumes for reconciliation; they are not a security 
 The local gate verified the credential and environment scoping, uid, capability, and mount checks, and the refusal
 of tickets presented directly at the container, against a real container. Azure container reachability (the
 broker reaches a host-loopback port locally) and egress control remain unimplemented.
+
+### Orchestrator worker boundaries
+
+Orchestrator workers ([architecture](ARCHITECTURE.md#orchestrator-workers)) run in session containers, so the
+[session container boundaries](#session-container-boundaries) apply to each worker. A worker and its coordinator do
+not share a process, and two conversations' workers do not share volumes. Workers of **one** conversation that mount
+its shared volume are not isolated from each other's files, and the coordinator's instructions to them are model
+output.
+
+| Concern | Control |
+| --- | --- |
+| Worker credentials | Each container's allocation credential is bound to one worker. The dispatcher's worker routes accept it only for that worker's spec, messages, turn and request reports, authority grants, and inference grants charged to the worker's reservation; session-container and job credentials are refused there, and worker credentials on their routes. The unprivileged owner reaches these routes only through its supervisor, over IPC, for a fixed list of operations |
+| Who approves | Only a person decides a worker's permission request, through the principal-scoped request queue. The coordinator has no tool that approves; with `hosting.workers.allowCoordinatorAnswers` it may answer questions only, recorded as `answeredBy: "coordinator"`. A request belongs to the turn that raised it and ends with that turn, and nothing is approved on a person's behalf |
+| Coordinator text | Messages reach a worker with the source `agent-<coordinatorId>`, so its runtime and judge treat them as data, never as the person's words. Tasks, messages, worker results, and crafted instructions are untrusted model input |
+| Inherited human authority | Off unless the coordinator harness sets `humanAuthority: "inherit"` and policy allows it, and only for `assisted` workers. Grants come only from the person's recorded messages in the coordinator's runtime history, read by the shared worker, never from tool arguments; each grant and what the worker's runtime accepted are recorded. The judge remains guidance, not a security boundary: a person's broad wording can authorize more than they meant, so keep per-kind `deny` rules for what must never run |
+| Crafted workers | A crafted definition passes the same schema, hosted admission, and policy checks as a published harness and cannot exceed its operator template: tools, models, approval modes, limits, and sizes. It is recorded, never published, and cannot select an image, command, or mount |
+| Shared volume access | The coordinator's file tools use the execution controller's file service with a dedicated key held only by the shared worker. Each operation runs in a helper container with no network, a read-only image filesystem, and only that conversation's shared volume mounted (read-only unless writing); it refuses symbolic links and paths outside the volume and bounds sizes. Nothing locks files between writers |
+| Capacity and cost | Worker ceilings per conversation, principal, and deployment count starting, running, and stopping workers until their containers are retired; reservations come from the conversation's aggregate budget. These are admission and accounting controls, not exact spending caps |
+| Data at rest | Private and shared volumes outlive their workers and are released, never deleted, when the worker stops or the coordinator closes |
+
+The integration suites verify the worker credential scoping above. The local real-container gate verified both
+sizes, both mounts, person-only approvals, a request covered by the person's inherited words running without a
+prompt while one only the coordinator asked for reached a person, and capacity returning to zero, with synthetic
+inference. Clients cannot attach to workers.
+
+### Promotion boundaries
+
+[Promotion](ARCHITECTURE.md#promotion) moves a conversation from the shared worker into its own session container;
+from the cutover on, the [session container boundaries](#session-container-boundaries) apply. It adds no isolation
+beyond them, and egress stays unenforced in both placements.
+
+| Concern | Control |
+| --- | --- |
+| Who can promote | Only `promotable` harnesses get `promote_session`, and the API route promotes only the caller's own session. Each request re-checks the harness's current effective policy (mode, promotion size and approval) and the deployment's container capacity, and is recorded once per tool call or idempotency key |
+| Approval | With `approval: "ask"` the tool call is a request for a person in the session's approval flow: under `manual` the attached person decides, and with nobody attached it does not run. Under `assisted`, `allow-all`, or `custom` the runtime or handler decides it like any other request, which can approve the move without a person; that combination is not separately verified. Pair `ask` with `manual` when a person must approve every move. `allow` runs without a prompt |
+| Snapshot integrity | The snapshot is read in one transaction that holds the session's storage namespace lock under a fresh lease, and is stored with per-file SHA-256 digests and a manifest digest bound to the session. The container verifies the manifest digest before writing, then each file's size and digest; it refuses paths outside its two areas and creates every entry exclusively in fresh directories (an existing link or a non-empty target fails the restore), owned by uid 10001 |
+| Snapshot access | Only the allocation the ledger started for the promotion can fetch its snapshot, through that allocation's credential, and only while the promotion is starting. A failed promotion retires the allocation, whose credential then stops working |
+| Consent | The runtime's provider-scoped consent files (`permissions.json`, `settings.json`, `config.json`) are not carried, so approvals given while the session had no shell or real filesystem do not apply in the container. Spilled tool output (`temp/`) is not carried either |
+| Fencing and direction | The cutover replaces and pins the shared storage lease epoch in the same transaction as the placement change, so the shared worker can no longer write the session or issue tickets for it, and a commit whose snapshot is stale is refused. A ledger trigger refuses any return to `shared` placement and any generation decrease; there is no demotion route |
+| Client continuity | A move closes attached clients with `4301 moved`. The launcher's supervisor re-provisions through the API with the person's API key and restarts the CLI pinned to the container's server key, which the API returns with the one-use ticket; the CLI still authenticates as the session's bound GitHub account. The relay is loopback-only with a per-run secret. No per-session host key moves with the session (plan decision N5), so seamless continuity depends on the launcher |
+| Data at rest | After the cutover the shared namespace stays read-only in PostgreSQL, next to the stored snapshot; nothing deletes either automatically. Retain and protect them like runtime history |
+
+The local gates verified the history transplant from the Windows-hosted worker and from the Linux shared-worker image
+into Linux containers, digest and path refusals, fencing and the one-way trigger, every failure before cutover
+leaving the session shared, and a real CLI promoting mid-task and continuing with shell and files in the same
+terminal, through a crash of the promoted container, all with synthetic inference
+([record](HOSTING-MODES-PLAN.md#stage-5-promotion)). Azure, paid models, and GitHub relay continuity were not exercised.

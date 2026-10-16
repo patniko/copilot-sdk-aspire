@@ -188,8 +188,9 @@ Each session records a placement in the ledger: its kind (`shared`, or `containe
 [session containers](#session-containers)) and a generation that increases on every change
 ([contract](../contracts/src/placement.ts)). Tickets bind to the generation. When it changes, the broker ends
 attached clients with WebSocket close code `4301` (`moved`) after any frame in flight, and an upstream close is
-replaced with `moved` when the placement changed underneath it. No current code path moves a session between
-placements; promotion is proposed in the [hosting modes plan](HOSTING-MODES-PLAN.md#4-proposed-topology).
+replaced with `moved` when the placement changed underneath it. [Promotion](#promotion) is the one code path that
+moves a session, one way from `shared` to `container`; while it moves, the ledger marks the placement `moving` and
+the broker closes shared routes the same way.
 
 Delegation records, child jobs, input snapshots and aggregate budget reservations commit atomically.
 SDK tool-call identity deduplicates acceptance. Completion-driven turns cannot create nested delegations.
@@ -286,6 +287,159 @@ reported.
 
 Locally the broker reaches the container's ingress on its host-loopback published port. The Azure direction, an
 outbound tunnel from the container (plan D14), is not implemented.
+
+### Orchestrator workers
+
+With `Parameters:orchestrator-workers=true` (which needs session containers), a conversation created from an
+`orchestrator` harness runs as a shared session on the shared worker with worker tools added: mode 4 of the
+[hosting modes plan](HOSTING-MODES-PLAN.md#74-mode-4-orchestrator-shared-brain-container-workers). Each worker it
+starts is a child application session with its own harness, size, and session container, and reports back through
+the coordinator's durable inbox. Clients attach only to the coordinator.
+
+```mermaid
+flowchart LR
+    CLI["Copilot CLI"] -->|"broker WSS"| Host["Shared worker<br/>coordinator + worker tools"]
+    Host -->|"admit, message, interrupt, archive,<br/>authority grants"| DB[("PostgreSQL<br/>workers, inbox, requests,<br/>allocations, volumes")]
+    Host -->|"inbox continuation<br/>(no polling)"| Host
+    Host -->|"bounded file tools"| Files["Controller file service"]
+    Files -->|"network-less helper"| Shared[("Shared volume /shared")]
+    Controller["Execution controller"] -->|"bind, create, retire"| Box
+    Controller --> DB
+    subgraph Box["Worker container (one per worker)"]
+        Supervisor["Supervisor (root)<br/>worker-bound credential"]
+        Owner["Owner (uid 10001)<br/>worker harness"]
+        Supervisor -->|"IPC: grants,<br/>worker calls"| Owner
+    end
+    Box --- Private[("Private volume /data")]
+    Box --- Shared
+    Supervisor -->|"spec, control, turns,<br/>requests, authority"| Dispatcher["job-dispatcher"]
+    Dispatcher --> DB
+    Owner -->|"worker capability"| Gateway["inference-gateway"]
+    Person["Person"] -->|"answer worker requests"| API["agent-api"]
+    API --> DB
+```
+
+`create_worker` rechecks the coordinator's current effective policy, then plans a listed worker harness (which must
+use `isolated` hosting) or a crafted one from an operator template, through the `HarnessDefinition` schema, hosted
+admission against the features worker containers implement, and policy intersection. One ledger transaction admits
+the worker within the per-conversation, per-principal, and deployment ceilings, reserves part of the conversation's
+aggregate token budget while leaving the coordinator one turn's budget, records its first task as message 1, and
+requests its allocation (purpose `worker`, counted against the same container limits as jobs and sessions), with a
+private volume at `/data` and, with `sharedStorage: "session"`, the conversation's shared volume at `/shared`,
+read-write or read-only. The tool returns at once. Workers cannot create workers, delegate jobs, or hand off.
+
+The controller binds and starts a worker container like a session container, with a worker label alongside the
+coordinator's session label. Its supervisor holds an allocation credential bound to the worker and serves the
+owner's calls to the dispatcher's `/internal/workers/*` routes: the spec, durable messages, turn and result reports,
+requests for a person, authority grants, and two-minute inference grants charged to the worker's reservation. The
+owner runs the worker's harness on the private volume and delivers each coordinator message with the source
+`agent-<coordinatorId>`, so the runtime never treats it as the person's words: `enqueue` messages wait for the
+current turn, and `immediate` ones steer it. An interrupt aborts the turn.
+
+Worker completions, turns without a result, requests for a person, failures, and backstop stops go to the
+coordinator's inbox. The shared worker's inbox pump delivers them as bounded system continuations when the
+coordinator is idle, with a runtime-history marker per batch so a retried batch is recognized; failed deliveries
+retry after a growing delay and go to review after five attempts or when continuations or the aggregate budget run
+out. The same loop applies the backstops (idle time, lifetime, the worker's reservation, and a closed coordinator)
+and returns a worker's capacity, settling its reservation, once the controller has retired its allocation. A worker
+whose container stops while it runs has failed. Container time is recorded per worker.
+
+A worker's [approval mode](HOSTING-MODES-PLAN.md#approval-modes) decides its requests after its harness's per-kind
+rules, and nobody but a person approves: `manual` requests and the requests an `assisted` worker's judge declines go
+to a principal-scoped request queue ([API](API.md#orchestrator-workers)); the coordinator is told that a person must
+answer and can answer only questions, and only when policy sets `hosting.workers.allowCoordinatorAnswers`. With
+[inherited human authority](HOSTING-MODES-PLAN.md#inherited-human-authority), the shared worker reads the person's
+own messages from the coordinator's runtime history (root user messages without an agent or system source),
+records them as a grant for each inheriting worker when it is created, before each coordinator message, and after
+each new message from the person, and the worker applies the newest grant with the runtime's
+`setInheritedHumanAuthority`. The judge then sees those exact messages as the person's words, while the
+coordinator's tasks stay data. Grants and what the runtime accepted are recorded for audit.
+
+The coordinator has no filesystem of its own. Its file tools reach the shared volume only through the execution
+controller's file service (plan D10), which runs one bounded operation per short-lived helper container from the
+session image, with no network and only that volume mounted; writes are atomic and replacing a file needs its
+current etag. Volumes are retained: a stopped worker's private volume and a closed coordinator's shared volume are
+released, not deleted.
+
+### Promotion
+
+A conversation of a `promotable` harness runs on the shared worker like a `shared` one, with one more tool,
+`promote_session`. When the agent calls it, or the owner calls `POST /v1/sessions/{id}/promote`
+([API](API.md#promotion)), the session moves one way into its own [session container](#session-containers) and
+continues there as the same application session. The AppHost gives the shared worker the session-container settings
+whenever session containers are enabled; only then does its hosting offer include the `promotion` feature.
+
+```mermaid
+sequenceDiagram
+    participant C as Copilot CLI<br/>under pnpm host:connect
+    participant A as agent-api
+    participant B as connection-broker
+    participant S as session-host
+    participant D as Dispatcher<br/>and ledger
+    participant K as execution-controller
+    participant P as Session container
+    S->>D: Record the promotion,<br/>check policy and capacity
+    S-->>C: Tool result, then the turn ends
+    S->>S: Close the activation
+    B--xC: Close 4301 "moved"
+    S->>D: Snapshot under a fenced lease,<br/>reserve the allocation
+    K->>P: Start with the allocation<br/>credential and the session volume
+    P->>D: Fetch the snapshot<br/>(digest-checked)
+    P->>P: Restore files and history,<br/>resume the same runtime session
+    P->>D: Ready
+    D->>D: Cutover commit,<br/>shared storage fenced
+    C->>A: New connection, same session
+    C->>B: Connect, same /sessions/{id}
+    B->>P: Route to the container
+    P->>P: Send the move note once
+```
+
+The ledger ([`promotions.ts`](../src/job-store/src/promotions.ts)) drives each promotion through `requested`,
+`moving`, `starting`, and then `committed` or `failed`:
+
+- **Request.** The tool call or API request is recorded once per tool call or idempotency key, after the harness's
+  current effective policy (`promotable`, its size and approval) and the deployment's container capacity are
+  checked. A session has at most one open promotion and at most one committed one. From the request on, the session
+  admits no new turns.
+- **Move.** When the requesting turn ends (at once for an API request with no turn running), the shared worker closes
+  the activation and the ledger marks the placement `moving`, so the broker closes attached clients with `moved`. The
+  worker reads the snapshot under a fresh storage lease in one transaction that holds the namespace lock, then
+  reserves a session allocation with the session's volume in the same admission transaction as other containers.
+- **Restore.** The controller starts the container as for any session allocation. Its supervisor fetches the snapshot
+  through its allocation credential (no other allocation can read it, and nothing can after the promotion settles),
+  restores it onto the volume, and starts the owner, which resumes the same runtime session with
+  `continuePendingWork: false` in the container's workspace.
+- **Cutover.** The container's readiness commits the cutover in one transaction: placement `container` at the next
+  generation, the shared storage lease epoch replaced and pinned (the shared namespace stays read-only), outstanding
+  shared tickets and the activation removed, and a new segment recorded. A storage epoch that changed after the
+  snapshot, or a closed session, refuses the commit and fails the promotion. After the cutover the container is
+  authoritative and later allocations resume from its volume. The owner sends one system note that names the move and
+  maps the shared worker's workspace path, which the history still names, to the container's.
+- **Failure.** Any failure before the cutover (policy, capacity, snapshot, allocation, startup, restore, or no
+  readiness within the container's startup limit plus a minute) fails the promotion: the session stays shared and
+  accepts turns again, the allocation is retired, and an agent that asked through the tool is told why once. A ledger
+  trigger refuses any return to `shared` placement and any generation decrease, and no route demotes a session.
+
+The snapshot holds the runtime's session state (history, checkpoints, and session files), leaving out the
+provider-scoped consent files (`permissions.json`, `settings.json`, `config.json`) and spilled tool output (`temp/`),
+plus the conversation's workspace files. Names keep the spelling they were created with, including on a Windows shared
+worker whose storage keys are case-folded. Snapshots are bounded by the session storage limits (64 MiB, 2,048
+entries), stored in the ledger with per-file SHA-256 digests and a manifest digest, and restored with exclusive
+creates into fresh directories owned by the container's unprivileged user. The runtime resumes the session at the
+container's path and on Linux even when the shared worker ran on Windows; its history keeps the old paths, which
+the move note maps.
+
+An application session is a sequence of segments: one harness snapshot at one placement, with the runtime session
+it runs. The first segment is implicit; each move records the next with its generation, placement, harness reference,
+runtime session, and start time, and the session view reports the current one. Handoffs (stage 6) can reuse the same
+move with a target harness, a fresh runtime session, or an opening note.
+
+`pnpm host:connect` keeps the person's terminal attached across the move: it runs the CLI under a supervisor
+([`cli-supervisor.ts`](../configurator/server/cli-supervisor.ts)) whose loopback relay spends one broker ticket per CLI
+connection. On a `moved` close, or when a new ticket carries another server key (a replacement container after a
+crash), the supervisor stops the CLI, provisions the same session again through the launcher's routing (retrying
+while a move completes), and restarts the CLI with `--resume` and the new server key in the same terminal. Without
+the launcher, a client sees the `moved` close and must reconnect itself.
 
 ## Optional demo agent host
 

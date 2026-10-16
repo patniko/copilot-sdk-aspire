@@ -42,7 +42,8 @@ const LOOKUP_BATCH = 500;
 
 /**
  * `/sessions/{id}`: one stable path per application session, routed to the session's current placement. A route
- * whose placement kind or generation changed is closed with "moved"; one whose session no longer exists is dropped.
+ * whose placement kind or generation changed, or whose shared session is being promoted, is closed with "moved"; one
+ * whose session no longer exists is dropped.
  */
 export function sessionRoutes(directory: PlacementDirectory): RouteFamily<PlacementRoute> {
   return {
@@ -63,6 +64,7 @@ export function sessionRoutes(directory: PlacementDirectory): RouteFamily<Placem
       return routes.map((route): RouteStatus => {
         const placement = current.get(route.sessionId);
         if (!placement) return "gone";
+        if (placement.moving && route.kind === "shared") return "moved";
         return placement.kind === route.kind && placement.generation === route.generation ? "current" : "moved";
       });
     },
