@@ -65,6 +65,7 @@ table below describes the established batch product.
 | --- | --- | --- |
 | Separate customer workspace | Harnesses and policy live in a gitignored customer workspace; profiles, examples, and implementation remain platform source | [Configurator](CONFIGURATOR.md) |
 | Per-harness policy | Operator overrides replace selected policy ceilings and required controls for one harness; jobs record the effective policy and are matched to executors per job | [Configurator](CONFIGURATOR.md), [Security](SECURITY.md) |
+| Hosting contract and view | Conversation harnesses can declare a hosting mode, remote MCP tools, and an approval mode within policy ceilings; validation, admission, and a read-only [hosting view](API.md#hosting-views) report disallowed or unavailable combinations with field paths and prerequisites. Only isolated conversations on the demo host and batch jobs run; no host serves the other modes, MCP tools, or non-manual approval modes yet | [Hosting modes plan](HOSTING-MODES-PLAN.md#17-qualification-record), [developer checklist](DEVELOPER-GUIDE.md#hosting-approval-mode-and-remote-mcp-fields) |
 | Structured agent jobs | Input validation, durable state, schema-validated results, JSON result artifact | [API](API.md) |
 | Two runner implementations | TypeScript SDK reference runner and Python SDK sample on one protocol | [Runner protocol](RUNNER-PROTOCOL.md) |
 | Rich harnesses | Prompt sections, reasoning/context options, sub-agents, delegated tools, packaged skills | [Harness contract](../contracts/src/harness.ts) |
@@ -102,7 +103,7 @@ isolation or compliance claims. Historical live-run evidence is recorded in
 | --- | --- |
 | Enforced gateway-only network egress or per-job outer sandbox | This is not safe cross-customer execution isolation; approved shell/web actions can reach the network |
 | Entra ID caller auth and a separate approver role | API-key principals govern caller access and approvals |
-| MCP integrations | A schema term or planned placement is not a working local/remote MCP connector |
+| MCP integrations | Conversation harnesses can request tools from an operator's remote MCP catalog, and the request is validated, but no host connects to MCP servers yet; there is no local MCP connector |
 | Copilot-authenticated inference route | The implemented production route is Foundry with gateway-owned Entra identity |
 | General artifact/file persistence or repository automation | Local on-demand jobs retain bounded `outputs/` files; other attempt files remain temporary. No automatic checkout, commit, push, or general blob store |
 | Resuming batch jobs as chat | Retrying a job starts a fresh attempt; the separate experimental demo host has its own retained-session lifecycle and qualification gates |
@@ -134,7 +135,8 @@ A separate [hosting modes proposal](HOSTING-MODES-PLAN.md) would let each conver
 container, a shared multi-tenant runtime, a shared runtime with one-way promotion into a container, or a shared
 coordinator that manages container workers. Its first delivery targets Copilot CLI over direct WSS, plus GitHub relay
 for isolated harness hosts; the GitHub Copilot app comes later. It also proposes handoffs and compares the design
-with OpenAI's Agents API. None of these modes is supported until its stage lands with evidence.
+with OpenAI's Agents API. None of these modes is supported until its stage lands with evidence; the first stage adds
+only the harness and policy contract, its validation and admission errors, and the read-only hosting view.
 
 ## Acceptance criteria for changes
 

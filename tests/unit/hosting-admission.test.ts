@@ -7,23 +7,25 @@ import {
   type ExecutionProfile,
   type HarnessDefinition,
   HOSTING_ERROR_STATUS,
-  type HostingDeployment,
+  HostingDeployment,
   type HostingEvaluationInput,
   HostingOverview,
   HarnessHostingView,
+  SHARED_WORKER_FEATURES,
 } from "@copilot-agent/contracts";
 import type { JobEventListener, JobStore } from "@copilot-agent/job-store";
 import {
   Admission,
   admitHostedHarness,
   ApiKeyAuthenticator,
-  describeHostingDeployment,
+  DEMO_HOST_FEATURES,
   hostingError,
   HttpError,
   loadHarnesses,
   loadPolicySet,
   loadProfiles,
 } from "@copilot-agent/service-defaults";
+import { hostingDeployment } from "../../src/agent-api/src/hosting-deployment.js";
 import { buildApi } from "../../src/agent-api/src/server.js";
 
 const root = join(import.meta.dirname, "..", "..");
@@ -259,16 +261,18 @@ describe("hosting errors and deployment description", () => {
   });
 
   it("describes today's hosts from deployment configuration", () => {
-    expect(describeHostingDeployment({ executor: "pool" })).toEqual({ executor: "pool", isolatedHosts: [] });
-    expect(describeHostingDeployment({ executor: "dedicated", demoHost: { transport: "both", harness: "interactive-demo", principal: "dev" }, sharedWorker: true })).toEqual({
+    const demo = (transport: string) => ({ transport, harness: "interactive-demo", principal: "dev" });
+    expect(hostingDeployment({ executor: "pool", sharedWorker: false })).toEqual({ executor: "pool", isolatedHosts: [] });
+    expect(hostingDeployment({ executor: "on-demand", demoHost: demo("both"), sharedWorker: true })).toEqual({
       executor: "dedicated",
-      isolatedHosts: [{ harness: "interactive-demo", owner: "dev", transports: ["direct", "github"], features: [] }],
-      sharedWorker: { transports: ["direct"], features: [] },
+      isolatedHosts: [{ harness: "interactive-demo", owner: "dev", transports: ["direct", "github"], features: [...DEMO_HOST_FEATURES] }],
+      sharedWorker: { transports: ["direct"], features: [...SHARED_WORKER_FEATURES] },
     });
-    expect(describeHostingDeployment({ demoHost: { transport: "direct", harness: "interactive-demo", principal: "dev" } }).isolatedHosts[0]?.transports).toEqual(["direct"]);
+    expect(hostingDeployment({ executor: "pool", demoHost: demo("direct"), sharedWorker: false }).isolatedHosts[0]?.transports).toEqual(["direct"]);
     // GitHub-native hosting runs Copilot's own sessions, not the harness.
-    expect(describeHostingDeployment({ demoHost: { transport: "github", harness: "interactive-demo", principal: "dev" } }).isolatedHosts).toEqual([]);
-    expect(describeHostingDeployment({ demoHost: { transport: "disabled", harness: "interactive-demo", principal: "dev" } }).isolatedHosts).toEqual([]);
+    expect(hostingDeployment({ executor: "pool", demoHost: demo("github"), sharedWorker: false }).isolatedHosts).toEqual([]);
+    expect(hostingDeployment({ executor: "pool", demoHost: demo("disabled"), sharedWorker: false }).isolatedHosts).toEqual([]);
+    expect(HostingDeployment.safeParse(hostingDeployment({ executor: "pool", demoHost: demo("both"), sharedWorker: true })).success).toBe(true);
   });
 });
 
@@ -329,7 +333,7 @@ describe("agent-api hosting view", () => {
       harnesses,
       profiles,
       policies,
-      deployment: describeHostingDeployment({
+      deployment: hostingDeployment({
         executor: "pool",
         demoHost: { transport: "both", harness: "interactive-demo", principal: "dev" },
         sharedWorker: true,

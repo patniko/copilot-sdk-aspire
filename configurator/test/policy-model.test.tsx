@@ -84,4 +84,19 @@ describe("policy page model", () => {
     expect(draftKey("")).toBe("policy:base");
     expect(draftKey("text-summarizer")).toBe("policy:harness:text-summarizer");
   });
+
+  it("keeps override fields that have no card yet and lists their issues at the document level", () => {
+    const overrides = { hosting: { modes: ["isolated", "shared"] as Array<"isolated" | "shared"> }, approvalModes: ["manual" as const] };
+    const groups = overriddenGroups(overrides);
+    expect(groups).toEqual(["approvalModes", "hosting"]);
+    const policy = { ...base, ...overrides, permissionHandlers: ["inherited"] };
+    expect(overridesFrom(policy, withGroup(groups, "agents", true))).toEqual({
+      allowedProfiles: base.allowedProfiles,
+      allowedModels: base.allowedModels,
+      approvalModes: ["manual"],
+      hosting: { modes: ["isolated", "shared"] },
+    });
+    expect(issueGroup({ level: "error", path: "hosting.defaultSize", message: "" })).toBeUndefined();
+    expect(issueGroup({ level: "warning", path: "mcpServers", message: "" })).toBeUndefined();
+  });
 });
