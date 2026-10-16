@@ -1486,9 +1486,10 @@ gate drives the CLI directly); synthetic inference only, with one real account.
 
 Recorded 2026-10-16 on branch `patniko-per-harness-owner-hosts-and-relay`: commits `9ca93ec` (keyed hosts, AppHost,
 local runtime stage), `0d6b80c` (real-CLI gate), `e8e915e` (AHP session attribution), `bcdbb95` (direct resumes
-kept off the relay), `3829552` (broker host route), `5bc2d65` (launcher routing by hosting view) and `dd9e1cf`
-(runtime-fix gate leg), merged with stage-1 contracts `b1695a3` and the integration branch at `78db20c`, `9c6b918`,
-`f30bccb` (connection broker `6a62235`) and `3ad0c7d` (session containers). Local only: Windows ARM64 host,
+kept off the relay), `3829552` (broker host route), `5bc2d65` (launcher routing by hosting view), `dd9e1cf`
+(runtime-fix gate leg) and `3604996` (docs), merged with stage-1 contracts `b1695a3` and the integration branch at
+`78db20c`, `9c6b918`, `f30bccb` (connection broker `6a62235`), `3ad0c7d` (session containers) and `27ff06c` (shared
+mode, worker and promotion checkpoints) in `9654d2a`. Local only: Windows ARM64 host,
 Docker Desktop with linux/arm64 containers, disposable PostgreSQL 17, synthetic inference, one real GitHub account.
 
 Delivered:
@@ -1541,10 +1542,9 @@ Runtime artifacts: final gates and the AppHost run used runtime `d89cfe45b2994fb
 `patniko-runtime-capabilities-for-hosting-modes` @ `62a6b07a10a`), hosting `006b0304155f26732b724de0a085ab81bc37e5a2`,
 mxc `622d4f197739692686f94ed6cd78ef4e5e03c82f`: Linux arm64 bundle `hybrid-linux-arm64-d89cfe45b29-host-006b030`
 (SHA-256 `copilot-runtime` `207690e4…`, `runtime.node` `21aebad9…`, `sdk.tgz` `1f056620…`) in host image
-`copilot-owner-host:per-harness-relay` `sha256:4e37e30b…` (3.0 GB, built from `5bc2d65`; host sources unchanged
-since), the matching Windows pair (`copilot-runtime.exe` `be1213d6…`, `runtime.node` `2dd77fc0…`) and
-`dist-cli/index.js`. The GitHub-native gate used `copilot-owner-host:native-per-harness` `sha256:70d80b85…` (1.6 GB,
-from `84a1521`). Earlier runs used runtime `0a32c39595f` (bundle `copilot-runtime` `4e34c560…`, `runtime.node`
+`copilot-owner-host:per-harness-relay` `sha256:169bb48e…` (3.0 GB, built from `9654d2a`), the matching Windows pair (`copilot-runtime.exe` `be1213d6…`, `runtime.node` `2dd77fc0…`) and
+`dist-cli/index.js`. The GitHub-native gate used `copilot-owner-host:native-per-harness` `sha256:eb075374…` (1.6 GB,
+from `9654d2a`). Earlier runs used runtime `0a32c39595f` (bundle `copilot-runtime` `4e34c560…`, `runtime.node`
 `abe1e751…`, `sdk.tgz` `3707195d…`) with the workspace-fix Windows pair.
 
 Exit evidence ("an isolated harness host registers its own environment and the CLI attaches over relay and direct
@@ -1552,24 +1552,24 @@ WSS"), each command passing on the final tree:
 
 - Baseline: `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`, `pnpm typecheck`,
   `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint`, `pnpm test:unit`
-  (597 passed, 1 opt-in skipped) and `pnpm test:integration` (87 passed, 12 opt-in skipped). These include keyed
+  (664 passed, 1 opt-in skipped) and `pnpm test:integration` (128 passed, 20 opt-in skipped). These include keyed
   leases, tickets and grants; the migration of a singleton row on a fresh database; `relay_owner_only` and privacy
   when session containers serve the harness; the broker exchange (broker key, harness binding, single use, upstream
   ticket accepted once, epoch fencing); broker host routes with a synthetic host in ticket mode; and launcher routing,
   including the reported demo-host fallback.
 - `DEMO_HOST_RUNTIME_TESTS=1 HYBRID_USE_GH_ACCOUNT=1 OWNER_HOST_EXPECT_RUNTIME=d89cfe45b2994fb3e955362f7e2f2c9d63879069`
-  with `DEMO_HOST_TEST_IMAGE` and `COPILOT_CLI_PATH`: `tests\integration\host-runtime.test.ts` passed (64 s). Two
+  with `DEMO_HOST_TEST_IMAGE` and `COPILOT_CLI_PATH`: `tests\integration\host-runtime.test.ts` passed (51 s). Two
   hosts for different harnesses on `both` each registered their own environment, served direct sessions through the
   gateway, refused each other's tickets, recorded the client's AHP session ID, reported the runtime revision, and kept
   environment, workspace and history across container replacement; the environments were deleted.
-- `DEMO_GITHUB_HOST_TESTS=1`: `tests\integration\github-native-host.test.ts` passed (47 s).
+- `DEMO_GITHUB_HOST_TESTS=1`: `tests\integration\github-native-host.test.ts` passed (46 s).
 - `OWNER_HOST_CLI_TESTS=1` with `HYBRID_CLI_PATH`: `tests\integration\owner-host-cli.test.ts` passed (42 s). The real
   CLI created a session over the harness host's own relay environment, resumed it over direct WSS through an
   in-process connection broker (`/hosts/interactive-demo`, one brokered connection), resumed it over the relay again,
   and resumed it directly once more with its relay client on, each replaying the conversation; the model requests
   contained the earlier turns. On runtime `0a32c39595f`, one of six runs after the broker route landed exited
   during CLI startup, in a run without a saved transcript; the other five passed.
-- AppHost: `aspire run --isolated --apphost apphost.mts` with `owner-hosts=[{"harness":"interactive-demo","transport":"both"}]`,
+- AppHost (tree at `dd9e1cf`): `aspire run --isolated --apphost apphost.mts` with `owner-hosts=[{"harness":"interactive-demo","transport":"both"}]`,
   `hybrid-hosting`, synthetic Foundry parameters, and the bundle above started every resource healthy. `GET /v1/hosts`
   showed the host online with its environment and size `small` (0.5 CPU, 1 GiB); the host reported runtime
   `d89cfe45b29`; direct material pointed at the AppHost's broker `/hosts/interactive-demo`; the real CLI created a
