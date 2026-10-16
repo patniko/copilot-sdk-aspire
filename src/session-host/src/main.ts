@@ -46,7 +46,7 @@ const port = listenPort(8083);
 // Shared egress also refuses this deployment's own listeners: this worker and the connection broker.
 const ownListeners = [optionalEnv("SHARED_WORKER_URL", ""), optionalEnv("CONNECTION_BROKER_URL", "")].filter(Boolean).map((value) => {
   const url = new URL(value);
-  return { host: url.hostname.replace(/^\[(.*)\]$/, "$1"), port: Number(url.port || (url.protocol === "https:" ? 443 : 80)) };
+  return { host: url.hostname.replace(/^\[(.*)\]$/, "$1"), port: Number(url.port || (["https:", "wss:"].includes(url.protocol) ? 443 : 80)) };
 });
 const egress = createSharedEgress({
   internal: [{ host: "127.0.0.1", port }, ...ownListeners],

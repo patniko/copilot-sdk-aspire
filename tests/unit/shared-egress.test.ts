@@ -54,7 +54,7 @@ describe("shared egress adapter", () => {
     const connection = await egress.connectMcp([{ name: "docs-search", policy, tools: ["search", "admin_reset"] }], { sessionId: "one", signal: first.signal });
     expect(connection.tools.map((tool) => tool.name)).toEqual(["mcp_docs_search_search"]);
     expect(connection.refused).toEqual([{ server: "docs-search", tool: "admin_reset", reason: "unapproved_tool" }]);
-    expect(connection.descriptors[0]).toMatchObject({ server: "docs-search", tool: "search", readOnly: true });
+    expect(connection.descriptors[0]).toMatchObject({ server: "docs-search", tool: "search", readOnly: false, readOnlyHint: true });
     expect(await invoke(connection.tools[0]!, { query: "adapter" })).toEqual({ resultType: "success", textResultForLlm: "Results for adapter" });
     const second = await egress.connectMcp([{ name: "docs-search", policy, tools: ["search"] }], { sessionId: "two", signal: new AbortController().signal });
     expect(server.requests.filter((request) => request.rpcMethod === "tools/list")).toHaveLength(1);

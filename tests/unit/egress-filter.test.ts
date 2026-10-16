@@ -155,7 +155,7 @@ describe("URL vetting", () => {
   it("refuses deployment endpoints by name and port, by resolved address and port, and by operator networks, even when they are public", async () => {
     const { filter } = harness({
       "db.example.net": ["20.1.2.3"], "alias.example": ["20.1.2.3"], "api.internal-svc.example": ["52.1.1.1"], "range.example": ["40.10.20.30"],
-      "admin.example.net": ["20.9.9.9"],
+      "admin.example.net": ["20.9.9.9"], localhost: ["127.0.0.1", "::1"],
     }, {
       internal: [{ host: "db.example.net", port: 5432 }, { host: "52.1.1.1", port: 443 }, { host: "localhost", port: 5123 }, { host: "admin.example.net" }],
       deniedNetworks: ["40.10.0.0/16"],
@@ -167,6 +167,35 @@ describe("URL vetting", () => {
     expect((await refusal(filter.vet("http://range.example:8443/"))).code).toBe("internal");
     expect((await refusal(filter.vet("https://admin.example.net:8443/"))).code).toBe("internal");
     expect((await refusal(filter.vet("http://localhost:5123/"))).code).toBe("hostname");
+  });
+
+  it("refuses port 0, which Node would replace with the default port past a port-scoped rule", async () => {
+    const { filter, lookups } = harness({ "db.example.net": ["20.1.2.3"] }, { internal: [{ host: "20.1.2.3", port: 443 }] });
+    for (const url of ["https://db.example.net:0/", "http://example.com:0/", "https://20.1.2.3:0/"]) {
+      expect((await refusal(filter.vet(url))).code).toBe("invalid_url");
+    }
+    expect(lookups).toEqual([]);
+    expect((await refusal(filter.vet("https://db.example.net/"))).code).toBe("internal");
+  });
+
+  it("fails closed until every internal host name has resolved once, then keeps the last good addresses", async () => {
+    let available = false;
+    const filter = new EgressFilter({
+      internal: [{ host: "db.example.net", port: 5432 }],
+      internalRefreshMs: 0,
+      testing: {
+        resolve: async (name) => {
+          if (name === "db.example.net." && !available) throw Object.assign(new Error("SERVFAIL"), { code: "ESERVFAIL" });
+          return [{ address: name === "db.example.net." ? "20.1.2.3" : "93.184.216.34", family: 4 }];
+        },
+      },
+    });
+    const paused = await refusal(filter.vet("https://example.com/"));
+    expect([paused.code, paused.message]).toEqual(["internal", "This deployment's internal endpoints could not be resolved yet, so outbound requests are paused."]);
+    available = true;
+    expect((await filter.vet("https://example.com/")).addresses[0]!.address).toBe("93.184.216.34");
+    available = false;
+    expect((await refusal(filter.vet("http://20.1.2.3:5432/"))).code).toBe("internal");
   });
 
   it("applies the development exception only to loopback, private, shared, and unique-local addresses", async () => {
@@ -317,6 +346,10 @@ describe("filtered requests", () => {
       else response.writeHead(200).end("ok");
     });
     const { filter } = harness({ "public.example": ["93.184.216.34"], "other.example": ["93.184.216.36"] });
+    for (const header of ["Authorization", "cookie", "Proxy-Authorization", "X-Api-Key", "x-auth-token"]) {
+      await expect(filter.request({ url: `http://public.example:${port}/`, headers: { [header]: "value" }, maxResponseBytes: 1024, timeoutMs: 5000 }))
+        .rejects.toThrow(/in credentials, not headers/);
+    }
     const insecure = await refusal(filter.request({
       url: `http://public.example:${port}/start`, credentials: { authorization: "Bearer test-credential-123" }, maxRedirects: 2, maxResponseBytes: 1024, timeoutMs: 5000,
     }));
@@ -344,6 +377,25 @@ describe("filtered requests", () => {
       url: `http://127.0.0.1:${port}/`, allowPrivateNetwork: true, maxRedirects: 2, maxResponseBytes: 1024, timeoutMs: 5000,
     }));
     expect(error.category).toBe("loopback");
+  });
+
+  it("forwards only non-sensitive generic headers after a redirect", async () => {
+    const seen: Array<Record<string, string | string[] | undefined>> = [];
+    const port = await serve((request, response) => {
+      seen.push({ accept: request.headers.accept, trace: request.headers["x-trace"], session: request.headers["mcp-session-id"] });
+      if (request.url === "/start") response.writeHead(302, { location: "/landing" }).end();
+      else response.writeHead(200).end("ok");
+    });
+    const { filter } = harness({ "public.example": ["93.184.216.34"] });
+    const response = await filter.request({
+      url: `http://public.example:${port}/start`, headers: { accept: "text/plain", "x-trace": "abc", "mcp-session-id": "session-1" },
+      maxRedirects: 1, maxResponseBytes: 1024, timeoutMs: 5000,
+    });
+    await response.bytes();
+    expect(seen).toEqual([
+      { accept: "text/plain", trace: "abc", session: "session-1" },
+      { accept: "text/plain", trace: undefined, session: undefined },
+    ]);
   });
 
   it("bounds response size before and after decompression, truncating only when asked", async () => {

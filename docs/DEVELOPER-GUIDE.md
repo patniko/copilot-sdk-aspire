@@ -321,6 +321,20 @@ covers frame boundaries, ticket refusal, forwarded-only placement ingress, and `
 `tests/integration/connection-broker.test.ts` covers the real dispatcher and API routes, including live
 connections across an `agent-api` restart and a test-only placement change.
 
+The same flag enables `shared-egress-runtime.test.ts` for the
+[shared-placement egress library](SECURITY.md#shared-placement-egress-and-remote-mcp). A
+`SharedSessionRuntime` conversation driven by synthetic inference calls the filtered `web_fetch` and
+two tools on a fake Streamable HTTP MCP server ([`fake-mcp-server.ts`](../tests/fakes/fake-mcp-server.ts)),
+and the test checks that the server's credential reaches no model request, session event, report, or
+PostgreSQL session file. A second case shows the runtime's `custom-tool` permission requests for these
+tools mapped to the harness `url` rule and MCP prompts. Public-looking test host names reach loopback
+servers only through the filter's test seams. The classifier, redirect, client, and adapter suites need
+no runtime or Docker:
+
+```powershell
+pnpm exec vitest run --project unit tests\unit\egress-filter.test.ts tests\unit\remote-mcp.test.ts tests\unit\web-fetch-tool.test.ts tests\unit\shared-egress.test.ts
+```
+
 For the complete local CLI/container gate, build `copilot-hybrid-executor:local` (or set
 `HYBRID_EXECUTOR_IMAGE` to another tag), set the matching native/CLI paths and explicit account opt-in
 above, then run:
