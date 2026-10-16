@@ -184,6 +184,29 @@ describe("owner host API", () => {
     await app.close();
   });
 
+  it("refuses a named harness's connection to a GitHub-native demo host, which runs Copilot's own sessions", async () => {
+    const native: ApiOwnerHost = {
+      harness: "interactive-demo", owner: "alice", principal: "dev", transport: "github", execution: "github-native", resource: "agent-host", legacy: true,
+    };
+    const policies = { base: policy, overrides: new Map() };
+    const app = buildApi({
+      store: new JobStore(pool), listener, admission: new Admission({ harnesses, profiles, policies }),
+      authenticator: new ApiKeyAuthenticator(`dev:${devKey};other:${otherKey}`), harnesses, maxOpenJobsPerPrincipal: 10, console: false,
+      hosts: { store, hosts: [native], harnesses, policies, profiles },
+    });
+    const lease = await store.acquire(native, 30, 1, "github-native");
+    await store.heartbeat(native, lease.epoch, 30, "native-environment");
+    for (const transport of ["github", "direct"]) {
+      const refused = await app.inject({ method: "POST", url: "/v1/hosts/interactive-demo/connection", headers: as(devKey), payload: { transport } });
+      expect(refused.statusCode).toBe(409);
+      expect(refused.json().error).toMatchObject({ code: "hosting_unavailable", message: expect.stringContaining("--destination container --transport github") });
+    }
+    // The legacy single-host route, which the launcher's --destination container uses, still reaches it.
+    expect((await app.inject({ method: "POST", url: "/v1/host/connection", headers: as(devKey) })).json())
+      .toMatchObject({ transport: "github", online: true, environmentId: "native-environment" });
+    await app.close();
+  });
+
   it("distinguishes unknown harnesses, undeployed hosts, and transports the policy does not allow", async () => {
     const app = api();
     expect((await app.inject({ method: "POST", url: "/v1/hosts/no-such-agent/connection", headers: as(devKey), payload: {} })).statusCode).toBe(404);

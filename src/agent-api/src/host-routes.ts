@@ -99,10 +99,13 @@ export function registerHostRoutes(app: FastifyInstance, deps: HostApiDependenci
   /** The first problem, in admission order, that blocks `principal` from this host over `transport`. */
   const problemFor = (host: ApiOwnerHost, principal: string, transport: HostingTransport): HostingProblem | undefined => {
     if (host.execution === "github-native") {
-      // GitHub-native hosting ignores the harness and its policy; it offers only the owner's relay.
-      if (transport !== "github") return { code: "hosting_unavailable", message: "The GitHub-native host offers only the GitHub relay.", prerequisite: { kind: "transport", name: transport } };
-      return principal === host.principal ? undefined
-        : { code: "relay_owner_only", message: `Only the owner of the host for '${host.harness}' can use the GitHub relay.` };
+      // GitHub-native hosting runs Copilot's own sessions and ignores the harness and its policy, so it is no host for
+      // this harness, as the hosting view also reports; it stays reachable through the legacy /v1/host routes.
+      return {
+        code: "hosting_unavailable",
+        message: `The GitHub-native demo host runs Copilot's own sessions, not harness '${host.harness}'; connect to it with \`pnpm host:connect --destination container --transport github\`.`,
+        prerequisite: { kind: "host", name: "isolated-host" },
+      };
     }
     const snapshot = conversation(host.harness);
     if (!snapshot) return { code: "hosting_unavailable", message: `Harness '${host.harness}' is not published as a conversation harness.` };
