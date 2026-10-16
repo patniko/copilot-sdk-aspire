@@ -241,8 +241,11 @@ explains the transitions.
 ## Create or change a harness
 
 Use **Harnesses** in the configurator to choose a template, define schemas and instructions, select approved
-models/profiles, and set tools, permissions, and limits. Start without built-in tools; enable only what the task
-needs. A harness requests capabilities but cannot override operator policy.
+models/profiles, and set tools, permissions, and limits. Conversation harnesses also request a hosting mode, an
+approval mode, and remote MCP tools on the **Hosting** tab, and the **Hosting** page shows whether the running
+deployment can host them (see [Hosting, approvals and remote MCP](CONFIGURATOR.md#hosting-approvals-and-remote-mcp)).
+Start without built-in tools; enable only what the task needs. A harness requests capabilities but cannot override
+operator policy.
 
 Save and increment the version when changing published behavior. For local harness-only edits, **Reload harnesses**
 restarts the API so new submissions see the change. Existing jobs keep their admitted snapshot. Policy, runner,

@@ -7,4 +7,6 @@ export * from "./shared-store.js";
 export * from "./delegations.js";
 export * from "./allocations.js";
 export * from "./placements.js";
+export * from "./session-directory.js";
+export * from "./session-containers.js";
 export * from "./workers.js";

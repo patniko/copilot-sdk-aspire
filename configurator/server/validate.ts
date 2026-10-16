@@ -1,32 +1,38 @@
 import {
   applyPolicyOverride,
+  approvalModeOf,
   type BuiltinToolGroup,
-  CONVERSATION_PROFILE,
+  conversationPolicyProblems,
   DEFAULT_INPUT_TIMEOUT_SECONDS,
   effectiveApprovalModes,
+  effectiveHostingPolicy,
   ExecutionPolicy,
+  type ExecutionProfile,
   HARNESS_OVERRIDABLE_POLICY_FIELDS,
   HarnessDefinition,
-  type HarnessMcpServer,
+  HarnessMcpServer,
   HarnessPolicyOverride,
   HostingConfig,
-  hostedProfileViolations,
+  type HostingMode,
+  hostingModeOf,
   hostingPolicyViolations,
-  hostingReferenceViolations,
   type HostingTarget,
   isInteractive,
   modelOptionViolations,
   permissionModeFor,
   permissionModesUsed,
   type PermissionsConfig,
+  type PolicyViolation,
   renderSkillMarkdown,
   requiredRunnerCapabilities,
+  RUNNER_PROTOCOL_VERSION,
   securityGaps,
   SLUG,
   toolPolicyViolations,
 } from "@copilot-agent/contracts";
 import { canonicalJson, createAjv, sha256Hex } from "@copilot-agent/service-defaults";
-import type { Decision, EffectiveLimits, HarnessDocument, Issue, ProfileSummary } from "./types.js";
+import { z } from "zod";
+import type { Decision, EffectiveLimits, HarnessDocument, HarnessManifest, Issue, ProfileSummary } from "./types.js";
 
 export interface ValidationContext {
   /** The effective policy for this harness: the base policy plus any override for its name. */
@@ -44,8 +50,48 @@ export interface ValidationContext {
 
 const RESERVED_TOOLS = new Set(["submit_result"]);
 
+/**
+ * Contract execution profiles rebuilt from the summaries the configurator lists. Policy and hosting checks read only
+ * the id, bindings, capabilities, in-process bindings and permission handlers; the entrypoint is not needed here.
+ */
+export function executionProfiles(profiles: ProfileSummary[]): Map<string, ExecutionProfile> {
+  return new Map(
+    profiles.map((profile): [string, ExecutionProfile] => [
+      profile.id,
+      {
+        schemaVersion: "1",
+        id: profile.id,
+        displayName: profile.displayName,
+        runnerProtocol: RUNNER_PROTOCOL_VERSION,
+        agent: {
+          language: profile.language === "python" ? "python" : "typescript",
+          sdk: profile.sdk,
+          sdkVersion: profile.sdkVersion,
+          firstParty: profile.firstParty,
+        },
+        entrypoint: { command: "", args: [], directory: "", env: {} },
+        toolchains: [],
+        toolBindings: [...profile.toolBindings],
+        ...(profile.inProcessBindings ? { inProcessBindings: [...profile.inProcessBindings] } : {}),
+        ...(profile.permissionHandlers ? { permissionHandlers: [...profile.permissionHandlers] } : {}),
+        capabilities: [...profile.capabilities] as ExecutionProfile["capabilities"],
+      },
+    ]),
+  );
+}
+
 function issue(level: Issue["level"], path: string, message: string, fix?: Issue["fix"]): Issue {
   return fix ? { level, path, message, fix } : { level, path, message };
+}
+
+/** Fields where the configurator's own wording already reports the contract's admission problem. */
+const REPORTED_ELSEWHERE = /^(model|tools\.\d+\.binding)$/;
+
+/** Hosting policy feedback while other fields of a conversation harness do not validate yet. */
+function partialHostingProblems(hosting: unknown, policy: ExecutionPolicy): PolicyViolation[] {
+  if (hosting === undefined) return hostingPolicyViolations({ interaction: "conversation" }, policy);
+  const parsed = HostingConfig.safeParse(hosting);
+  return parsed.success ? hostingPolicyViolations({ interaction: "conversation", hosting: parsed.data }, policy) : [];
 }
 
 function versionParts(version: unknown): number[] {
@@ -135,29 +181,22 @@ export function validateHarness(document: HarnessDocument, context: ValidationCo
     agents?: Array<{ name: string; reasoningEffort?: string }>;
     builtinTools?: BuiltinToolGroup[];
     permissions?: PermissionsConfig;
-    mcpServers?: HarnessMcpServer[];
+    mcpServers?: unknown;
+    interaction?: unknown;
+    hosting?: unknown;
   };
   if (modelShape.model) {
     for (const violation of modelOptionViolations({ model: modelShape.model, agents: modelShape.agents }, context.policy)) {
       issues.push(issue("error", violation.path, violation.message));
     }
   }
+  // Catalog checks wait until the requested servers are well formed; the schema reports malformed entries.
+  const mcpServers = z.array(HarnessMcpServer).safeParse(modelShape.mcpServers);
   for (const violation of toolPolicyViolations(
-    { builtinTools: modelShape.builtinTools, permissions: modelShape.permissions, mcpServers: modelShape.mcpServers },
+    { builtinTools: modelShape.builtinTools, permissions: modelShape.permissions, mcpServers: mcpServers.success ? mcpServers.data : undefined },
     context.policy,
   )) {
     issues.push(issue("error", violation.path, violation.message));
-  }
-  // Hosting, conversation-profile, and target checks need a schema-valid definition, as admission does.
-  if (parsed.success) {
-    const definition = parsed.data;
-    const conversationProfile = context.profiles.find((profile) => profile.id === CONVERSATION_PROFILE);
-    const problems = [
-      ...hostingPolicyViolations(definition, context.policy),
-      ...(definition.interaction === "conversation" && conversationProfile ? hostedProfileViolations(definition, conversationProfile) : []),
-      ...hostingReferenceViolations(definition, (name) => hostingTarget(name, context)),
-    ];
-    for (const problem of problems) issues.push(issue("error", problem.path, problem.message));
   }
   if (modelShape.builtinTools?.length) {
     const modes = permissionModesUsed(modelShape.permissions);
@@ -274,6 +313,21 @@ export function validateHarness(document: HarnessDocument, context: ValidationCo
     });
   }
 
+  // Conversations are admitted by the hosted path: the same contract checks for hosting, remote MCP, approval modes,
+  // the conversation profile, and worker and handoff targets. Problems already reported above are not repeated.
+  if (modelShape.interaction === "conversation") {
+    const problems = parsed.success
+      ? conversationPolicyProblems(parsed.data, context.policy, executionProfiles(context.profiles), (name) => hostingTarget(name, context))
+      : partialHostingProblems(modelShape.hosting, context.policy);
+    for (const problem of problems) {
+      const path = problem.path ?? "hosting";
+      const reported = issues.some(
+        (existing) => existing.level === "error" && existing.path === path && (existing.message === problem.message || REPORTED_ELSEWHERE.test(path)),
+      );
+      if (!reported) issues.push(issue("error", path, problem.message));
+    }
+  }
+
   if (manifest.limits) {
     if (manifest.limits.maxDurationSeconds > context.policy.maxDurationSeconds) {
       issues.push(
@@ -376,6 +430,8 @@ export function decisions(document: HarnessDocument, context: ValidationContext)
       detail: "The batch runner uses empty mode, an explicit tool allowlist, no ambient configuration or custom-instruction discovery, and a required submit_result output. Enabling the foundation prompt and built-ins does not switch to the native CLI configuration.",
       path: "runners",
     });
+  } else {
+    result.push(...hostingDecisions(manifest));
   }
 
   tools.forEach((tool, index) => {
@@ -562,6 +618,92 @@ export function decisions(document: HarnessDocument, context: ValidationContext)
   return result;
 }
 
+const MODE_DECISIONS: Record<HostingMode, { title: string; detail: string }> = {
+  isolated: {
+    title: "Hosted in an isolated container",
+    detail: "The agent loop runs in a dedicated Linux container with a real filesystem and the harness's tools. Network egress is not enforced.",
+  },
+  shared: {
+    title: "Hosted on the shared runtime",
+    detail: "Sessions run in one shared in-process runtime with virtual files in PostgreSQL. No containers start; shell, Python and local MCP tools are unavailable.",
+  },
+  promotable: {
+    title: "Starts shared, promotable to a container",
+    detail: "Sessions start on the shared runtime and can move one way into a dedicated container for real files, a shell, or longer work.",
+  },
+  orchestrator: {
+    title: "Shared coordinator with container workers",
+    detail: "A coordinator on the shared runtime starts listed worker harnesses in their own sized containers and receives their results.",
+  },
+};
+
+/** What the platform does with a conversation harness's hosting, approval mode and remote MCP servers. */
+function hostingDecisions(manifest: HarnessManifest): Decision[] {
+  const result: Decision[] = [];
+  const mode = hostingModeOf(manifest);
+  const described = MODE_DECISIONS[mode];
+  if (described) result.push({ kind: "host", ...described, path: "hosting.mode" });
+  if (described && mode !== "isolated") {
+    result.push({
+      kind: "review",
+      title: "Shared placement separates sessions inside one process",
+      detail: "Principal- and lease-fenced storage and tool allowlists separate sessions on the shared runtime. That is application-level isolation, not an operating-system or hostile-code boundary.",
+      path: "hosting.mode",
+    });
+  }
+  const workers = mode === "orchestrator" ? manifest.hosting?.workers : undefined;
+  if (workers?.humanAuthority === "inherit") {
+    result.push({
+      kind: "review",
+      title: "Workers may act on the person's own instructions",
+      detail: "Assisted worker judges may treat this session's recorded human messages as authority. Requests only the coordinator asked for still go to a person.",
+      path: "hosting.workers.humanAuthority",
+    });
+  }
+  const handoffs = Array.isArray(manifest.hosting?.handoffs) ? manifest.hosting.handoffs : [];
+  if (handoffs.length > 0) {
+    result.push({
+      kind: "info",
+      title: `Hands off to ${handoffs.map((handoff) => handoff.harness).join(", ")}`,
+      detail: "Each target becomes a transfer tool for the model. Policy and availability are checked before control moves, and a person confirms when approval is ask.",
+      path: "hosting.handoffs",
+    });
+  }
+  const approval = approvalModeOf(manifest.permissions);
+  if (approval === "assisted") {
+    result.push({
+      kind: "review",
+      title: "Assisted approvals: the runtime's safety judge decides first",
+      detail: `${manifest.permissions?.judgeModel ? `The judge uses ${manifest.permissions.judgeModel}. ` : "The judge uses the session's model. "}It is probabilistic guidance that reduces prompts, not a security boundary: only the person's messages grant authority, and when nobody can be asked the action does not run.`,
+      path: "permissions.approvalMode",
+    });
+  } else if (approval === "allow-all") {
+    result.push({
+      kind: "review",
+      title: "Allow-all approvals",
+      detail: "Requests that would ask a person are approved automatically. Per-kind deny rules still apply.",
+      path: "permissions.approvalMode",
+    });
+  } else if (approval === "custom") {
+    result.push({
+      kind: "host",
+      title: `Custom approvals by '${manifest.permissions?.handler ?? "a handler"}'`,
+      detail: "Reviewed integrator code registered in the execution profile decides requests that would ask a person.",
+      path: "permissions.handler",
+    });
+  }
+  const servers = Array.isArray(manifest.mcpServers) ? manifest.mcpServers : [];
+  if (servers.length > 0) {
+    result.push({
+      kind: "host",
+      title: `Remote MCP servers: ${servers.map((entry) => entry.server).join(", ")}`,
+      detail: "The hosting process connects with each server's operator-held credential. The model and the harness see only server names and approved tools.",
+      path: "mcpServers",
+    });
+  }
+  return result;
+}
+
 export function effectiveLimits(document: HarnessDocument, policy: ExecutionPolicy): EffectiveLimits {
   const { manifest } = document;
   const candidates = manifest.model ? [manifest.model.preferred, ...manifest.model.allowed] : [];
@@ -639,6 +781,28 @@ function hostingPolicyWarnings(policy: ExecutionPolicy, profiles: ProfileSummary
       issues.push(issue("warning", `permissionHandlers.${index}`, `No execution profile provides the '${handler}' permission handler.`));
     }
   });
+  for (const [name, server] of Object.entries(policy.mcpServers ?? {})) {
+    if (server.allowPrivateNetwork) {
+      issues.push(
+        issue(
+          "warning",
+          `mcpServers.${name}.allowPrivateNetwork`,
+          `'${name}' may resolve to private or loopback addresses${server.auth ? " and receive its credential over http" : ""}. Use this only for local development.`,
+        ),
+      );
+    }
+  }
+  const hosting = effectiveHostingPolicy(policy);
+  const directOnly = hosting.modes.filter((mode) => mode !== "isolated");
+  if (directOnly.length > 0 && !hosting.transports.includes("direct")) {
+    issues.push(issue("warning", "hosting.transports", `${directOnly.join(", ")} hosting supports direct WSS only, so those harnesses cannot connect without it.`));
+  }
+  if (hosting.workers.allowInheritedAuthority && !approvalModes.includes("assisted")) {
+    issues.push(
+      issue("warning", "hosting.workers.allowInheritedAuthority", "Inherited authority affects only assisted workers, and this policy does not allow the assisted approval mode."),
+    );
+  }
+  const bindings = new Set(profiles.flatMap((profile) => profile.toolBindings));
   for (const [name, template] of Object.entries(policy.hosting?.crafting?.templates ?? {})) {
     const path = `hosting.crafting.templates.${name}`;
     template.models.forEach((model, index) => {
@@ -654,6 +818,11 @@ function hostingPolicyWarnings(policy: ExecutionPolicy, profiles: ProfileSummary
     template.builtinTools.forEach((group, index) => {
       if (!(policy.builtinTools ?? []).includes(group)) {
         issues.push(issue("warning", `${path}.builtinTools.${index}`, `The '${group}' built-in tools are not allowed, so crafted workers cannot use them.`));
+      }
+    });
+    template.toolBindings.forEach((binding, index) => {
+      if (!bindings.has(binding)) {
+        issues.push(issue("warning", `${path}.toolBindings.${index}`, `No execution profile provides binding '${binding}', so crafted workers cannot use it.`));
       }
     });
   }

@@ -19,14 +19,16 @@ and model setup; this guide owns the implementation workflow.
 | [`src/agent-host/src`](../src/agent-host/src) | Experimental long-lived SDK owner, AHP ingress, connection provisioning, and host supervision |
 | [`src/session-host/src`](../src/session-host/src) | Experimental native-anchor workspace bridge for a future shared host; library only, not an enabled deployment service |
 | [`src/connection-broker/src`](../src/connection-broker/src) | Experimental connection broker: one WebSocket path per session, ticket consumption through the dispatcher, forwarding to placements, "moved" closes |
+| [`src/session-container/src`](../src/session-container/src) | Experimental per-session container: root supervisor (allocation credential, broker-only ingress, heartbeats) and unprivileged owner (runtime, harness mapping, AHP host) |
+| [`src/execution-controller/src`](../src/execution-controller/src) | Local Docker controller for one-shot job and resumable session containers, volumes, and reconciliation |
 | [`src/inference-gateway/src`](../src/inference-gateway/src) | Model route checks, capability authorization, upstream identity, usage reporting |
-| [`src/harness-hosting/src`](../src/harness-hosting/src) | TypeScript Copilot SDK runner, session mapping, permission handlers, tool bindings |
+| [`src/harness-hosting/src`](../src/harness-hosting/src) | TypeScript Copilot SDK runner, session mapping, permission handlers (batch and hosted), tool bindings |
 | [`src/service-defaults/src`](../src/service-defaults/src) | Shared HTTP, auth, logging, Postgres, configuration, and registry helpers |
 | [`execution-profiles`](../execution-profiles) | Approved profile manifests and Python SDK sample implementation |
 | [`tools/python`](../tools/python) | Packaged Python tool implementations |
 | [`examples/customer-config`](../examples/customer-config) | Committed seed harnesses and policy; editable copies live in the ignored customer workspace |
 | [`configurator`](../configurator) | Local React/Vite UI and companion server for authoring and operations |
-| [`deploy/Dockerfile`](../deploy/Dockerfile) | Control-plane images and executor toolchain |
+| [`deploy/Dockerfile`](../deploy/Dockerfile) | Control-plane images and executor toolchain; [`SessionHost.Dockerfile`](../deploy/SessionHost.Dockerfile) and [`SessionContainer.Dockerfile`](../deploy/SessionContainer.Dockerfile) package the local-SDK hosts |
 | [`deploy/CopilotAgent.Hosting`](../deploy/CopilotAgent.Hosting) | Local Aspire C# integration for singleton host scale and Azure Files mount settings |
 | [`tests`](../tests), [`configurator/test`](../configurator/test) | Unit and integration coverage |
 
@@ -151,6 +153,12 @@ without a feature it requested. `DEMO_HOST_FEATURES` in [`hosting.ts`](../src/se
 `SHARED_WORKER_FEATURES` in [`shared.ts`](../contracts/src/shared.ts) record what each host implements; a slice that
 implements a feature adds it there. agent-api's [`hostingDeployment`](../src/agent-api/src/hosting-deployment.ts)
 builds the deployment's hosts from its configuration for admission and the `/v1/hosting` [views](API.md#hosting-views).
+Session containers add `SESSION_CONTAINER_FEATURES` in [`session-container.ts`](../contracts/src/session-container.ts)
+and the builder's `sessionContainers` input.
+
+Hosted conversations share one permission policy: [`hosted-policy.ts`](../src/harness-hosting/src/hosted-policy.ts)
+denies tools the harness did not admit and returns no result for `ask`, so the attached AHP participant owns the
+prompt. The demo host and session containers both import it; the application never fabricates approval.
 
 GitHub-native mode instead starts host-owned sessions through the released CLI server pinned in the host
 package. It supplies no app factories or custom provider and uses the standard Mission Control owner binding.
@@ -361,6 +369,28 @@ Failed automatic notifications are inspectable through the session jobs API. Sta
 configuration, Linux-image commands and the two CLI destinations are documented in
 [local hybrid deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment).
 
+Session containers have two suites. `tests/integration/session-containers.test.ts` runs with the ordinary
+integration project against disposable PostgreSQL and an in-memory container adapter
+([`fake-adapter.ts`](../tests/integration/fixtures/fake-adapter.ts)); it covers the allocation lifecycle, idle stop
+and reallocation from the retained volume, retirement on close, reconciliation after a controller restart,
+capacity under concurrent requests, credential scoping, inference grants, broker placement routes, and
+cross-principal denial. The opt-in `tests/integration/session-container-runtime.test.ts` is the real-container gate:
+build the [session-container image](DEPLOYMENT.md#session-containers) and the executor image, set the CLI path and
+account opt-in above, then run:
+
+```powershell
+$env:HYBRID_SESSION_CONTAINER_TESTS = '1'
+$env:HYBRID_SESSION_CONTAINER_IMAGE = 'copilot-session-container:local' # or your branch's tag
+pnpm exec vitest run --project integration tests\integration\session-container-runtime.test.ts
+```
+
+It creates a mode-1 session through the API, checks the container's environment, capabilities and mount, checks that
+the container refuses a client ticket presented directly, attaches the real CLI through an in-process connection
+broker over direct WSS with synthetic inference, writes a file with the shell tool, waits for the idle stop,
+reconnects to a new container from the retained volume, and checks that the history and the file survived and that
+capacity returns to zero after close. It follows the containers' operator logs for diagnosis, removes the volumes it
+created, and uses no paid model or Azure resource.
+
 The separate `tests/integration/github-native-host.test.ts` opt-in uses `DEMO_GITHUB_HOST_TESTS=1`,
 the same explicit GitHub credential variables, and `copilot-aspire-agent-host:native-demo` (or
 `DEMO_GITHUB_HOST_TEST_IMAGE`). It exercises the actual native container, Mission Control registration,
@@ -455,6 +485,10 @@ servers or handlers, the default size catalog and worker limits, and `ask` for p
 admissible on a host only when that host lists it in its features; until then admission returns
 `hosting_unavailable` naming it. A new hosted feature that batch runners would also see needs TypeScript and Python
 runner parity, or the batch rejection above.
+
+The configurator validates these fields with the same contract helpers but never evaluates a deployment: its
+[harness editor and Hosting page](CONFIGURATOR.md#hosting-approvals-and-remote-mcp) read availability from the
+running agent-api's [hosting views](API.md#hosting-views), so a host that gains a feature needs no configurator change.
 
 A catalog server's `allowPrivateNetwork: true` is an operator-only development allowance: its exact configured origin,
 never a redirect, may be a private, loopback, or container address, and its credential may then travel over `http`.

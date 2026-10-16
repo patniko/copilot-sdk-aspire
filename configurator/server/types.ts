@@ -1,7 +1,39 @@
 // Types shared by the configurator server and UI. Type-only imports keep the UI bundle free of server code.
-import type { AgentDefinition, DemoHostSettings, ExecutionPolicy, HarnessDefinition, HarnessPolicyOverride, SkillDefinition, ToolRequest } from "@copilot-agent/contracts";
+import type {
+  AgentDefinition,
+  DemoHostSettings,
+  EffectiveHostingPolicy,
+  ExecutionPolicy,
+  HarnessDefinition,
+  HarnessHostingView,
+  HarnessPolicyOverride,
+  HostingCeilings,
+  HostingHostsView,
+  HostingMode,
+  HostingOverview,
+  HostingPlacement,
+  HostingProblem,
+  HostingStatus,
+  HostingTransportView,
+  SkillDefinition,
+  ToolRequest,
+} from "@copilot-agent/contracts";
 
-export type { ExecutionPolicy, HarnessPolicyOverride, SkillDefinition };
+export type {
+  EffectiveHostingPolicy,
+  ExecutionPolicy,
+  HarnessHostingView,
+  HarnessPolicyOverride,
+  HostingCeilings,
+  HostingHostsView,
+  HostingMode,
+  HostingOverview,
+  HostingPlacement,
+  HostingProblem,
+  HostingStatus,
+  HostingTransportView,
+  SkillDefinition,
+};
 
 /**
  * harness.json on disk: the harness contract with `instructionsFile` in place of inline instructions
@@ -97,7 +129,16 @@ export interface WorkspaceInfo {
   policyIssues: Issue[];
   /** Operator overrides in policy/harnesses/, with the fields they replace. */
   policyOverrides: Array<{ harness: string; fields: string[]; errors: number }>;
+  /** Values that apply when optional policy fields are omitted, so the Policy page can show them. */
+  policyDefaults: PolicyDefaults;
   changes: { items: string[] };
+}
+
+export interface PolicyDefaults {
+  /** Hosting ceilings of a policy without a `hosting` block. */
+  hosting: EffectiveHostingPolicy;
+  /** Approval modes of a policy without `approvalModes`. */
+  approvalModes: string[];
 }
 
 /** One harness's override and the effective policy it produces (the base policy when there is none). */
@@ -126,6 +167,61 @@ export interface HarnessDetail {
   decisions: Decision[];
   /** Runner capabilities this harness needs beyond the protocol baseline. */
   requiredCapabilities: string[];
+  /** What the Hosting section may offer under the effective policy, and where the harness can run. */
+  hosting?: HarnessHostingDetail;
+}
+
+/** An operator MCP catalog entry as harness authors see it: the server's URL and secret reference stay on the Policy page. */
+export interface McpCatalogEntry {
+  server: string;
+  description?: string;
+  tools: string[];
+}
+
+/** Another workspace harness (its latest version) as a candidate worker or handoff target. */
+export interface HostingTargetSummary {
+  name: string;
+  version: string;
+  description: string;
+  interaction: "batch" | "conversation";
+  /** The hosting mode the target declares. */
+  mode: HostingMode;
+  /** Whether the target's effective policy allows its own mode (required for handoff targets). */
+  modeAllowed: boolean;
+  /** Whether the target's effective policy allows isolated hosting (required for workers). */
+  isolatedAllowed: boolean;
+}
+
+export interface HarnessHostingDetail {
+  /** Effective operator ceilings for this harness (base policy plus its override). */
+  ceilings: HostingCeilings;
+  /** Catalog servers this harness may request, with their approved tools. */
+  mcpCatalog: McpCatalogEntry[];
+  /** Models the effective policy approves; judge models must also be among the harness's allowed models. */
+  allowedModels: string[];
+  /** Custom permission handlers the TypeScript conversation profile provides. */
+  profileHandlers: string[];
+  /** Other harnesses that can be listed as workers or handoff targets. */
+  targets: HostingTargetSummary[];
+}
+
+/** The Hosting page's per-harness view for one deployment target, read from that target's agent-api. */
+export interface HostingPageInfo {
+  target: TryTarget;
+  /** The running agent-api's `GET /v1/hosting` view, when it could be read. */
+  overview?: HostingOverview;
+  /** Why the view could not be read. */
+  problem?: string;
+  /** Latest workspace versions the service has not loaded as saved: absent from its view, or loaded with another digest. */
+  stale: Array<{ harness: string; version: string; reason: "missing" | "changed" }>;
+}
+
+/** One harness version as a target's agent-api hosts it (`GET /v1/hosting/{harness}`). */
+export interface HarnessHostingInfo {
+  target: TryTarget;
+  view?: HarnessHostingView;
+  /** Why the view could not be read, for example because the service has not loaded this version. */
+  problem?: string;
 }
 
 export interface Decision {

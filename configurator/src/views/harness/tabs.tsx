@@ -5,16 +5,19 @@ import type { HarnessDetail, HarnessDocument, HarnessManifest, Issue, SkillDefin
 import { DecisionList } from "../../components/LivePlan";
 import { ArrowRight, Copilot, Plus, Trash2, Wrench } from "../../components/icons";
 import { Badge, Empty, Field, Flash, HelpButton, IssueList, JsonEditor, NumberInput, OrderedList, SegmentedControl, Toggle, VersionInput } from "../../components/ui";
+import { APPROVAL_INFO, MODE_INFO } from "../../hostingText";
 import { useApp } from "../../state";
 import { CreateWithCopilot } from "./authoring";
+import { HostingTab } from "./hosting";
 
-export type Tab = "overview" | "prompt" | "model" | "tools" | "permissions" | "agents" | "skills" | "input" | "output" | "limits" | "runtime";
+export type Tab = "overview" | "prompt" | "model" | "tools" | "permissions" | "hosting" | "agents" | "skills" | "input" | "output" | "limits" | "runtime";
 export const TABS: Array<{ id: Tab; label: string }> = [
   { id: "overview", label: "Overview" },
   { id: "prompt", label: "Prompt" },
   { id: "model", label: "Model" },
   { id: "tools", label: "Tools" },
   { id: "permissions", label: "Permissions" },
+  { id: "hosting", label: "Hosting" },
   { id: "agents", label: "Sub-agents" },
   { id: "skills", label: "Skills" },
   { id: "input", label: "Input" },
@@ -24,6 +27,8 @@ export const TABS: Array<{ id: Tab; label: string }> = [
 ];
 
 export function tabFor(path: string): Tab {
+  // The approval mode is edited with hosting; the per-kind rules stay on the Permissions tab.
+  if (/^permissions\.(approvalMode|judgeModel|handler)(\.|$)/.test(path)) return "hosting";
   switch (path.split(".")[0]) {
     case "instructions":
     case "instructionsFile":
@@ -36,6 +41,10 @@ export function tabFor(path: string): Tab {
       return "tools";
     case "permissions":
       return "permissions";
+    case "interaction":
+    case "hosting":
+    case "mcpServers":
+      return "hosting";
     case "agents":
       return "agents";
     case "skills":
@@ -83,7 +92,7 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
   update: Update;
   issues: Issue[];
   effective?: HarnessDetail["effective"];
-  detail?: Pick<HarnessDetail, "decisions" | "requiredCapabilities"> & Partial<Pick<HarnessDetail, "policy">>;
+  detail?: Pick<HarnessDetail, "decisions" | "requiredCapabilities"> & Partial<Pick<HarnessDetail, "policy" | "hosting" | "digest">>;
 }) {
   const { workspace } = useApp();
   const m = draft.manifest;
@@ -113,7 +122,11 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
             <Summary label="Built-in tools" value={m.builtinTools?.length ? m.builtinTools.join(", ") : "none"} detail={permissionSummary(m.permissions)} />
             <Summary label="Sub-agents" value={`${m.agents?.length ?? 0} custom${m.builtinTools?.includes("agents") ? " + built-ins" : ""}`} detail={m.agents?.map((a) => a.displayName ?? a.name).join(", ")} />
             <Summary label="Skills" value={String(draft.skills.length)} detail={draft.skills.map((s) => s.name).join(", ")} />
-            <Summary label="Runtime" value={m.runners.allowedProfiles.join(", ") || "none"} detail={`default ${m.runners.defaultProfile}`} />
+            <Summary
+              label="Runtime"
+              value={m.runners.allowedProfiles.join(", ") || "none"}
+              detail={`default ${m.runners.defaultProfile} · ${m.interaction === "conversation" ? `conversation, ${(MODE_INFO[m.hosting?.mode ?? "isolated"]?.label ?? m.hosting?.mode ?? "").toLowerCase()}` : "batch jobs"}`}
+            />
             <Summary
               label="Limits"
               value={`${effective?.maxDurationSeconds ?? "?"}s · ${effective?.maxAttempts ?? "?"} attempt(s)`}
@@ -243,6 +256,8 @@ export function HarnessTab({ tab, draft, update, issues, effective, detail }: {
       return <ToolsTab draft={draft} update={update} issues={issues} />;
     case "permissions":
       return <PermissionsTab draft={draft} update={update} issues={issues} effective={effective} />;
+    case "hosting":
+      return <HostingTab draft={draft} update={update} issues={issues} hosting={detail?.hosting} digest={detail?.digest} />;
     case "agents":
       return <AgentsTab draft={draft} update={update} issues={issues} />;
     case "skills":
@@ -641,6 +656,25 @@ export function permissionSummary(permissions: HarnessManifest["permissions"]): 
     .join(" · ") || "every action denied";
 }
 
+/**
+ * The permissions a preset produces. Presets change only the rules: questions, the answer timeout, and the approval
+ * mode chosen on the Hosting tab are kept. Undefined means no permissions block (every request denied).
+ */
+export function permissionsPreset(current: HarnessManifest["permissions"], name: "deny" | "cli" | "yolo"): HarnessManifest["permissions"] {
+  const approval = {
+    ...(current?.approvalMode ? { approvalMode: current.approvalMode } : {}),
+    ...(current?.judgeModel ? { judgeModel: current.judgeModel } : {}),
+    ...(current?.handler ? { handler: current.handler } : {}),
+  };
+  if (name === "deny") return Object.keys(approval).length ? { default: "deny", ...approval } : undefined;
+  return {
+    default: name === "yolo" ? "allow" : "ask",
+    ...(current?.questions ? { questions: true } : {}),
+    ...(current?.timeoutSeconds ? { timeoutSeconds: current.timeoutSeconds } : {}),
+    ...approval,
+  };
+}
+
 function BuiltinToolsSection({ draft, update, issues }: { draft: HarnessDocument; update: Update; issues: Issue[] }) {
   const { workspace } = useApp();
   const allowed = new Set(workspace!.policy.builtinTools ?? []);
@@ -762,15 +796,9 @@ function PermissionsTab({ draft, update, issues, effective }: {
     });
   const preset = (name: "deny" | "cli" | "yolo") =>
     update((d) => {
-      if (name === "deny") {
-        delete d.manifest.permissions;
-        return;
-      }
-      const questions = d.manifest.permissions?.questions;
-      const timeoutSeconds = d.manifest.permissions?.timeoutSeconds;
-      d.manifest.permissions = name === "yolo" ? { default: "allow" } : { default: "ask" };
-      if (questions) d.manifest.permissions.questions = true;
-      if (timeoutSeconds) d.manifest.permissions.timeoutSeconds = timeoutSeconds;
+      const next = permissionsPreset(d.manifest.permissions, name);
+      if (next) d.manifest.permissions = next;
+      else delete d.manifest.permissions;
     });
   const timeout = permissions?.timeoutSeconds ?? 600;
 
@@ -809,7 +837,8 @@ function PermissionsTab({ draft, update, issues, effective }: {
           <div>
             <h3 className="text-sm font-semibold leading-6">Rules</h3>
             <p className="text-xs fg-muted">
-              Policy allows: deny{policy.permissionModes?.length ? `, ${policy.permissionModes.join(", ")}` : " only"}.
+              Policy allows: deny{policy.permissionModes?.length ? `, ${policy.permissionModes.join(", ")}` : " only"}. Requests that ask are decided by{" "}
+              {APPROVAL_INFO[permissions?.approvalMode ?? "manual"].label.toLowerCase()} approval, set on the Hosting tab.
             </p>
           </div>
           <Badge tone={permissions ? "done" : "neutral"}>{permissionSummary(permissions)}</Badge>

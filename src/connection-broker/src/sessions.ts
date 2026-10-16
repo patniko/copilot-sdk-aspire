@@ -82,3 +82,18 @@ export function sharedUpstream(origin: URL, key: string): (route: Extract<Placem
     headers: { "x-internal-key": key, [PLACEMENT_EPOCH_HEADER]: route.epoch },
   });
 }
+
+/**
+ * A session container's ingress. The route carries the ready allocation's internal ingress origin and its
+ * per-allocation credential, which the container accepts only in `x-internal-key`; the client's ticket never leaves
+ * the broker. Locally the origin is the container's port published on host loopback.
+ */
+export function containerUpstream(): (route: Extract<PlacementRoute, { kind: "container" }>) => AhpUpstream {
+  return (route) => {
+    const origin = new URL(route.endpoint);
+    if (origin.protocol !== "http:" || origin.username || origin.password || origin.pathname !== "/" || origin.search || origin.hash) {
+      throw new Error("A session container's broker upstream must be an internal HTTP origin without credentials.");
+    }
+    return { origin, path: `/sessions/${route.sessionId}`, headers: { "x-internal-key": route.credential } };
+  };
+}

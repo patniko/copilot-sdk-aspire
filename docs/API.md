@@ -145,16 +145,16 @@ An already-forwarded request can overshoot, and unknown consumption remains expl
 
 ## Experimental shared conversations
 
-These routes exist only when `agent-api` is connected to the opt-in shared worker. They are distinct from
-the singleton `/v1/host` APIs and from job IDs. The operator maps API principals to fixed numeric GitHub
-account IDs; clients cannot supply or replace that binding. Retained principals cannot be rebound.
+These routes exist only when `agent-api` is connected to the opt-in shared worker or to session containers.
+They are distinct from the singleton `/v1/host` APIs and from job IDs. The operator maps API principals to fixed
+numeric GitHub account IDs; clients cannot supply or replace that binding. Retained principals cannot be rebound.
 
 | Method | Path | Behavior |
 | --- | --- | --- |
-| `POST` | `/v1/sessions` | Body `{ "harness": "<published conversation harness>", "version": "<optional>", "label": "<optional>" }`; `201` with a retained session, including its harness, mode, placement, and current segment, and `Location`. Does not allocate an execution container or activate a runtime session. |
+| `POST` | `/v1/sessions` | Body `{ "harness": "<published conversation harness>", "version": "<optional>", "label": "<optional>" }`; the harness's hosting mode decides placement (`shared` on the shared worker, `isolated` in a [session container](#session-containers)). `201` with a retained session, including its harness, mode, placement, and current segment, and `Location`. Does not allocate an execution container or activate a runtime session. |
 | `GET` | `/v1/sessions` | `{ sessions }`, up to 100 recent principal-owned sessions, including closed ones |
-| `GET` | `/v1/sessions/{id}` | Session model, limits, activity timestamp, closed/online state, used/reserved/remaining budget, jobs and continuation count |
-| `POST` | `/v1/sessions/{id}/connection` | Body `{ "transport": "direct" }` (the default; `github` returns `422 transport_unsupported`). Activate/resume, then return `{ sessionId, destination: "shared", transport: "direct", ahpSessionId, url, token, expiresAt, serverKey }` with `Cache-Control: no-store`. `url` is the connection broker's `/sessions/{id}` path; resume `ahpSessionId` after attaching |
+| `GET` | `/v1/sessions/{id}` | Session harness, `mode`, `placement`, `segment`, model, limits, activity timestamp, closed/online state, used/reserved/remaining budget, jobs and continuation count |
+| `POST` | `/v1/sessions/{id}/connection` | Body `{ "transport": "direct" }` (the default; `github` returns the harness's hosting error, such as `422 transport_unsupported` for shared hosting). Activate/resume, then return `{ sessionId, destination, transport: "direct", ahpSessionId, url, token, expiresAt, serverKey }` with `Cache-Control: no-store`. `destination` is `shared` or `container`; `url` is the connection broker's `/sessions/{id}` path; resume `ahpSessionId` after attaching |
 | `GET` | `/v1/sessions/{id}/jobs` | Child job IDs/states and completion-notification state/error, including `needs_review` |
 | `POST` | `/v1/sessions/{id}/close` | Body `{ "cancelChildren": false }` by default; prevents new work and disconnects runtime residency without deleting retained data |
 
@@ -189,6 +189,34 @@ attempt's `outputs/` files are exposed; failed-attempt files are not downloadabl
 names, artifacts have SHA-256 digests, and downloads use attachment disposition and `nosniff`.
 The coordinator can explicitly import an output into its session filesystem; overwriting an existing file
 requires its exact current etag. Arbitrary attempt files and runtime history are not exported.
+
+### Session containers
+
+When session containers are deployed, creating a session for a published `interaction: "conversation"` harness whose
+hosting mode is `isolated` (and allowed by its effective policy) places it in its own container. Views keep the
+same shape for every placement; a container session has `placement: "container"`, `mode: "isolated"`, and a
+`container` status (`state`: `dormant`, `starting`, `running`, `stopping` or `closed`; size, CPUs, memory, idle
+seconds and activation count). Its admitted harness snapshot, model, limits and size are retained with the session.
+Limits follow the shared worker's rules, including the operator's session ceilings; `idleSeconds` is the
+container's idle stop. A container enforces the aggregate token budget and the turn deadline but no separate
+per-turn budget, so its `turnTokenBudget` reports the aggregate cap.
+
+The first connection, and the first after an idle stop, starts the session's container and waits up to about
+two minutes for it to become ready. Only the `direct` transport is offered; other transports return the hosting
+error for that harness. The response has `destination: "container"`, `transport: "direct"`, the connection broker's
+`url` like shared sessions, and `ahpSessionId` equal to the session ID; the container accepts only connections the
+broker forwards. Closing retires the container and releases its retained volume.
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| `404` | `harness_not_found` | The harness or version is not published |
+| `409` | `hosting_unavailable` | The deployment lacks the host the harness's mode needs (session containers for `isolated`), or the transport needs another host |
+| `422` | `policy_rejected`, `hosting_mode_not_allowed` | A batch harness, or a harness that the effective policy rejects |
+| `429` | `quota_exceeded` | No container capacity for the deployment or principal, or the retained-session limit |
+| `503` | `container_starting` | The container is still starting; retry the connection |
+| `503` | `container_unavailable` | The container stopped before becoming ready; the message names the reason |
+
+Container sessions have no delegated jobs, so their jobs route returns an empty list.
 
 ## Orchestrator workers
 
@@ -243,14 +271,16 @@ whether this deployment can host it, from the harness's optional `hosting` block
 policy plus any override), and the hosts the deployment provides. They are read-only: they create no session, issue
 no connection material, and change nothing. Any authenticated principal can read them; transports are evaluated for
 the calling principal. The [hosting modes plan](HOSTING-MODES-PLAN.md) describes the modes. Today harness-driven
-conversations run only in `isolated` mode, on the optional [demo host](#experimental-demo-host-control); batch
+conversations run only in `isolated` mode, on the optional [demo host](#experimental-demo-host-control) or in
+[session containers](#session-containers); batch
 harnesses run as jobs, and the local hybrid worker still runs only its fixed coordinator.
 Implemented in [hosting-routes.ts](../src/agent-api/src/hosting-routes.ts) with contracts in
 [hosting.ts](../contracts/src/hosting.ts).
 
 `GET /v1/hosting` returns `{ hosts, harnesses }`. `hosts` lists what the deployment provides: the batch
 `executor` (`pool` or `dedicated`), `isolatedHosts` (the managed demo host and the harness it serves, with its
-transports), `sharedWorker` (the local hybrid worker), and later `sessionContainers` and `workerContainers`. Each
+transports), `sharedWorker` (the local hybrid worker), `sessionContainers` (per-session containers, when enabled), and later
+`workerContainers`. Each
 host lists the harness `features` it implements; none of today's hosts implements remote MCP servers, approval modes
 other than `manual`, custom permission handlers, handoffs, promotion, or workers. GitHub-native demo hosting runs
 Copilot's own sessions rather than a harness, so it adds no isolated host. Owner principals are not returned.

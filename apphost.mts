@@ -18,6 +18,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import { SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits } from './contracts/src/shared.js';
+import { SessionContainerSettings } from './contracts/src/session-container.js';
 import { CUSTOMER_WORKSPACE_DIR, ensureCustomerWorkspace } from './configurator/server/workspace.js';
 
 const builder = await createBuilder();
@@ -52,6 +53,11 @@ const hybridEnabled = await configured('Parameters:hybrid-hosting', 'false');
 if (!['true', 'false'].includes(hybridEnabled)) throw new Error('hybrid-hosting must be true or false.');
 if (hybridEnabled === 'true' && isPublish) {
   throw new Error('Hybrid hosting currently has a local Docker controller. Disable it for Azure publishing; the Azure adapter is not qualified.');
+}
+const sessionContainersEnabled = await configured('Parameters:session-containers', 'false');
+if (!['true', 'false'].includes(sessionContainersEnabled)) throw new Error('session-containers must be true or false.');
+if (sessionContainersEnabled === 'true' && hybridEnabled !== 'true') {
+  throw new Error('Session containers run under the local execution controller; enable hybrid-hosting as well.');
 }
 const demoHostTransport = await configured('Parameters:demo-host-transport', 'disabled');
 if (!['disabled', 'direct', 'github', 'both'].includes(demoHostTransport)) {
@@ -197,7 +203,7 @@ if (hybridEnabled === 'true') {
     .withEnvironment('EXECUTOR_MODE', 'on-demand');
   await dispatcher.withEnvironment('SHARED_WORKER_KEY', workerKey)
     .withEnvironment('CONNECTION_BROKER_KEY', brokerKey);
-  await builder.addNodeApp('execution-controller', './src/execution-controller', 'dist/main.js')
+  const controller = await builder.addNodeApp('execution-controller', './src/execution-controller', 'dist/main.js')
     .withPnpm({ install: false })
     .withReference(jobsDb).waitFor(jobsDb)
     .withReference(dispatcherEndpoint).waitFor(dispatcher)
@@ -209,6 +215,20 @@ if (hybridEnabled === 'true') {
       namespace,
       image: await configured('Parameters:hybrid-executor-image', 'copilot-hybrid-executor:local'),
     }));
+  if (sessionContainersEnabled === 'true') {
+    // Mode-1 sessions: one resumable container per isolated conversation session, started by the controller on
+    // connection. The API admits sessions; the dispatcher serves the containers' allocation-scoped routes.
+    const sessionSettings = JSON.stringify(SessionContainerSettings.parse({
+      ...JSON.parse(await configured('Parameters:session-container-settings', '{}')),
+      image: await configured('Parameters:session-container-image', 'copilot-session-container:local'),
+    }));
+    await controller.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings);
+    await dispatcher.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings);
+    await api.withEnvironment('SESSION_CONTAINER_SETTINGS', sessionSettings)
+      .withEnvironment('SHARED_PRINCIPALS', JSON.stringify(principals))
+      .withEnvironment('SHARED_WORKER_LIMITS', JSON.stringify(workerLimits))
+      .withEnvironment('SHARED_SESSION_LIMITS', JSON.stringify(sessionLimits));
+  }
 }
 
 if (demoHostTransport !== 'disabled') {

@@ -2,9 +2,13 @@ import { timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { extname, join, normalize, sep } from "node:path";
 import {
+  effectiveApprovalModes,
+  effectiveHostingPolicy,
   type ExecutionPolicy,
   HarnessDefinition,
+  HarnessHostingView,
   HarnessPolicyOverride,
+  HostingOverview,
   InputResponseSubmission,
   parseSkillMarkdown,
   type PolicySet,
@@ -16,6 +20,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { z, ZodError } from "zod";
 import { AuthoringError, AuthoringRequest, AuthoringService, type DraftGenerator } from "./authoring.js";
 import { GitHubAuthError, GitHubDeviceAuth } from "./github-auth.js";
+import { harnessHostingDetail, readServiceView, staleVersions } from "./hosting.js";
 import { mapHarnessDefinition, mapPlannerPlan } from "./import.js";
 import { bumpPatch, compareVersions, Repo, RepoError } from "./repo.js";
 import { deployEnvironment, Settings, SettingsError } from "./settings.js";
@@ -28,7 +33,9 @@ import type {
   HarnessChanges,
   HarnessDetail,
   HarnessDocument,
+  HarnessHostingInfo,
   HarnessSummary,
+  HostingPageInfo,
   Issue,
   PolicyOverrideStatus,
   ProfileSummary,
@@ -63,6 +70,8 @@ export interface AppOptions {
   githubOAuthClientId?: string;
   /** Injectable model transport; production uses the local server-side Copilot SDK. */
   authoringGenerator?: DraftGenerator;
+  /** Injectable read of the running agent-api's hosting views; production forwards `GET /v1/hosting[/{harness}]`. */
+  hostingViewFetcher?: (target: TryTarget, path: string) => Promise<{ status: number; body: unknown }>;
 }
 
 const SLUG = /^[a-z][a-z0-9-]{1,62}$/;
@@ -196,6 +205,13 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   const harnessNamesOf = (documents: HarnessDocument[]) => [...new Set(documents.map((d) => d.manifest.name).filter((n) => typeof n === "string"))];
 
   async function context(document: HarnessDocument, all?: HarnessDocument[]): Promise<ValidationContext> {
+    return (await validationInputs(document, all)).context;
+  }
+
+  async function validationInputs(
+    document: HarnessDocument,
+    all?: HarnessDocument[],
+  ): Promise<{ context: ValidationContext; policies: PolicySet; documents: HarnessDocument[] }> {
     const [policies, profiles, documents] = await Promise.all([policySet(), repo.listProfiles(), all ?? repo.listHarnesses()]);
     const override = policies.overrides.get(document.manifest.name);
     let committed: ValidationContext["committed"];
@@ -226,17 +242,21 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       }
     }
     return {
-      policy: policyFor(policies, document.manifest.name),
-      ...(override ? { policyOverride: Object.keys(override.overrides) } : {}),
-      profiles,
-      all: documents,
-      policyFor: (name: string) => policyFor(policies, name),
-      committed,
+      context: {
+        policy: policyFor(policies, document.manifest.name),
+        ...(override ? { policyOverride: Object.keys(override.overrides) } : {}),
+        profiles,
+        all: documents,
+        policyFor: (name: string) => policyFor(policies, name),
+        committed,
+      },
+      policies,
+      documents,
     };
   }
 
   async function detail(document: HarnessDocument): Promise<HarnessDetail> {
-    const ctx = await context(document);
+    const { context: ctx, policies, documents } = await validationInputs(document);
     return {
       document,
       issues: validateHarness(document, ctx),
@@ -245,6 +265,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       digest: harnessDigest(document),
       decisions: decisions(document, ctx),
       requiredCapabilities: requiredCapabilitiesOf(document),
+      hosting: harnessHostingDetail({ name: document.manifest.name, policy: ctx.policy, profiles: ctx.profiles, documents, policies }),
     };
   }
 
@@ -304,6 +325,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       policy,
       policyIssues,
       policyOverrides,
+      policyDefaults: { hosting: effectiveHostingPolicy({}), approvalModes: effectiveApprovalModes({}) },
       changes: { items: changes.items },
     };
   }
@@ -652,6 +674,35 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   );
   app.get("/api/status/local", async () => status.local());
   app.get("/api/status/azure", async () => status.azure(await settings.target(undefined)));
+
+  // Per-harness hosting as each target's running agent-api reports it. The configurator reads these views rather than
+  // evaluating hosting itself, so the page shows exactly what admission and connection provisioning will decide.
+  const fetchHosting = options.hostingViewFetcher ?? ((target: TryTarget, path: string) => tryService.forward(target, "GET", path));
+  const hostingQuery = z.object({ target: z.enum(["local", "azure"]).default("local"), version: z.string().regex(SEMVER).optional() });
+  app.get("/api/hosting", async (request): Promise<HostingPageInfo> => {
+    const { target } = hostingQuery.parse(request.query);
+    const [result, documents] = await Promise.all([
+      readServiceView(
+        () => fetchHosting(target, "/v1/hosting"),
+        HostingOverview,
+        "The running agent-api does not report hosting. Rebuild and restart it from Local run.",
+      ),
+      repo.listHarnesses(),
+    ]);
+    return result.value
+      ? { target, overview: result.value, stale: staleVersions(documents, result.value) }
+      : { target, problem: result.problem, stale: [] };
+  });
+  app.get("/api/hosting/:harness", async (request): Promise<HarnessHostingInfo> => {
+    const harness = harnessParam(request);
+    const { target, version } = hostingQuery.parse(request.query);
+    const result = await readServiceView(
+      () => fetchHosting(target, `/v1/hosting/${harness}${version ? `?version=${version}` : ""}`),
+      HarnessHostingView,
+      `The running service has not loaded ${harness}${version ? ` ${version}` : ""}. Save it, then reload harnesses from Local run.`,
+    );
+    return result.value ? { target, view: result.value } : { target, problem: result.problem };
+  });
 
   // Reachability only: the response body is discarded and only the status code leaves the server.
   app.post("/api/check-url", async (request) => {
