@@ -98,8 +98,17 @@ may ask for folder trust again. The session UUID does not change, so `--resume` 
 [promotion](API.md#promotion).
 
 Approvals and questions appear in the CLI. The harness's approval mode decides which requests need you, and the
-CLI can switch only among the modes the operator's policy allows. While nobody is attached, a request that needs a
-person does not run. See [shared conversation approvals](SECURITY.md#shared-conversation-approvals).
+CLI can switch only among the modes the operator's policy allows. A resumed conversation returns to the mode it last
+used, or to manual approval if the policy no longer allows that mode; if the runtime cannot hold the mode, the
+connection fails (`409 hosting_unavailable`) instead of continuing in another one. While nobody is attached, a
+request that needs a person does not run. See [shared conversation approvals](SECURITY.md#shared-conversation-approvals).
+
+A shared conversation whose harness lists handoff targets can hand control to one of them. By default the CLI asks
+you to approve the transfer and shows the agent's reason and, for summary history, its summary; the judge, custom
+handlers and `allow-all` never approve it for you, and with nobody attached it does not run. After the transfer the launcher
+reconnects you to the target in the same terminal, including when the target runs in its own session container,
+and the session UUID stays the same. Conversations that already run in a container cannot hand off yet. See
+[handoffs](API.md#handoffs).
 
 An orchestrator harness, such as the `hybrid-orchestrator` example, connects the same way when the deployment
 enables [orchestrator workers](DEPLOYMENT.md#orchestrator-workers). Its coordinator starts workers in their own

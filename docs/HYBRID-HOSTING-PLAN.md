@@ -12,7 +12,7 @@ the current guides, such as [architecture](ARCHITECTURE.md#local-hybrid-hosting)
 qualification, and measured latency or cost comparisons remain open.
 
 **Follow-on plan (2026-10-15):** the [per-harness hosting modes plan](HOSTING-MODES-PLAN.md) builds on this
-record to make hosting selectable per harness; its stages 1 to 5 are implemented locally
+record to make hosting selectable per harness; its stages 1 to 6 are implemented locally
 ([stage status](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates)). Its explicit, one-way promotion
 does not change this record's exclusion of transparent runtime migration.
 

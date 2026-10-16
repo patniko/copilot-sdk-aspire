@@ -4,13 +4,13 @@
 
 Date: 2026-10-15
 
-**Status (updated 2026-10-16): design and delivery record; stages 1 to 5 implemented locally.** Recorded before
+**Status (updated 2026-10-16): design and delivery record; stages 1 to 6 implemented locally.** Recorded before
 implementation, this document owns the four-mode, per-harness hosting design, its client connection matrix, the
-comparison with OpenAI's Agents API, and the gates for delivering it. Stages 1 to 5 (contracts and policy,
-harness-driven shared mode, session containers and per-harness owner hosts, orchestrator workers, and promotion)
-have landed locally, with dated evidence in the [qualification record](#17-qualification-record) and a per-stage
-status in [section 14](#14-delivery-sequence-and-acceptance-gates). Stage 6 (handoffs) has not landed yet, and Azure
-(stage 7) and the comparisons (stage 8) remain proposals. This plan does not define current behavior:
+comparison with OpenAI's Agents API, and the gates for delivering it. Stages 1 to 6 (contracts and policy,
+harness-driven shared mode, session containers and per-harness owner hosts, orchestrator workers, promotion, and
+handoffs) have landed locally, with dated evidence in the [qualification record](#17-qualification-record) and a
+per-stage status in [section 14](#14-delivery-sequence-and-acceptance-gates). Azure (stage 7) and the comparisons
+(stage 8) remain proposals. This plan does not define current behavior:
 [architecture](ARCHITECTURE.md), [API](API.md), [deployment](DEPLOYMENT.md), [security](SECURITY.md), and the
 [user](USER-GUIDE.md) and [configurator](CONFIGURATOR.md) guides do. The design sections below keep their original
 rationale; where the implementation differs, a status note says so and links to the evidence.
@@ -31,7 +31,7 @@ deployment-wide configuration. The last column records what the stages have chan
 | Batch executor ([job execution](ARCHITECTURE.md#job-execution)) | The whole agent loop in a uid-isolated Linux container | Conversations or AHP attachment | Unchanged: batch harnesses still run as jobs, and conversations use the hosts below |
 | Experimental `agent-host` ([architecture](ARCHITECTURE.md#optional-demo-agent-host)) | Container-hosted conversations over direct WSS and GitHub relay | More than one harness or owner per deployment; [`HostStore`](../src/job-store/src/host-store.ts) is a singleton | Stage 3: local per-harness owner hosts keyed by harness, each with its own relay environment when the relay is enabled, all under one GitHub owner per deployment; Azure keeps the single demo host |
 | Local hybrid `session-host` ([architecture](ARCHITECTURE.md#local-hybrid-hosting)) | Many principals on one in-process runtime with PostgreSQL-backed `sessionFs`, attached over direct WSS with one-use tickets | Harness-driven sessions (it runs one coordinator definition built from AppHost parameters), relay, Azure | Stage 2: harness-driven, serving many harnesses through a separate connection broker; relay and Azure remain out of scope |
-| `delegate_job` and `execution-controller` | Model-directed one-shot child jobs in on-demand Docker containers with retained outputs | Long-lived workers, per-task sizes, shared storage, agent-managed lifecycle | Stages 3 to 5: resumable session containers, coordinator-managed workers with sizes and a shared volume, and promotion into a session container; one-shot `delegate_job` is unchanged |
+| `delegate_job` and `execution-controller` | Model-directed one-shot child jobs in on-demand Docker containers with retained outputs | Long-lived workers, per-task sizes, shared storage, agent-managed lifecycle | Stages 3 to 6: resumable session containers, coordinator-managed workers with sizes and a shared volume, promotion into a session container, and handoffs into a target's own container; one-shot `delegate_job` is unchanged |
 
 Decisions agreed on 2026-10-15, including answers from two review rounds on the first draft:
 
@@ -57,8 +57,9 @@ that remain open.
 
 The plan introduces six pieces: a per-harness `hosting` contract and policy ceilings, a harness-driven
 shared worker, a resumable **session container**, a direct-WSS **connection broker**, per-harness relay
-environments for isolated hosts, and coordinator tools for workers, promotion, and handoffs. Stages 1 to 5
-delivered all of them locally except the handoff tools, which belong to stage 6.
+environments for isolated hosts, and coordinator tools for workers, promotion, and handoffs. Stages 1 to 6
+delivered all of them locally. Handoffs start only on the shared worker; handoffs from conversations that run in a
+container are a documented follow-up ([N8](#15-non-goals-and-decision-register)).
 
 ## 2. The four modes
 
@@ -347,8 +348,8 @@ retained volume and its managed or GitHub-native inference routes, shown in the
 | Host shape | Serves | Tenancy | Client transports | Status |
 | --- | --- | --- | --- | --- |
 | Per-harness owner host (container) | Mode 1 for one owner and one harness | One GitHub owner | Relay, direct, or both | Implemented locally in stage 3: one host per listed isolated harness, all sharing the deployment's GitHub owner; Azure keeps the single deployment-wide `agent-host` |
-| Session container | Mode 1 per session; mode 3 after promotion | One application session | Direct through the broker | Implemented locally in stages 3 and 5 |
-| Shared worker | Mode 2, mode 3 before promotion, mode-4 coordinators | Many principals | Direct through the broker | Implemented locally: harness-driven in stage 2, coordinators in stage 4, promotion in stage 5 |
+| Session container | Mode 1 per session; mode 3 after promotion | One application session | Direct through the broker | Implemented locally in stages 3 and 5, and as a handoff target in stage 6 |
+| Shared worker | Mode 2, mode 3 before promotion, mode-4 coordinators | Many principals | Direct through the broker | Implemented locally: harness-driven in stage 2, coordinators in stage 4, promotion in stage 5, handoffs in stage 6 |
 | Worker container | Mode-4 workers | One coordinator session | None initially; the coordinator mediates control | Implemented locally in stage 4, without client attachment |
 
 The **connection broker** gives direct-WSS clients one stable endpoint and path per application session
@@ -394,8 +395,9 @@ Client flows, implemented locally in stages 2 and 3:
   `copilot --experimental --ahp <url> --resume <ahpSessionId>`, with GitHub authentication consent where the host
   requires it. This generalizes the earlier [`--destination`](../configurator/server/connect-host.ts) launcher, which
   still works (`--destination shared` selects the `hybrid-coordinator` harness). Tickets stay one-use and short-lived.
-  The `--harness` paths accept only `--target local` so far, and since stage 5 the launcher supervises the CLI and
-  restarts it in the same terminal when the session moves.
+  The `--harness` paths accept only `--target local` so far. Since stage 5 the launcher supervises the CLI and
+  restarts it in the same terminal when the session moves, and since stage 6 it also resumes the new segment's
+  `ahpSessionId` after a handoff.
 - **CLI over GitHub relay (isolated harnesses).** The same launcher returns the harness host's environment ID and
   runs `copilot --experimental --relay --environment-id <id> [--resume <ahpSessionId>]`. Each relay-enabled
   harness registers one environment, and its sessions appear in that environment's catalog.
@@ -410,6 +412,7 @@ adding a parallel family; [API](API.md) owns the routes as implemented:
 | `POST /v1/sessions/{id}/promote` | Caller-initiated promotion of a `promotable` session; idempotent | Implemented in stage 5 |
 | `GET /v1/sessions/{id}/workers` | Mode-4 workers with state, size, usage, and timestamps | Implemented in stage 4, with worker definition and input-request routes |
 | `POST /v1/sessions/{id}/close` | Existing; additionally stops workers and retires session containers | Implemented in stages 3 and 4 |
+| `GET /v1/sessions/{id}/handoffs` | Not in the original list: the session's handoffs and their outcomes | Added in stage 6 |
 
 Unsupported combinations return explicit errors, such as `hosting_mode_not_allowed`, `hosting_unavailable`
 (naming the missing host or transport), `transport_unsupported` when a shared-family session requests the GitHub
@@ -462,10 +465,11 @@ stateDiagram-v2
 No transition leaves container placement for shared placement. Idle eviction and idle stop retain state.
 Closing prevents new turns and, for mode 4, stops workers. Disconnecting a client changes none of these states.
 
-As implemented in stages 2 to 5, the ledger records each session's placement (`shared` or `container`, marked
-`moving` while a promotion is open) with a generation that only increases, and each move records a segment. Session
-containers follow the [container states](ARCHITECTURE.md#session-containers), promotions follow the
-[promotion states](ARCHITECTURE.md#promotion), and a ledger trigger refuses any return to `shared` placement.
+As implemented in stages 2 to 6, the ledger records each session's placement (`shared` or `container`, marked
+`moving` while a promotion, or a handoff's move into a container, is open) with a generation that only increases, and
+each move or handoff records a segment. Session containers follow the [container states](ARCHITECTURE.md#session-containers),
+promotions follow the [promotion states](ARCHITECTURE.md#promotion), handoffs follow
+[their own states](API.md#handoffs), and a ledger trigger refuses any return to `shared` placement.
 
 A handoff starts a new segment instead of changing placement in place. The target harness's mode decides the
 new placement: a `shared` triage harness that hands off to an `isolated` coding harness moves the conversation
@@ -687,6 +691,20 @@ Rules:
 
 ### 7.5 Handoffs and crafted harnesses
 
+**Status: handoffs implemented locally in stage 6** ([record](#stage-6-handoffs)). The [API](API.md#handoffs),
+[handoff boundaries](SECURITY.md#shared-conversation-handoffs), and [architecture](ARCHITECTURE.md#promotion) describe
+current behavior. Decision B ([N8](#15-non-goals-and-decision-register)): handoffs start only on the shared worker,
+and handoffs from a conversation that runs in a container are a documented follow-up. Session containers do not
+advertise the `handoffs` feature, so `isolated` and `promotable` harnesses that list handoffs are `hosting_unavailable`
+(prerequisite feature `handoffs`), and a conversation in a container never moves back to the shared worker
+(`handoff_one_way`). Other deviations and limitations the record shows: with `approval: "ask"`, the default and the
+only approval the default policy allows, a person must approve in every approval mode, including `allow-all`, and
+neither the judge nor a custom handler answers it; policy ceilings `hosting.handoffs.approval` and
+`hosting.handoffs.history` bound each target; an orchestrator coordinator hands off only after its workers have
+stopped (`handoff_busy`); a container target runs under session-container admission with the policy's default size;
+the source's archived runtime state is kept without automated retention; completion notices for the source's
+delegated jobs that arrive during or after a move become `needs_review`; and crafted harnesses cannot be targets.
+
 A handoff transfers conversation control to another harness; a worker leaves the coordinator in control.
 Promotion is equivalent to a handoff to the same harness at container placement with full history.
 
@@ -703,10 +721,10 @@ Handoffs follow the shape of OpenAI Agents SDK handoffs:
 - Authorization happens before transfer. The target must be allowed by current policy and available in the
   deployment, and with `approval: "ask"` a person confirms. A failed check leaves the source in control.
 - The new segment receives history according to the target's policy: `full` (resume the same runtime session under
-  the target's instructions and tools, which the review expects the runtime to allow; the stage-6 spike verifies
-  it), `summary` (a bounded summary written by the source), or `none` (the payload only). Filters can remove
-  content; they never add authority. Only `full` keeps the person's messages as assisted-approval authority; a
-  summary is written by a model and carries none.
+  the target's instructions and tools, which the review expected the runtime to allow; the runtime verified it
+  (T6), and stage 6 uses it), `summary` (a bounded summary written by the source), or `none` (the payload only).
+  Filters can remove content; they never add authority. Only `full` keeps the person's messages as
+  assisted-approval authority; a summary is written by a model and carries none.
 - The application session ID stays the same. Clients reconnect to the new segment's `ahpSessionId`, which the
   launcher resolves from the API.
 
@@ -786,9 +804,10 @@ Additional risks to design for:
 - **Cost amplification** through worker creation and judge calls is bounded by ceilings and budgets, not by an
   exact dollar cap.
 
-[Security](SECURITY.md) records the verified controls for stages 1 to 5 and owns current claims:
+[Security](SECURITY.md) records the verified controls for stages 1 to 6 and owns current claims:
 [agent hosts](SECURITY.md#experimental-host-boundaries),
 [shared conversation approvals](SECURITY.md#shared-conversation-approvals),
+[handoffs](SECURITY.md#shared-conversation-handoffs),
 [shared-placement egress and remote MCP](SECURITY.md#shared-placement-egress-and-remote-mcp),
 [session containers](SECURITY.md#session-container-boundaries),
 [orchestrator workers](SECURITY.md#orchestrator-worker-boundaries), and [promotion](SECURITY.md#promotion-boundaries).
@@ -815,10 +834,10 @@ Update it with verified controls as later slices land.
 Controls are validated server-side, and the UI reads the same effective values. Lowering a ceiling blocks new
 allocations and drains existing work; it does not silently stop containers.
 
-Stages 1 to 5 implement these controls locally, with three exceptions: handoff admission waits for stage 6, the
-Azure egress proxy for stage 7, and isolated harnesses have no per-harness size subset, so their session containers
-use the policy's default size. Session containers also enforce no per-turn budget; the session's aggregate budget
-and turn deadline apply.
+Stages 1 to 6 implement these controls locally, with these exceptions: the Azure egress proxy waits for stage 7;
+handoff admission runs only on the shared worker, because handoffs start only there ([N8](#15-non-goals-and-decision-register));
+and isolated harnesses have no per-harness size subset, so their session containers use the policy's default size.
+Session containers also enforce no per-turn budget; the session's aggregate budget and turn deadline apply.
 
 ## 12. Comparison with OpenAI's Agents API
 
@@ -944,8 +963,8 @@ Stage status on 2026-10-16:
 | 3. Session containers | Exit evidence met locally | [Session containers](#stage-3-session-containers), [owner hosts and relay](#stage-3-per-harness-owner-hosts-and-relay) |
 | 4. Orchestrator workers | Exit evidence met locally | [Orchestrator workers](#stage-4-orchestrator-workers) |
 | 5. Promotion | Exit evidence met locally | [Promotion](#stage-5-promotion) |
-| 6. Handoffs | Pending | [Handoffs](#stage-6-handoffs) |
-| 7. Azure | Not started; begins after stage 6 | None |
+| 6. Handoffs | Exit evidence met locally | [Handoffs](#stage-6-handoffs) |
+| 7. Azure | Not started | None |
 | 8. Comparison | Not started; deferred | None |
 
 The local evidence used synthetic inference, one real GitHub account, and locally built runtime artifacts
@@ -1004,7 +1023,7 @@ means implemented and verified locally by that stage's gates, and "verified" mea
 | D9 | Approval modes | `manual`, `assisted` (the runtime's safety judge), `allow-all`, or a `custom` handler in code, chosen by the developer per harness or in application configuration, within policy | Implemented on the shared worker (stage 2) and, except `custom`, for workers (stage 4); session containers and agent hosts serve `manual` only |
 | D10 | Coordinator access to the shared volume | Bounded tools through a controller-side file service | Implemented (stage 4) |
 | D11 | Promotion mechanism | Resume the same session in the container | Verified and implemented (stage 5) |
-| D12 | Handoff history default | `summary` across placements; `full` within the same placement | Agreed |
+| D12 | Handoff history default | `summary` across placements; `full` within the same placement | Implemented (stage 6), with policy ceilings on handoff history and approval |
 | D13 | Azure container backend | Spike Container Apps jobs and dynamic session pools only after the local prototype works | Sequencing agreed; choice open |
 | D14 | Azure container reachability | Outbound tunnel from containers to the broker | Agreed direction; verify in the spike. Not implemented: locally the broker reaches a host-loopback port |
 | D15 | Per-tenant relay | Per-host relay credentials in the runtime | Parked |
@@ -1013,9 +1032,9 @@ means implemented and verified locally by that stage's gates, and "verified" mea
 | T3 | Owner credential on the shared runtime | Relay for shared modes is out of the first delivery | Agreed; moot until shared-mode relay returns |
 | T4 | One relay host, many sessions | Desired if shared-mode relay returns | Parked |
 | T5 | Promotion continuity | Transparent to the CLI user ([requirements](#73-mode-3-promotable-page-fault-to-a-container)) | Implemented through launcher supervision (stage 5); clients without the launcher reconnect themselves |
-| T6 | Configuration change on resume | Expected to work: the runtime can resume with different instructions and tools | Verified at the runtime level ([runtime capabilities](#runtime-capabilities)) |
+| T6 | Configuration change on resume | Expected to work: the runtime can resume with different instructions and tools | Verified at the runtime level ([runtime capabilities](#runtime-capabilities)); used by `full` handoffs (stage 6) |
 | T7 | Azure storage and connectivity | Session-pool WebSocket and volume support undocumented; job volume support unchecked; Azure Files storage gate open | Open; stage-7 spike |
-| T8 | Existing mode 1 gates | Unchanged for released artifacts. Local stages use the locally built runtime and SDK ([section 7.1](#71-mode-1-isolated-container)) | Applied in stages 1 to 5 |
+| T8 | Existing mode 1 gates | Unchanged for released artifacts. Local stages use the locally built runtime and SDK ([section 7.1](#71-mode-1-isolated-container)) | Applied in stages 1 to 6 |
 | P1 | Performance targets | Get it working first | Deferred |
 | N1 | Skill store | How skills are defined and mounted for harnesses will be designed later | Deferred |
 | N2 | Remote MCP credentials | One service credential per server: Aspire secrets locally, Key Vault in Azure. Per-user OAuth is needed for some servers | Aspire secrets implemented locally (stage 2); Key Vault and per-user OAuth not implemented |
@@ -1024,6 +1043,7 @@ means implemented and verified locally by that stage's gates, and "verified" mea
 | N5 | Promotion continuity mechanism | Launcher-supervised restart first; later a CLI reconnect hook with either a per-session host key or a CLI key update | First step implemented (stage 5); the per-session host key and CLI reconnect hook are not implemented |
 | N6 | Base tool set for shared mode | Files, web fetch, remote MCP, task list, questions, and in-runtime sub-agents ([section 7.2](#72-mode-2-shared-runtime)) | Implemented (stage 2) |
 | N7 | Human authority for assisted workers | Harness opt-in (`hosting.workers.humanAuthority: "inherit"`) within a policy ceiling; the platform supplies the coordinator session's recorded human messages ([details](#inherited-human-authority)) | Implemented (stage 4); runtime support verified ([runtime capabilities](#runtime-capabilities)) |
+| N8 | Handoffs from conversations in containers | Raised during stage 6. Option B: a documented follow-up. Session containers do not advertise `handoffs`, so `isolated` and `promotable` harnesses that list handoffs are `hosting_unavailable` (prerequisite feature `handoffs`); container→shared stays refused (`handoff_one_way`) | Decided 2026-10-16 ([stage 6](#stage-6-handoffs)); container-sourced handoffs not implemented |
 
 Azure evidence reviewed on 2026-10-15: `az containerapp job start` accepts per-execution `--cpu`, `--memory`,
 `--image`, and environment overrides, and Container Apps jobs are documented as finite-duration tasks
@@ -1122,14 +1142,21 @@ the dispatcher admission path they exercise is covered above.
 Limitations:
 
 - The editor and Policy page have no controls for the new fields; the configurator slice adds them. The Permissions
-  tab's presets still replace `permissions` without its approval-mode fields.
+  tab's presets still replace `permissions` without its approval-mode fields. *(2026-10-16: the
+  [configurator slice](#stage-1-configurator-hosting-editor-and-views) resolved both.)*
 - `ready` for `shared` reflects only that the local hybrid worker is deployed; it still runs its fixed coordinator
-  until stage 2 makes it harness-driven.
+  until stage 2 makes it harness-driven. *(2026-10-16: [stage 2](#stage-2-harness-driven-shared-mode) made it
+  harness-driven.)*
 - No host implements remote MCP, non-manual approval modes, custom handlers, handoffs, promotion, or workers, so
   harnesses that request them evaluate as `hosting_unavailable`. No profile provides a permission handler.
+  *(2026-10-16: the shared worker now implements remote MCP, approval modes, custom handlers, handoffs, and
+  promotion, worker containers serve workers, and the `node-ts-agent` profile provides the `workspace-drafts`
+  handler; agent hosts and session containers still implement none of these features.)*
 - Inherited human authority is a contract and policy ceiling only; the runtime capability is checked in stage 4.
+  *(2026-10-16: implemented and verified in [stage 4](#stage-4-orchestrator-workers).)*
 - Omitted handoff history (`summary` across placements, `full` within one) is resolved by stage 6, which may also
-  add policy ceilings for handoff approval and history.
+  add policy ceilings for handoff approval and history. *(2026-10-16: [stage 6](#stage-6-handoffs) resolves it and
+  adds the `hosting.handoffs` approval and history ceilings.)*
 - The hosting views show every authenticated principal the harness names, mode problems, and effective ceilings,
   including MCP server and tool names; server URLs, secret references, and owner principals are not returned.
 
@@ -1228,7 +1255,8 @@ Limitations:
   reports for that harness provides it.
 - The configurator never handles remote MCP credentials. The secret-name field's credential check guards against
   accidental pastes and is not a secret scanner.
-- No controls exist for policy ceilings on handoff approval or history, which stage 6 may add.
+- No controls exist for policy ceilings on handoff approval or history, which stage 6 may add. *(2026-10-16:
+  [stage 6](#stage-6-handoffs) added them to the Policy page.)*
 
 ### Stage 2: connection broker
 
@@ -1293,7 +1321,9 @@ table. Add another path family, such as `/hosts/{harness}`, as a `RouteFamily` w
 optional route check. A placement change updates `placement` and increments `placement_generation` in one transaction.
 
 Limitations: no production operation changes a placement yet, so `moved` has been exercised only by test-only
-generation changes, and clients do not reconnect on their own (stage 5). A move is noticed within about a second,
+generation changes, and clients do not reconnect on their own (stage 5). *(2026-10-16: promotion and handoffs now
+change placements, and the launcher's supervisor reconnects the CLI; see [stage 5](#stage-5-promotion) and
+[stage 6](#stage-6-handoffs).)* A move is noticed within about a second,
 or at once when the old placement closes. The broker is one local process with plain loopback WebSocket ingress; TLS,
 Azure resources, multi-replica routing, and container tunnels are not implemented, and restarting the broker or the
 shared worker disconnects clients. The broker can read the AHP traffic it forwards, except the sealed GitHub
@@ -1504,7 +1534,9 @@ Limitations:
   fake server; neither reached the internet.
 - Per-harness ceilings are fairness controls inside one worker process, not isolation.
 - The configurator's connection card still launches only `--destination shared`, and configurator validation does
-  not flag `shared:*` bindings in batch harnesses (job submission rejects them).
+  not flag `shared:*` bindings in batch harnesses (job submission rejects them). *(2026-10-16: the card now copies
+  `pnpm host:connect --harness hybrid-coordinator`, and per-harness launchers are on the Hosting page; see the
+  [configurator record](#stage-1-configurator-hosting-editor-and-views).)*
 - Local only: no Azure resources, TLS ingress, or multi-replica worker.
 
 #### Follow-up: assisted approvals without host-injected flags
@@ -1894,7 +1926,9 @@ standalone session because session containers do not implement approval modes; w
 unenforced egress and local-only reachability as session containers; Azure is not implemented. Synthetic inference
 only (including the judge), with one real account. The shared worker's own assisted sessions need the runtime's
 `AUTO_APPROVAL` flag in its environment, which this machine's user environment supplies; a packaged shared worker
-without it refuses assisted sessions (not changed in this stage).
+without it refuses assisted sessions (not changed in this stage). *(2026-10-16: resolved by the
+[stage-2 follow-up](#follow-up-assisted-approvals-without-host-injected-flags): the shared worker now sets the flag in
+its own process and refuses to activate a session whose approval mode the runtime will not hold.)*
 
 ### Stage 5: promotion
 
@@ -2038,7 +2072,8 @@ Exit evidence; each command passed:
   `session-container-runtime`, and the shared, image, and deployment suites. The three `assisted`-mode approval tests
   (`shared-approvals` 2, `shared-approval-cli` 1) failed with "The runtime refused the session's approval mode" when
   opening an `assisted` session. That is a stage-2 runtime dependency on the injected feature flags, which this slice
-  does not touch; they pass with the flags present.
+  does not touch; they pass with the flags present. *(2026-10-16: the
+  [stage-2 follow-up](#follow-up-assisted-approvals-without-host-injected-flags) removes that dependency.)*
 
 Failure coverage (section 14):
 
@@ -2062,7 +2097,8 @@ Remaining:
   injected while idle.
 - The shared namespace and stored snapshots have no automated retention or deletion.
 - The container's fresh-session path (moves without history, opening notices, or non-default runtime sessions) is
-  covered at the ledger and spec level only; stage 6 exercises it.
+  covered at the ledger and spec level only; stage 6 exercises it. *(2026-10-16: [stage 6](#stage-6-handoffs)'s
+  handoff gates exercised it with a real container.)*
 - Not yet exercised: Azure, the GitHub relay (promotable is direct WSS only), paid models, and two real accounts.
 
 ### Stage 6: handoffs
@@ -2175,8 +2211,10 @@ unavailable target fails without transferring control".
 - The stage-2 suites `shared-approvals` and `shared-approval-cli` fail without those variables, because the runtime
   refuses the assisted and allow-all approval modes. They pass with them (5 tests at `59e1cc3`), as did every suite
   above at `0043905`. The handoff targets here use manual approval; a target with another approval mode inherits
-  that dependence. At `0043905`, one clean `shared-gate` run failed on a transient "relay authentication request
-  failed" at its second attach and passed on rerun.
+  that dependence. *(2026-10-16: the [stage-2 follow-up](#follow-up-assisted-approvals-without-host-injected-flags),
+  merged into the integration branch at `300c476` before this stage, removes that dependence; its record shows both
+  suites passing without those variables.)* At `0043905`, one clean `shared-gate` run failed on a transient "relay
+  authentication request failed" at its second attach and passed on rerun.
 
 Remaining:
 

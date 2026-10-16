@@ -15,7 +15,7 @@ in-process main loop, on-demand container delegation, both CLI connection destin
 topology page, as a separate expansion of the original scope below; its local path has since been implemented
 ([qualification record](HYBRID-HOSTING-PLAN.md#13-qualification-record)), and Azure remains open.
 The later [per-harness hosting modes plan](HOSTING-MODES-PLAN.md) makes that placement selectable per harness;
-its stages 1 to 5 are implemented locally ([stage status](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates)).
+its stages 1 to 6 are implemented locally ([stage status](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates)).
 The current guides, not these plans, describe that behavior.
 
 ## 1. Product goal

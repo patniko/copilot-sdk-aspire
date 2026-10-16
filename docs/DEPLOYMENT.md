@@ -221,7 +221,9 @@ With session containers enabled the shared worker can also [promote](ARCHITECTUR
 harness's promotion approval in `hosting.promotion.approval`; the promoted container uses the harness's
 `hosting.promotion.size`. Promotable harnesses connect like shared ones (`pnpm host:connect --harness <name>`), and the
 launcher stays attached so the terminal follows the move. Promoted sessions keep their volumes like other container
-sessions.
+sessions. A [handoff](API.md#handoffs) from a shared conversation to an `isolated` target moves it the same way into
+the target's own container, which uses the policy's default size and counts against the same container limits;
+without session containers such a target is refused.
 
 Connect with the launcher. When the harness's hosting mode is `isolated`, it uses your own
 [owner host](#per-harness-owner-hosts) for that harness if one offers the transport; otherwise, when session

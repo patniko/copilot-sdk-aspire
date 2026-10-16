@@ -35,7 +35,7 @@ sequences, endpoint tables, or security guarantees.
 | [Documentation maintenance](MAINTAINING-DOCS.md) | Source-of-truth rules, change-to-document map, diagram editing, review checklist |
 | [Plan](PLAN.md) | Original proposals, design rationale, dated milestone and verification history |
 | [Hybrid hosting plan](HYBRID-HOSTING-PLAN.md) | Design/delivery record and qualification evidence; canonical architecture/deployment pages describe the implemented local path, while Azure and remaining gates stay explicit |
-| [Hosting modes plan](HOSTING-MODES-PLAN.md) | Design/delivery record for per-harness hosting modes (isolated, shared, promotable, orchestrator), handoffs, the client connection matrix, the OpenAI Agents API comparison, delivery gates, and stage qualification evidence; canonical pages describe stages 1 to 5, implemented locally, while handoffs, Azure, and comparisons stay explicit |
+| [Hosting modes plan](HOSTING-MODES-PLAN.md) | Design/delivery record for per-harness hosting modes (isolated, shared, promotable, orchestrator), handoffs, the client connection matrix, the OpenAI Agents API comparison, delivery gates, and stage qualification evidence; canonical pages describe stages 1 to 6, implemented locally, while Azure and comparisons stay explicit |
 
 ## Diagrams and images
 

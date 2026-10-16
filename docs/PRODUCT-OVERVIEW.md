@@ -206,13 +206,14 @@ snapshot, but that is not a snapshot of every executable dependency or of the en
 [registry](../src/service-defaults/src/registry.ts), [admission](../src/service-defaults/src/admission.ts),
 [deployment guide](DEPLOYMENT.md).
 
-**Per-harness placement (planned October 15, 2026; stages 1 to 5 implemented locally by October 16):** the
+**Per-harness placement (planned October 15, 2026; stages 1 to 6 implemented locally by October 16):** the
 [hosting modes plan](HOSTING-MODES-PLAN.md) lets each conversation harness run in an isolated container, a shared
 multi-tenant runtime, a shared runtime with one-way promotion into a container, or a shared coordinator with
-container workers. Locally, conversation harnesses now run on the experimental agent hosts, session containers, and
-shared worker described in the [architecture](ARCHITECTURE.md#local-hybrid-hosting). The answer above remains the
-behavior of batch harnesses. Azure deployments offer conversations only through the optional demo host, and
-handoffs, Azure hosting modes, and comparisons are not implemented
+container workers, and lets a conversation on the shared worker hand off to another harness. Locally, conversation
+harnesses now run on the experimental agent hosts, session containers, and shared worker described in the
+[architecture](ARCHITECTURE.md#local-hybrid-hosting). The answer above remains the behavior of batch harnesses.
+Azure deployments offer conversations only through the optional demo host; Azure hosting modes, comparisons, and
+handoffs from conversations in containers are not implemented
 ([stage status](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates)).
 
 ## 2. What is an instance, and can several run concurrently?
