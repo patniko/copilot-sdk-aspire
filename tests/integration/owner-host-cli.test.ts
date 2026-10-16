@@ -30,16 +30,18 @@ describe.skipIf(!enabled)("real Copilot CLI on a per-harness owner host", () => 
     let api: ReturnType<typeof buildApi> | undefined;
     let listener: JobEventListener | undefined;
     const transcript: string[] = [];
-    const attach = async (transport: "github" | "direct", sessionId?: string) => {
+    const attach = async (transport: "github" | "direct", sessionId?: string, relayClientOnDirect = false) => {
       const apiUrl = `http://127.0.0.1:${(api!.server.address() as AddressInfo).port}`;
       const info = await ownerHostConnection({ apiUrl, key: apiKey }, harness, transport, sessionId);
       const launch = ownerHostCliArguments(info, sessionId);
       cli = new QualificationCli(root, credential);
       // One private CLI home, like one client machine, leaves the user's own home untouched. It enables the staff-gated
-      // client each transport needs; the launcher's own environment turns the relay client off for direct launches.
-      await cli.launch(launch.args, {
-        COPILOT_HOME: home, COPILOT_CLI_ENABLED_FEATURE_FLAGS: transport === "github" ? "RELAY_CLIENT" : "AHP_CLIENT", ...launch.env,
-      }, info.token ? [info.token] : []);
+      // client each transport needs; the launcher's own environment turns the relay client off for direct launches,
+      // unless this leg keeps it on to check the runtime's own fix.
+      const env: Record<string, string> = { ...launch.env };
+      if (relayClientOnDirect) delete env.RELAY_CLIENT;
+      const flags = transport === "github" ? "RELAY_CLIENT" : relayClientOnDirect ? "AHP_CLIENT,RELAY_CLIENT" : "AHP_CLIENT";
+      await cli.launch(launch.args, { COPILOT_HOME: home, COPILOT_CLI_ENABLED_FEATURE_FLAGS: flags, ...env }, info.token ? [info.token] : []);
       return info;
     };
     const turn = async (question: string, marker: string) => {
@@ -90,6 +92,14 @@ describe.skipIf(!enabled)("real Copilot CLI on a per-harness owner host", () => 
       await cli!.waitFor(markers.direct, 120_000);
       await turn(questions.again, markers.again);
       expect(JSON.stringify(fixture.requests.at(-1))).toContain(questions.direct);
+      await cli!.stop();
+
+      // Runtime c8c5839 and later skip relay-resume inference when --ahp names a host, so this home, which attached the
+      // session over the relay, resumes it directly even with the relay client on. The launcher still turns the relay
+      // client off for direct launches, for older CLIs.
+      await attach("direct", session!.ahpSessionId, true);
+      await cli!.waitFor(markers.again, 120_000);
+      expect(fixture.broker!.connections).toBe(1);
       const sessions = await fixture.store.list(fixture.key(harness));
       expect(sessions.map((entry) => entry.id)).toEqual([session!.id]);
       expect(sessions[0]!.inputTokens).toBeGreaterThan(0);
