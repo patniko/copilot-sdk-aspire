@@ -6,8 +6,14 @@ import {
 } from "@copilot-agent/service-defaults";
 import { FakeMcpServer, type FakeMcpOptions } from "../fakes/fake-mcp-server.js";
 
-const credential = `synthetic-mcp-credential-${randomUUID()}`;
-const forms = [credential, `Bearer ${credential}`, Buffer.from(credential).toString("base64"), Buffer.from(credential).toString("base64url"), encodeURIComponent(credential)];
+// Characters that change under URL encoding and produce `+` and `/` in base64 exercise the redaction forms.
+const credential = `synthetic/mcp+credential=${randomUUID()}!`;
+const base64 = Buffer.from(credential).toString("base64");
+const forms = [
+  credential, `Bearer ${credential}`, base64, base64.replace(/=+$/, ""), Buffer.from(credential).toString("base64url"),
+  Buffer.from(`user:${credential}`).toString("base64"), encodeURIComponent(credential),
+  encodeURIComponent(credential).replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase()),
+];
 const fakes: FakeMcpServer[] = [];
 afterEach(async () => { await Promise.all(fakes.splice(0).map((fake) => fake.stop())); });
 
@@ -120,7 +126,7 @@ describe("remote MCP client", () => {
       "mcp_docs_search_search", "mcp_docs_search_leak", "mcp_docs_search_fail", "mcp_docs_search_slow", "mcp_docs_search_big", "mcp_docs_search_rpc_error",
     ]);
     const search = described.tools[0]!;
-    expect(search).toMatchObject({ server: "docs-search", tool: "search", readOnly: true, available: true });
+    expect(search).toMatchObject({ server: "docs-search", tool: "search", readOnly: false, readOnlyHint: true, available: true });
     expect(search.description).toContain("Synthetic documentation search");
     expect(search.description).toContain("[redacted]");
     expect(JSON.stringify(search.inputSchema)).toContain("[redacted]");

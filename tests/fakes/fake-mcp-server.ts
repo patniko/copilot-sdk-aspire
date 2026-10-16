@@ -195,10 +195,18 @@ export class FakeMcpServer {
     switch (params.name) {
       case "search": return { result: { content: [{ type: "text", text: `Results for ${String(args.query)}` }] } };
       case "fetch_page": return { result: { content: [{ type: "text", text: `Page ${String(args.id)}` }], structuredContent: { id: args.id } } };
-      case "leak": return { result: {
-        content: [{ type: "text", text: `received authorization=${authorization}; base64=${Buffer.from(authorization.replace(/^Bearer /, "")).toString("base64")}` }],
-        structuredContent: { authorization },
-      } };
+      case "leak": {
+        const secret = authorization.replace(/^Bearer /, "");
+        const base64 = Buffer.from(secret).toString("base64");
+        return { result: {
+          content: [{ type: "text", text: [
+            `received authorization=${authorization}`, `base64=${base64}`, `unpadded=${base64.replace(/=+$/, "")}`,
+            `urlsafe=${Buffer.from(secret).toString("base64url")}`, `basic=${Buffer.from(`user:${secret}`).toString("base64")}`,
+            `lower=${encodeURIComponent(secret).replace(/%[0-9A-F]{2}/g, (escape) => escape.toLowerCase())}`, `upper=${encodeURIComponent(secret)}`,
+          ].join("; ") }],
+          structuredContent: { authorization },
+        } };
+      }
       case "fail": return { result: { content: [{ type: "text", text: "The tool failed on purpose." }], isError: true } };
       case "slow": return "hang";
       case "big": return { result: { content: [{ type: "text", text: "x".repeat(Number(args.bytes ?? 100_000)) }] } };
