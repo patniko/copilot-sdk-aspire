@@ -49,6 +49,17 @@ describe("owner host CLI provisioning client", () => {
     expect(launch.env).toEqual({ COPILOT_AHP_SERVER_KEY: JSON.stringify({ endpoint: "ws://127.0.0.1:3101/", ...serverKey }), RELAY_CLIENT: "false" });
   });
 
+  it("accepts the connection broker's path for this harness's host and pins the key to it", async () => {
+    const brokered = { ...direct, url: "ws://127.0.0.1:3200/hosts/interactive-demo" };
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(Response.json(brokered))
+      .mockResolvedValueOnce(Response.json({ ...brokered, url: "ws://127.0.0.1:3200/hosts/review-agent" }));
+    const info = await ownerHostConnection(api, "interactive-demo", "direct");
+    expect(ownerHostCliArguments(info).env.COPILOT_AHP_SERVER_KEY).toBe(JSON.stringify({ endpoint: brokered.url, ...serverKey }));
+    expect(ownerHostCliArguments(info).args).toContain(`${brokered.url}?tkn=${direct.token}`);
+    await expect(ownerHostConnection(api, "interactive-demo", "direct")).rejects.toThrow(/at the host or its broker path/);
+  });
+
   it("attaches the relay to the harness host's own environment with the attached resume form", () => {
     expect(ownerHostCliArguments(relay, ahpSessionId)).toEqual({
       args: ["--experimental", "--relay", "--environment-id", "fixture-environment", `--resume=${ahpSessionId}`], env: {},

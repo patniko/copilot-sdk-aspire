@@ -8,6 +8,7 @@ import {
   loadHarnesses,
   loadProfiles,
   ownerHostKey,
+  ownerHostUrl,
   readOwnerHosts,
   readPostgresConnection,
   requireEnv,
@@ -28,9 +29,10 @@ const hostRegistry = managedHosts ? await loadHarnesses() : undefined;
 const hostRoutes: OwnerHostRoute[] = ownerHosts.map((host) => {
   const snapshot = host.execution === "managed" ? hostRegistry?.get(host.harness)?.[0] : undefined;
   if (host.execution === "managed" && !snapshot) throw new Error(`The owner host harness '${host.harness}' is not published.`);
+  const endpoint = ownerHostUrl(host);
   return {
     harness: host.harness, owner: host.owner, key: ownerHostKey(host), transport: host.transport, execution: host.execution,
-    snapshot, policy: policyFor(policies, host.harness),
+    snapshot, policy: policyFor(policies, host.harness), ...(endpoint ? { endpoint } : {}),
   };
 });
 const legacyHost = ownerHosts.find((host) => host.legacy);

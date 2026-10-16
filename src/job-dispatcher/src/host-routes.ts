@@ -1,15 +1,18 @@
 import {
   AHP_SESSION_ID,
+  BrokerHostTicketRequest,
   effectiveHostingPolicy,
   HOSTING_ERROR_STATUS,
+  isInternalHttpOrigin,
   ownerHostTransports,
+  type BrokerHostTicketResult,
   type ExecutionPolicy,
   type ExecutionProfile,
   type HarnessSnapshot,
   type OwnerHostTransport,
 } from "@copilot-agent/contracts";
 import { HostStore, StoreError, type HostKey } from "@copilot-agent/job-store";
-import { admitHostedHarness, HttpError, secretsEqual, signSessionCapability } from "@copilot-agent/service-defaults";
+import { admitHostedHarness, HttpError, requireInternalKey, secretsEqual, signSessionCapability } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 
@@ -24,6 +27,8 @@ export interface OwnerHostRoute {
   snapshot?: HarnessSnapshot;
   /** The harness's effective policy. */
   policy: ExecutionPolicy;
+  /** The host's internal HTTP origin, for direct connections forwarded by the connection broker. */
+  endpoint?: string;
 }
 
 /**
@@ -42,6 +47,34 @@ export function ownerHostPolicyProblem(host: Pick<OwnerHostRoute, "harness" | "t
     };
   }
   return undefined;
+}
+
+export interface BrokerHostDependencies { store: HostStore; key: string; hosts: readonly OwnerHostRoute[] }
+
+/**
+ * `POST /internal/broker/host-connection`: the connection broker's half of direct WSS to an owner host. The broker's
+ * key authorizes only this exchange. It consumes the client's ticket for the harness's managed host and returns the
+ * host's internal origin with a one-use upstream ticket for the same epoch; the host checks that ticket as its own.
+ */
+export function registerBrokerHostRoutes(app: FastifyInstance, deps: BrokerHostDependencies): void {
+  const endpoints = new Map<string, string>();
+  for (const host of deps.hosts) {
+    if (host.execution !== "managed" || host.transport === "github" || !host.endpoint) continue;
+    const origin = new URL(host.endpoint).href;
+    if (!isInternalHttpOrigin(origin)) throw new Error(`The broker endpoint of the '${host.harness}' owner host must be an internal HTTP origin.`);
+    endpoints.set(host.harness, origin);
+  }
+  app.post("/internal/broker/host-connection", async (request, reply): Promise<BrokerHostTicketResult> => {
+    requireInternalKey(request, deps.key);
+    reply.header("cache-control", "no-store");
+    const parsed = BrokerHostTicketRequest.safeParse(request.body);
+    if (!parsed.success) throw new HttpError(400, "invalid_request", "Invalid broker host connection request.");
+    const endpoint = endpoints.get(parsed.data.harness);
+    if (!endpoint) return { authorized: false };
+    const exchanged = await deps.store.exchangeBrokerTicket(parsed.data.harness, parsed.data.ticket);
+    if (!exchanged) return { authorized: false };
+    return { authorized: true, route: { kind: "host", harness: parsed.data.harness, epoch: exchanged.epoch, endpoint, upstreamTicket: exchanged.token } };
+  });
 }
 
 export interface HostDependencies {

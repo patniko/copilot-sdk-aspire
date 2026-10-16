@@ -4,7 +4,7 @@ import { join } from "node:path";
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from "vitest";
 import type { ExecutionPolicy, ExecutionProfile, HarnessSnapshot, PolicySet } from "@copilot-agent/contracts";
-import { HostStore, JobEventListener, JobStore, migrate } from "@copilot-agent/job-store";
+import { HostStore, JobEventListener, JobStore, migrate, PlacementStore } from "@copilot-agent/job-store";
 import { Admission, ApiKeyAuthenticator, loadHarnesses, loadPolicy, loadProfiles, verifyInferenceCapability } from "@copilot-agent/service-defaults";
 import { buildApi } from "../../src/agent-api/src/server.js";
 import type { ApiOwnerHost } from "../../src/agent-api/src/host-routes.js";
@@ -16,6 +16,7 @@ const otherKey = "other-key-".repeat(4);
 const hostKeys = { review: "review-host-key-".repeat(3), legacy: "legacy-host-key-".repeat(3) };
 const signingKey = "owner-host-signing-key-".repeat(3);
 const serverKey = { keyId: "test-key", algorithm: "x25519-sealedbox" as const, publicKey: "test-public-key" };
+const brokerKey = "connection-broker-key-".repeat(3);
 
 let pool: pg.Pool;
 let store: HostStore;
@@ -35,11 +36,11 @@ const legacyHost: ApiOwnerHost = {
   harness: "interactive-demo", owner: "alice", principal: "dev", transport: "both", execution: "managed", resource: "agent-host", legacy: true,
 };
 
-function api(policies: PolicySet = { base: policy, overrides: new Map() }) {
+function api(policies: PolicySet = { base: policy, overrides: new Map() }, brokerUrl?: string) {
   return buildApi({
     store: new JobStore(pool), listener, admission: new Admission({ harnesses, profiles, policies }),
     authenticator: new ApiKeyAuthenticator(`dev:${devKey};other:${otherKey}`), harnesses, maxOpenJobsPerPrincipal: 10, console: false,
-    hosts: { store, hosts: [reviewHost, legacyHost], harnesses, policies, profiles },
+    hosts: { store, hosts: [reviewHost, legacyHost], harnesses, policies, profiles, ...(brokerUrl ? { brokerUrl } : {}) },
   });
 }
 const as = (key: string) => ({ authorization: `Bearer ${key}` });
@@ -143,6 +144,22 @@ describe("owner host API", () => {
     await app.close();
   });
 
+  it("routes direct material through the connection broker's path for the harness when a broker is configured", async () => {
+    const app = api(undefined, "http://127.0.0.1:4200");
+    for (const host of [reviewHost, legacyHost]) {
+      const lease = await store.acquire(host, 30, 1);
+      await store.heartbeat(host, lease.epoch, 30, `${host.harness}-environment`, serverKey);
+    }
+    const brokered = (await app.inject({ method: "POST", url: "/v1/hosts/review-agent/connection", headers: as(devKey), payload: { transport: "direct" } })).json();
+    expect(brokered).toMatchObject({ transport: "direct", url: "ws://127.0.0.1:4200/hosts/review-agent", serverKey });
+    // A host whose endpoint the control plane does not know keeps the launcher-resolved endpoint.
+    const legacy = (await app.inject({ method: "POST", url: "/v1/hosts/interactive-demo/connection", headers: as(devKey), payload: { transport: "direct" } })).json();
+    expect(legacy.url).toBeUndefined();
+    expect(legacy.token).toEqual(expect.any(String));
+    await app.close();
+    expect(() => api(undefined, "http://broker.example")).toThrow(/loopback connection broker/);
+  });
+
   it("distinguishes unknown harnesses, undeployed hosts, and transports the policy does not allow", async () => {
     const app = api();
     expect((await app.inject({ method: "POST", url: "/v1/hosts/no-such-agent/connection", headers: as(devKey), payload: {} })).statusCode).toBe(404);
@@ -206,6 +223,53 @@ describe("owner host control in the dispatcher", () => {
     expect((await post(app, hostKeys.legacy, "token", { epoch: lease.epoch, sessionId: id })).json().error.code).toBe("native_host");
     expect((await post(app, hostKeys.legacy, "acquire", { ownerUserId: 1, harness: "interactive-demo" })).statusCode).toBe(200);
     await app.close();
+  });
+
+  it("exchanges an owner-host ticket for the connection broker once, bound to the harness and the host's epoch", async () => {
+    const app = buildDispatcher({
+      store: new JobStore(pool), hostStore: store, policies: { base: policy, overrides: new Map() },
+      executorKey: "unused-executor-key".repeat(3), gatewayKey: "unused-gateway-key".repeat(3), signingKey,
+      broker: { store: new PlacementStore(pool), key: brokerKey },
+      host: {
+        store, profiles, signingKey,
+        hosts: [
+          { harness: "review-agent", owner: "alice", key: hostKeys.review, transport: "both", execution: "managed",
+            snapshot: harnesses.get("review-agent")![0], policy, endpoint: "http://127.0.0.1:4123" },
+          { harness: "interactive-demo", owner: "alice", key: hostKeys.legacy, transport: "github", execution: "github-native", policy },
+        ],
+      },
+    });
+    const exchange = (key: string, payload: object) =>
+      app.inject({ method: "POST", url: "/internal/broker/host-connection", headers: { "x-internal-key": key }, payload });
+    const lease = await store.acquire(reviewHost, 30, 1);
+    await store.heartbeat(reviewHost, lease.epoch, 30, "review-environment", serverKey);
+    const { token } = await store.issueConnection(reviewHost);
+    expect((await exchange("not-the-broker-key-".repeat(3), { harness: "review-agent", ticket: token })).statusCode).toBe(401);
+    expect((await exchange(hostKeys.review, { harness: "review-agent", ticket: token })).statusCode).toBe(401);
+    expect((await exchange(brokerKey, { harness: "review-agent" })).statusCode).toBe(400);
+    // A ticket opens only its own harness's host, and a host without a broker endpoint opens nothing.
+    expect((await exchange(brokerKey, { harness: "interactive-demo", ticket: token })).json()).toEqual({ authorized: false });
+    const exchanged = await exchange(brokerKey, { harness: "review-agent", ticket: token });
+    expect(exchanged.headers["cache-control"]).toBe("no-store");
+    const { route } = exchanged.json();
+    expect(route).toEqual({ kind: "host", harness: "review-agent", epoch: lease.epoch, endpoint: "http://127.0.0.1:4123/", upstreamTicket: expect.any(String) });
+    expect(route.upstreamTicket).not.toBe(token);
+    expect((await exchange(brokerKey, { harness: "review-agent", ticket: token })).json()).toEqual({ authorized: false });
+    // The host accepts the upstream ticket once, through its own ticket check; the consumed client ticket opens nothing.
+    expect(await store.consumeConnection(reviewHost, lease.epoch, token)).toBe(false);
+    expect(await store.consumeConnection(reviewHost, lease.epoch, route.upstreamTicket)).toBe(true);
+    expect(await store.consumeConnection(reviewHost, lease.epoch, route.upstreamTicket)).toBe(false);
+    // A ticket issued before the host was replaced opens neither the replacement nor, through the broker, anything else.
+    const stale = await store.issueConnection(reviewHost);
+    await store.release(reviewHost, lease.epoch);
+    const replacement = await store.acquire(reviewHost, 30, 1);
+    expect(replacement.epoch).not.toBe(lease.epoch);
+    expect((await exchange(brokerKey, { harness: "review-agent", ticket: stale.token })).json()).toEqual({ authorized: false });
+    await app.close();
+    // Without a broker key the dispatcher serves no broker routes.
+    const plain = dispatcher();
+    expect((await plain.inject({ method: "POST", url: "/internal/broker/host-connection", headers: { "x-internal-key": brokerKey }, payload: {} })).statusCode).toBe(404);
+    await plain.close();
   });
 
   it("refuses to start a host on a transport its harness policy does not allow", async () => {

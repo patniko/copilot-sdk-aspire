@@ -16,7 +16,7 @@ import { OwnerHostFixture } from "./fixtures/owner-host-runtime.js";
 const enabled = process.env.OWNER_HOST_CLI_TESTS === "1";
 
 describe.skipIf(!enabled)("real Copilot CLI on a per-harness owner host", () => {
-  it("attaches over the harness host's own relay environment and over direct WSS to the same session", async () => {
+  it("attaches over the harness host's own relay environment and over direct WSS through the broker to the same session", async () => {
     const { credential, login } = await testGitHubAccount();
     const fixture = new OwnerHostFixture(inject("databaseUrl"), login, credential);
     const root = await mkdtemp(join(tmpdir(), "owner-host-cli-"));
@@ -54,6 +54,7 @@ describe.skipIf(!enabled)("real Copilot CLI on a per-harness owner host", () => 
     try {
       await fixture.start([{ harness, transport: "both" }]);
       const host = await fixture.startHost({ harness, transport: "both" });
+      const brokerUrl = await fixture.startBroker([{ spec: { harness, transport: "both" }, host }]);
       listener = new JobEventListener(fixture.pool);
       await listener.start();
       const policies = { base: fixture.policy, overrides: new Map() };
@@ -63,6 +64,7 @@ describe.skipIf(!enabled)("real Copilot CLI on a per-harness owner host", () => 
         hosts: {
           store: fixture.store, harnesses: fixture.harnesses, policies, profiles: fixture.profiles,
           hosts: [{ harness, owner: login.toLowerCase(), principal: "dev", transport: "both", execution: "managed", resource: "host-interactive-demo", legacy: false, url: host.endpoint }],
+          brokerUrl,
         },
       });
       await api.listen({ host: "127.0.0.1", port: 0 });
@@ -76,8 +78,10 @@ describe.skipIf(!enabled)("real Copilot CLI on a per-harness owner host", () => 
       const [session] = await fixture.store.list(fixture.key(harness));
 
       const direct = await attach("direct", session!.ahpSessionId);
-      expect(direct).toMatchObject({ transport: "direct", ahpSessionId: session!.ahpSessionId });
+      // Direct WSS goes through the connection broker's path for this harness, which exchanges the one-use ticket.
+      expect(direct).toMatchObject({ transport: "direct", ahpSessionId: session!.ahpSessionId, url: `${brokerUrl.replace("http:", "ws:")}/hosts/${harness}` });
       await cli!.waitFor(markers.relay, 120_000);
+      expect(fixture.broker!.connections).toBe(1);
       await turn(questions.direct, markers.direct);
       expect(JSON.stringify(fixture.requests.at(-1))).toContain(questions.relay);
       await cli!.stop();

@@ -118,7 +118,10 @@ export const OwnerHostConnection = z.object({
   harness: z.string(),
   transport: z.enum(HOSTING_TRANSPORTS),
   execution: HostExecution,
-  /** Direct WSS endpoint to dial with `?tkn=<token>`; absent for the legacy host, whose endpoint the launcher resolves. */
+  /**
+   * Direct WSS endpoint to dial with `?tkn=<token>`: the connection broker's `/hosts/{harness}` when the deployment has
+   * a broker, otherwise the host itself. Absent for the legacy host, whose endpoint the launcher resolves.
+   */
   url: z.url().refine((value) => ["ws:", "wss:"].includes(new URL(value).protocol)).optional(),
   token: z.string().min(32).max(200).optional(),
   expiresAt: z.iso.datetime().optional(),
@@ -127,6 +130,44 @@ export const OwnerHostConnection = z.object({
   ahpSessionId: z.string().regex(AHP_SESSION_ID).optional(),
 }).strict();
 export type OwnerHostConnection = z.infer<typeof OwnerHostConnection>;
+
+/** The connection broker's public path for direct WSS to a harness's owner host. */
+export function ownerHostBrokerPath(harness: string): string {
+  return `/hosts/${harness}`;
+}
+
+/** Internal: the broker asks the dispatcher to consume one owner-host ticket presented on `/hosts/{harness}`. */
+export const BrokerHostTicketRequest = z.object({
+  harness: z.string().regex(HOST_HARNESS),
+  ticket: z.string().min(32).max(200),
+}).strict();
+export type BrokerHostTicketRequest = z.infer<typeof BrokerHostTicketRequest>;
+
+/** An internal HTTP origin: no credentials, path, query, or fragment. */
+export function isInternalHttpOrigin(value: string): boolean {
+  const url = new URL(value);
+  return url.protocol === "http:" && !url.username && !url.password && !url.search && !url.hash && url.pathname === "/";
+}
+
+/**
+ * Where the broker forwards one consumed owner-host ticket: the host's internal HTTP origin and a one-use upstream
+ * ticket for the same host epoch, which the host's own ticket check accepts. The client's ticket never leaves the
+ * broker, and neither ticket opens a host that was replaced after the client's ticket was issued.
+ */
+export const HostBrokerRoute = z.object({
+  kind: z.literal("host"),
+  harness: z.string().regex(HOST_HARNESS),
+  epoch: z.string().uuid(),
+  endpoint: z.url().refine(isInternalHttpOrigin, "An owner host's broker endpoint must be an internal HTTP origin."),
+  upstreamTicket: z.string().min(32).max(200),
+}).strict();
+export type HostBrokerRoute = z.infer<typeof HostBrokerRoute>;
+
+export const BrokerHostTicketResult = z.union([
+  z.object({ authorized: z.literal(false) }).strict(),
+  z.object({ authorized: z.literal(true), route: HostBrokerRoute }).strict(),
+]);
+export type BrokerHostTicketResult = z.infer<typeof BrokerHostTicketResult>;
 
 export const HostLease = z.object({
   epoch: z.string().uuid(),

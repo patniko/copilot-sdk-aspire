@@ -5,6 +5,7 @@ import {
   HOSTING_ERROR_STATUS,
   HostConnectionRequest,
   hostingModeOf,
+  ownerHostBrokerPath,
   policyFor,
   type ExecutionProfile,
   type HarnessSnapshot,
@@ -15,6 +16,7 @@ import {
 import { StoreError, type HostKey, type HostStore } from "@copilot-agent/job-store";
 import { HttpError, isolatedHostsOf, type ConfiguredOwnerHost } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { brokerOrigin } from "./shared-routes.js";
 
 /** An owner host as the API sees it: its descriptor plus, for direct hosts, the endpoint clients dial. */
 export type ApiOwnerHost = ConfiguredOwnerHost & { url?: string };
@@ -26,6 +28,11 @@ export interface HostApiDependencies {
   harnesses: ReadonlyMap<string, HarnessSnapshot[]>;
   policies: PolicySet;
   profiles: ReadonlyMap<string, ExecutionProfile>;
+  /**
+   * The connection broker's public origin. When set, direct WSS to a host whose endpoint the control plane knows goes
+   * through the broker's `/hosts/{harness}`, which exchanges the client's ticket for one the host accepts.
+   */
+  brokerUrl?: string;
 }
 
 const keyOf = (host: ApiOwnerHost): HostKey => ({ harness: host.harness, owner: host.owner });
@@ -64,6 +71,11 @@ function storeError(error: unknown): unknown {
 export function registerHostRoutes(app: FastifyInstance, deps: HostApiDependencies, principalOf: (request: FastifyRequest) => string): void {
   const legacy = deps.hosts.find((host) => host.legacy);
   if (legacy) registerLegacyRoutes(app, deps.store, legacy, principalOf);
+  const broker = deps.brokerUrl ? brokerOrigin(deps.brokerUrl) : undefined;
+  const directUrl = (host: ApiOwnerHost): string | undefined => {
+    if (!host.url) return undefined;
+    return broker ? new URL(ownerHostBrokerPath(host.harness), broker).href : websocketUrl(host.url);
+  };
   const isolatedHosts = isolatedHostsOf(deps.hosts);
   const conversation = (harness: string) => deps.harnesses.get(harness)?.find((version) => version.definition.interaction === "conversation");
 
@@ -178,7 +190,8 @@ export function registerHostRoutes(app: FastifyInstance, deps: HostApiDependenci
       }
       throw storeError(error);
     }
-    return { ...base, ...(host.url ? { url: websocketUrl(host.url) } : {}), ...ticket, serverKey: status.serverKey };
+    const url = directUrl(host);
+    return { ...base, ...(url ? { url } : {}), ...ticket, serverKey: status.serverKey };
   });
   app.post("/v1/hosts/:harness/sessions/:id/close", async (request) => {
     const host = ownedSessionsOf(request);

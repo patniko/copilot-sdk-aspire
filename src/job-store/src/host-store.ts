@@ -251,6 +251,33 @@ export class HostStore {
   }
 
   /**
+   * The connection broker's half of a brokered direct connection: consumes a client's ticket for the harness's managed
+   * host and, in the same transaction, issues the 30-second, one-use upstream ticket the broker presents to that host.
+   * Both bind to the host's current epoch, so neither opens a host that was replaced after the client's ticket was issued.
+   */
+  async exchangeBrokerTicket(harness: string, token: string): Promise<{ epoch: string; token: string } | undefined> {
+    const digest = createHash("sha256").update(token).digest("hex");
+    return this.#tx(async (client) => {
+      const consumed = await client.query<{ owner: string; epoch: string }>(
+        `UPDATE hosted_connection_tickets t SET used_at = now() FROM owner_hosts h
+         WHERE h.harness = $1 AND h.lease_until > now() AND h.execution = 'managed'
+           AND t.harness = h.harness AND t.owner = h.owner AND t.epoch = h.epoch AND t.digest = $2
+           AND t.expires_at > now() AND t.used_at IS NULL RETURNING h.owner, h.epoch`,
+        [harness, digest],
+      );
+      const row = consumed.rows[0];
+      if (!row) return undefined;
+      const upstream = randomBytes(32).toString("base64url");
+      await client.query(
+        `INSERT INTO hosted_connection_tickets (digest, harness, owner, epoch, expires_at)
+         VALUES ($1, $2, $3, $4, now() + interval '30 seconds')`,
+        [createHash("sha256").update(upstream).digest("hex"), harness, row.owner, row.epoch],
+      );
+      return { epoch: row.epoch, token: upstream };
+    });
+  }
+
+  /**
    * Adopts the pre-010 singleton `demo_host` row as the host for the configured legacy harness, with its owner,
    * pinned account, compute identity, and retained sessions. Returns false when there is nothing to adopt, or when
    * that harness already has a durable host (the legacy row is then left untouched for an operator to review).

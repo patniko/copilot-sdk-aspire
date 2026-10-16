@@ -50,7 +50,12 @@ const app = buildApi({
   ...(process.env.SHARED_WORKER_KEY ? { shared: {
     url: serviceUrl("session-host"), key: requireEnv("SHARED_WORKER_KEY"), brokerUrl: requireEnv("CONNECTION_BROKER_URL"),
   } } : {}),
-  ...(ownerHosts.length ? { hosts: { store: hostStore, hosts: ownerHosts, harnesses, policies, profiles } } : {}),
+  ...(ownerHosts.length ? {
+    hosts: {
+      store: hostStore, hosts: ownerHosts, harnesses, policies, profiles,
+      ...(process.env.CONNECTION_BROKER_URL ? { brokerUrl: process.env.CONNECTION_BROKER_URL } : {}),
+    },
+  } : {}),
 });
 
 await listen(app, listenPort(8080));

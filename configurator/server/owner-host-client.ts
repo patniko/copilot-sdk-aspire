@@ -40,9 +40,11 @@ export async function ownerHostConnection(
     throw new Error("The owner host has not published a current direct endpoint, key, and connection ticket.");
   }
   const endpoint = new URL(info.url);
-  if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash || endpoint.pathname !== "/"
+  // The host itself, or the connection broker's path for this harness's host.
+  const path = endpoint.pathname === "/" || endpoint.pathname === `/hosts/${harness}`;
+  if (endpoint.username || endpoint.password || endpoint.search || endpoint.hash || !path
     || (endpoint.protocol === "ws:" && !LOOPBACK.includes(endpoint.hostname))) {
-    throw new Error("Owner host endpoints must be WSS, or loopback WS, without credentials, paths, or queries.");
+    throw new Error("Owner host endpoints must be WSS, or loopback WS, at the host or its broker path, without credentials or queries.");
   }
   return info;
 }

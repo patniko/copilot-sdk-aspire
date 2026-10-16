@@ -306,8 +306,13 @@ if (demoHostTransport !== 'disabled') {
     .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport)
     .publishAsSingletonHost(environment);
   if (direct) await host.withExternalHttpEndpoints();
-  // Local runs: the API returns this endpoint from /v1/hosts/{harness}/connection, as it does for owner hosts.
-  if (direct && !isPublish) await api.withEnvironment(`OWNER_HOST_URL_${ownerHostEnvSuffix(demoHostHarness)}`, refExpr`${await host.getEndpoint('http')}`);
+  // Local runs: the API returns this endpoint from /v1/hosts/{harness}/connection, as it does for owner hosts, and the
+  // dispatcher gives it to the connection broker, when there is one, for connections through `/hosts/{harness}`.
+  if (direct && !isPublish) {
+    const endpoint = refExpr`${await host.getEndpoint('http')}`;
+    await api.withEnvironment(`OWNER_HOST_URL_${ownerHostEnvSuffix(demoHostHarness)}`, endpoint);
+    await dispatcher.withEnvironment(`OWNER_HOST_URL_${ownerHostEnvSuffix(demoHostHarness)}`, endpoint);
+  }
   if (direct && connectionToken) {
     await host.withEnvironment('DEMO_HOST_CONNECTION_TOKEN', connectionToken)
       .withReference(await gateway.getEndpoint('http'))
@@ -352,7 +357,10 @@ if (ownerHosts.length) {
     if (direct) {
       const connectionToken = await builder.addParameterWithGeneratedValue(`${name}-connection-token`, generated, { secret: true, persist: true });
       await host.withEnvironment('DEMO_HOST_CONNECTION_TOKEN', connectionToken);
-      await api.withEnvironment(`OWNER_HOST_URL_${suffix}`, refExpr`${await host.getEndpoint('http')}`);
+      // Clients dial the broker's /hosts/{harness} when hybrid mode runs one, otherwise this endpoint.
+      const endpoint = refExpr`${await host.getEndpoint('http')}`;
+      await api.withEnvironment(`OWNER_HOST_URL_${suffix}`, endpoint);
+      await dispatcher.withEnvironment(`OWNER_HOST_URL_${suffix}`, endpoint);
     }
     if (settings.transport !== 'direct') await host.withEnvironment('DEMO_HOST_GITHUB_TOKEN', await githubOwnerCredential());
     await dispatcher.withEnvironment(`OWNER_HOST_KEY_${suffix}`, key);

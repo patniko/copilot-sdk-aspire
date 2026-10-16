@@ -7,11 +7,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pg from "pg";
 import type { FastifyInstance } from "fastify";
-import { HostStore, JobStore, migrate, type HostKey } from "@copilot-agent/job-store";
+import { HostStore, JobStore, migrate, PlacementStore, type HostKey } from "@copilot-agent/job-store";
 import { loadHarnesses, loadPolicy, loadProfiles } from "@copilot-agent/service-defaults";
-import type { ExecutionPolicy, ExecutionProfile, HarnessSnapshot } from "@copilot-agent/contracts";
+import type { ExecutionPolicy, ExecutionProfile, HarnessSnapshot, HostBrokerRoute } from "@copilot-agent/contracts";
 import { buildDispatcher } from "../../../src/job-dispatcher/src/server.js";
 import { buildGateway } from "../../../src/inference-gateway/src/server.js";
+import { buildBroker, type ConnectionBroker } from "../../../src/connection-broker/src/broker.js";
+import { DispatcherHostDirectory, hostRoutes, hostUpstream } from "../../../src/connection-broker/src/hosts.js";
 
 const root = join(import.meta.dirname, "..", "..", "..");
 
@@ -48,6 +50,8 @@ export class OwnerHostFixture {
   config!: string;
   dispatcher!: FastifyInstance;
   gateway!: FastifyInstance;
+  broker?: ConnectionBroker<HostBrokerRoute>;
+  #brokerApps: FastifyInstance[] = [];
   #upstream?: Server;
   #signingKey = randomUUID().repeat(2);
 
@@ -170,6 +174,36 @@ export class OwnerHostFixture {
     return { container, endpoint, info };
   }
 
+  /**
+   * Starts the real connection broker for `/hosts/{harness}` with a dispatcher instance on the same ledger that knows
+   * the running hosts' endpoints (the fixture's own dispatcher starts before any host port exists). Returns its origin.
+   */
+  async startBroker(hosts: Array<{ spec: OwnerHostSpec; host: RunningHost }>): Promise<string> {
+    const key = randomUUID().repeat(2);
+    const dispatcher = buildDispatcher({
+      store: new JobStore(this.pool), hostStore: this.store, policies: { base: this.policy, overrides: new Map() },
+      executorKey: "unused-executor-key".repeat(3), gatewayKey: "unused-gateway-key".repeat(3), signingKey: this.#signingKey,
+      broker: { store: new PlacementStore(this.pool), key },
+      host: {
+        store: this.store, profiles: this.profiles, signingKey: this.#signingKey,
+        hosts: hosts.map(({ spec, host }) => ({
+          harness: spec.harness, owner: this.owner.toLowerCase(), key: this.keys.get(spec.harness)!, transport: spec.transport,
+          execution: "managed" as const, snapshot: this.harnesses.get(spec.harness)![0], policy: this.policy, endpoint: host.endpoint,
+        })),
+      },
+    });
+    this.#brokerApps.push(dispatcher);
+    await dispatcher.listen({ host: "127.0.0.1", port: 0 });
+    const { app, broker } = buildBroker<HostBrokerRoute>({
+      families: [hostRoutes(new DispatcherHostDirectory(`http://127.0.0.1:${(dispatcher.server.address() as AddressInfo).port}`, key))],
+      upstreams: { host: hostUpstream },
+    });
+    this.#brokerApps.push(app);
+    this.broker = broker;
+    await app.listen({ host: "127.0.0.1", port: 0 });
+    return `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+  }
+
   stopHost(container: string): void {
     this.docker("stop", "--time", "25", container);
     this.docker("rm", container);
@@ -201,6 +235,7 @@ export class OwnerHostFixture {
       spawnSync("docker", ["rm", "-f", container], { stdio: "ignore" });
     }
     for (const volume of this.volumes.values()) spawnSync("docker", ["volume", "rm", volume], { stdio: "ignore" });
+    for (const app of this.#brokerApps.splice(0).reverse()) await app.close();
     await Promise.all([this.gateway?.close(), this.dispatcher?.close()]);
     if (this.#upstream?.listening) await new Promise<void>((resolve) => this.#upstream!.close(() => resolve()));
     await this.pool?.end();
