@@ -33,6 +33,12 @@ function sameHost(from: URL, to: URL): boolean {
   return from.hostname.toLowerCase() === to.hostname.toLowerCase();
 }
 
+/** Aborts when any of the given signals does. */
+export function combineSignals(...signals: Array<AbortSignal | undefined>): AbortSignal | undefined {
+  const present = signals.filter((signal): signal is AbortSignal => signal !== undefined);
+  return present.length > 1 ? AbortSignal.any(present) : present[0];
+}
+
 const NAMED_ENTITIES: Record<string, string> = {
   amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " ", ndash: "\u2013", mdash: "\u2014", hellip: "\u2026",
   copy: "\u00a9", reg: "\u00ae", trade: "\u2122", laquo: "\u00ab", raquo: "\u00bb", ldquo: "\u201c", rdquo: "\u201d",
@@ -204,6 +210,8 @@ export interface WebFetchToolOptions {
    * also enforced here: `deny` never fetches, and only `allow` follows redirects to another host.
    */
   urlRule: PermissionMode;
+  /** The conversation activation's lifetime: aborting it cancels in-flight fetches. */
+  signal?: AbortSignal;
   /** Identifiers and outcomes only: never URLs, content, or headers. */
   report?: (event: string, detail: Record<string, string | number | boolean>) => void;
   maxDownloadBytes?: number;
@@ -268,7 +276,7 @@ export function webFetchTool(options: WebFetchToolOptions): Tool {
           maxResponseBytes: maxDownloadBytes,
           overflow: "truncate",
           timeoutMs,
-          signal: invocation.signal,
+          signal: combineSignals(invocation.signal, options.signal),
           onRedirect: (from, to) => {
             // An approval covers the requested host; another host needs a new call and its own approval.
             if (options.urlRule !== "allow" && !sameHost(from, to)) throw new RedirectNeedsApproval(from, to);

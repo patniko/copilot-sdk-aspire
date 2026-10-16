@@ -16,7 +16,7 @@ export const MCP_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26"] 
 export const REMOTE_MCP_SERVER_NAME = /^[a-z][a-z0-9-]{1,62}$/;
 /** The contracts' remote MCP tool-name rule. */
 export const REMOTE_MCP_TOOL_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
-const EXPOSED_TOOL_NAME = /^[A-Za-z0-9_-]{1,64}$/;
+const EXPOSED_TOOL_NAME = /^[a-z0-9_]{1,64}$/;
 const SECRET_VALUE = /^[\x21-\x7E][\x20-\x7E]{6,4094}[\x21-\x7E]$/;
 const RESERVED_HEADERS = new Set([
   "accept", "accept-encoding", "connection", "content-length", "content-type", "cookie", "host", "last-event-id",
@@ -466,7 +466,7 @@ async function delay(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 export interface RemoteMcpToolDescriptor {
-  /** Name exposed to the model: `<server>__<tool>`, with dots mapped to underscores. */
+  /** Name exposed to the model: `mcp_<server>_<tool>` in `[a-z0-9_]`, or a stable hashed form. */
   name: string;
   server: string;
   tool: string;
@@ -488,8 +488,10 @@ export interface RemoteMcpRefusal {
 
 export interface ApprovedRemoteTool { name: string; server: string; tool: string }
 
+const sanitizeName = (value: string) => value.toLowerCase().replace(/[^a-z0-9_]/g, "_");
+
 function directToolName(server: string, tool: string): string {
-  return `${server}__${tool.replaceAll(".", "_")}`;
+  return `mcp_${sanitizeName(server)}_${sanitizeName(tool)}`;
 }
 
 function hashedToolName(server: string, tool: string): string {
@@ -499,7 +501,8 @@ function hashedToolName(server: string, tool: string): string {
 
 /**
  * The catalog ∩ harness-requested tools, plus everything refused and why. Pure and order-independent:
- * names are `<server>__<tool>`, or a stable hashed form when that is longer than 64 characters or ambiguous.
+ * names are `mcp_<server>_<tool>` in `[a-z0-9_]`, or a stable hashed form when that is longer than
+ * 64 characters or ambiguous within the selections. Resolve all of a harness's servers together.
  */
 export function resolveRemoteMcpSelections(catalog: RemoteMcpCatalog, selections: readonly RemoteMcpSelection[]): { approved: ApprovedRemoteTool[]; refused: RemoteMcpRefusal[] } {
   const pairs: Array<{ server: string; tool: string }> = [];
@@ -589,11 +592,12 @@ export class RemoteMcpCatalogClient {
     if (cached && cached.expires > Date.now()) return cached;
     let pending = this.#pending.get(server);
     if (!pending) {
+      // Shared by every conversation that asks; bounded by the server's own timeouts, never by one caller's signal.
       pending = (async () => {
         const connection = new RemoteMcpConnection(server, this.catalog[server]!, this.#deps);
         const redact = (text: string) => connection.redact(text);
         try {
-          const tools = await connection.listTools(signal);
+          const tools = await connection.listTools();
           const entry: CachedTools = { expires: Date.now() + this.#ttl, tools: new Map(tools.map((tool) => [tool.name, tool])), redact };
           this.#report("remote_mcp.describe", { server, outcome: "ok", tools: tools.length });
           return entry;
@@ -609,7 +613,17 @@ export class RemoteMcpCatalogClient {
       }).finally(() => { this.#pending.delete(server); });
       this.#pending.set(server, pending);
     }
-    return pending;
+    if (!signal) return pending;
+    if (signal.aborted) throw new RemoteMcpError("cancelled", "The conversation stopped before its remote tools were described.");
+    let onAbort: (() => void) | undefined;
+    try {
+      return await Promise.race([pending, new Promise<never>((_, reject) => {
+        onAbort = () => reject(new RemoteMcpError("cancelled", "The conversation stopped before its remote tools were described."));
+        signal.addEventListener("abort", onAbort, { once: true });
+      })]);
+    } finally {
+      if (onAbort) signal.removeEventListener("abort", onAbort);
+    }
   }
 
   /**

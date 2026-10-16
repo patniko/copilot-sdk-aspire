@@ -103,8 +103,8 @@ it.skipIf(!enabled)("lets a shared in-process session use the filtered web tool 
   const upstream = syntheticModel(() => [
     { name: "web_fetch", arguments: { url: `http://docs.example:${sitePort}/runtime-page` } },
     { name: "web_fetch", arguments: { url: "http://169.254.169.254/latest/meta-data/" } },
-    { name: "docs-search__search", arguments: { query: "egress" } },
-    { name: "docs-search__leak", arguments: {} },
+    { name: "mcp_docs_search_search", arguments: { query: "egress" } },
+    { name: "mcp_docs_search_leak", arguments: {} },
   ], record);
   try {
     await migrate(pool);
@@ -148,8 +148,8 @@ it.skipIf(!enabled)("lets a shared in-process session use the filtered web tool 
 
     const advertised = record.advertised;
     const names = advertised.map((tool) => tool.name);
-    expect(names).toEqual(expect.arrayContaining(["web_fetch", "docs-search__search", "docs-search__leak"]));
-    expect(names).not.toContain("docs-search__admin_reset");
+    expect(names).toEqual(expect.arrayContaining(["web_fetch", "mcp_docs_search_search", "mcp_docs_search_leak"]));
+    expect(names).not.toContain("mcp_docs_search_admin_reset");
     expect(advertised.find((tool) => tool.name === "web_fetch")?.description).toContain("Local, private, and internal network addresses are refused");
     const toolResults = (index: number) => JSON.stringify(wire.parse(JSON.parse(bodies[index]!)).messages.filter((message) => message.role === "tool").at(-1)?.content);
     expect(bodies.length).toBeGreaterThanOrEqual(5);
@@ -190,7 +190,7 @@ it.skipIf(!enabled)("routes web_fetch and remote MCP approvals through the runti
   // An approved fetch, an approved MCP call, then a fetch the person refuses.
   const upstream = syntheticModel(() => [
     { name: "web_fetch", arguments: { url: `http://docs.example:${sitePort}/approved` } },
-    { name: "docs-search__search", arguments: { query: "permissions" } },
+    { name: "mcp_docs_search_search", arguments: { query: "permissions" } },
     { name: "web_fetch", arguments: { url: `http://other.example:${sitePort}/refused` } },
   ], record);
   const client = new CopilotClient({

@@ -1,20 +1,22 @@
 import type { Tool, ToolResultObject } from "@github/copilot-sdk";
 import type { RemoteMcpSession, RemoteMcpToolDescriptor } from "@copilot-agent/service-defaults";
+import { combineSignals } from "./web-fetch.js";
 
 /**
  * Exposes described remote MCP tools as SDK tools bound to one conversation's MCP session. Only tools
  * the session approved (operator catalog ∩ harness request) are returned. The runtime's normal
  * custom-tool permission flow still applies; use {@link remoteMcpToolFor} to present such a request
- * as an MCP prompt. Results are already redacted and bounded by the session.
+ * as an MCP prompt. Results are already redacted and bounded by the session. `signal` is the
+ * conversation activation's lifetime: aborting it cancels in-flight calls.
  */
-export function remoteMcpTools(descriptors: readonly RemoteMcpToolDescriptor[], session: RemoteMcpSession): Tool[] {
+export function remoteMcpTools(descriptors: readonly RemoteMcpToolDescriptor[], session: RemoteMcpSession, signal?: AbortSignal): Tool[] {
   const approved = new Set(session.toolNames);
   return descriptors.filter((descriptor) => approved.has(descriptor.name)).map((descriptor) => ({
     name: descriptor.name,
     description: descriptor.description,
     parameters: descriptor.inputSchema,
     handler: async (args, invocation): Promise<ToolResultObject> => {
-      const outcome = await session.call(descriptor.name, args, invocation.signal);
+      const outcome = await session.call(descriptor.name, args, combineSignals(invocation.signal, signal));
       return { resultType: outcome.ok ? "success" : "failure", textResultForLlm: outcome.text };
     },
   }));

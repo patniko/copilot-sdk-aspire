@@ -67,14 +67,16 @@ describe("remote MCP configuration", () => {
     ]) expect(RemoteMcpServerConfig.safeParse(invalid).success).toBe(false);
   });
 
-  it("exposes only the catalog ∩ requested tools with stable names, whatever the request order", () => {
+  it("exposes only the catalog ∩ requested tools with stable, unambiguous names, whatever the request order", () => {
     const catalog: RemoteMcpCatalog = {
-      docs: RemoteMcpServerConfig.parse({ url: "https://mcp.example.com/", tools: ["search", "fetch.page", "fetch_page", "x".repeat(120)] }),
+      docs: RemoteMcpServerConfig.parse({ url: "https://mcp.example.com/", tools: ["search", "fetch.page", "fetch_page", "x".repeat(120), "search_search", "Lookup"] }),
+      "docs-search": RemoteMcpServerConfig.parse({ url: "https://mcp.example.net/", tools: ["search"] }),
       [`long-${"s".repeat(57)}`]: RemoteMcpServerConfig.parse({ url: "https://mcp.example.org/", tools: ["lookup"] }),
     };
     const longServer = `long-${"s".repeat(57)}`;
     const forward = resolveRemoteMcpSelections(catalog, [
-      { server: "docs", tools: ["search", "fetch.page", "fetch_page", "x".repeat(120), "delete_all", "search"] },
+      { server: "docs", tools: ["search", "fetch.page", "fetch_page", "x".repeat(120), "search_search", "Lookup", "delete_all", "search"] },
+      { server: "docs-search", tools: ["search"] },
       { server: longServer, tools: ["lookup"] },
       { server: "missing", tools: ["search"] },
     ]);
@@ -83,17 +85,25 @@ describe("remote MCP configuration", () => {
       { server: "missing", reason: "unknown_server" },
     ]);
     const names = forward.approved.map((entry) => entry.name);
-    expect(names[0]).toBe("docs__search");
-    expect(names.every((name) => /^[A-Za-z0-9_-]{1,64}$/.test(name))).toBe(true);
+    const byPair = (list: typeof forward.approved) => Object.fromEntries(list.map((entry) => [`${entry.server}/${entry.tool}`, entry.name]));
+    const named = byPair(forward.approved);
+    expect(named["docs/search"]).toBe("mcp_docs_search");
+    expect(named["docs/Lookup"]).toBe("mcp_docs_lookup");
+    expect(names.every((name) => /^[a-z0-9_]{1,64}$/.test(name))).toBe(true);
     expect(new Set(names).size).toBe(names.length);
-    expect(names.filter((name) => name.startsWith("docs__fetch_page"))).toHaveLength(2);
-    expect(names).not.toContain("docs__fetch_page");
+    // `fetch.page`/`fetch_page`, and `docs`+`search_search`/`docs-search`+`search`, sanitize to the same name: all get hashed forms.
+    for (const pair of ["docs/fetch.page", "docs/fetch_page", "docs/search_search", "docs-search/search"]) {
+      expect(named[pair]).toMatch(/^mcp_docs_(?:fetch_page|search_search)_[0-9a-f]{10}$/);
+    }
+    expect(names).not.toContain("mcp_docs_fetch_page");
+    expect(names).not.toContain("mcp_docs_search_search");
+    expect(named[`${longServer}/lookup`]).toHaveLength(64);
     const reverse = resolveRemoteMcpSelections(catalog, [
       { server: longServer, tools: ["lookup"] },
-      { server: "docs", tools: ["x".repeat(120), "fetch_page", "fetch.page", "search"] },
+      { server: "docs-search", tools: ["search"] },
+      { server: "docs", tools: ["Lookup", "search_search", "x".repeat(120), "fetch_page", "fetch.page", "search"] },
     ]);
-    const byPair = (list: typeof forward.approved) => Object.fromEntries(list.map((entry) => [`${entry.server}/${entry.tool}`, entry.name]));
-    expect(byPair(reverse.approved)).toEqual(byPair(forward.approved));
+    expect(byPair(reverse.approved)).toEqual(named);
   });
 });
 
@@ -107,7 +117,7 @@ describe("remote MCP client", () => {
       { server: "unlisted-server", reason: "unknown_server" },
     ]);
     expect(described.tools.map((tool) => tool.name)).toEqual([
-      "docs-search__search", "docs-search__leak", "docs-search__fail", "docs-search__slow", "docs-search__big", "docs-search__rpc_error",
+      "mcp_docs_search_search", "mcp_docs_search_leak", "mcp_docs_search_fail", "mcp_docs_search_slow", "mcp_docs_search_big", "mcp_docs_search_rpc_error",
     ]);
     const search = described.tools[0]!;
     expect(search).toMatchObject({ server: "docs-search", tool: "search", readOnly: true, available: true });
@@ -117,19 +127,19 @@ describe("remote MCP client", () => {
     expectNoCredential(described);
 
     const session = catalog.session(everything);
-    expect(session.toolNames).not.toContain("docs-search__admin_reset");
-    expect(await session.call("docs-search__search", { query: "egress" })).toEqual({ ok: true, text: "Results for egress", truncated: false });
-    const leaked = await session.call("docs-search__leak", {});
+    expect(session.toolNames).not.toContain("mcp_docs_search_admin_reset");
+    expect(await session.call("mcp_docs_search_search", { query: "egress" })).toEqual({ ok: true, text: "Results for egress", truncated: false });
+    const leaked = await session.call("mcp_docs_search_leak", {});
     expect(leaked.ok).toBe(true);
     expect(leaked.text).toContain("[redacted]");
-    const failed = await session.call("docs-search__fail", {});
+    const failed = await session.call("mcp_docs_search_fail", {});
     expect(failed).toMatchObject({ ok: false, text: "The tool failed on purpose." });
-    const rpcError = await session.call("docs-search__rpc_error", {});
+    const rpcError = await session.call("mcp_docs_search_rpc_error", {});
     expect(rpcError.ok).toBe(false);
     expect(rpcError.text).toContain("HTTP 500");
     expect(rpcError.text).toContain("[redacted]");
-    expect(await session.call("docs-search__admin_reset", {})).toMatchObject({ ok: false, text: "This remote tool is not approved for this conversation." });
-    expect((await session.call("docs-search__search", [1, 2])).ok).toBe(false);
+    expect(await session.call("mcp_docs_search_admin_reset", {})).toMatchObject({ ok: false, text: "This remote tool is not approved for this conversation." });
+    expect((await session.call("mcp_docs_search_search", [1, 2])).ok).toBe(false);
     for (const value of [leaked, failed, rpcError]) expectNoCredential(value);
 
     await session.close();
@@ -148,7 +158,7 @@ describe("remote MCP client", () => {
     const server = await fake({ credential, credentialHeader: "X-Api-Key" });
     const { catalog } = client({ url: server.url, auth: { secret: "docs-search-token", header: "X-Api-Key" } });
     const session = catalog.session([{ server: "docs-search", tools: ["search"] }]);
-    expect(await session.call("docs-search__search", { query: "header" })).toMatchObject({ ok: true });
+    expect(await session.call("mcp_docs_search_search", { query: "header" })).toMatchObject({ ok: true });
     await session.close();
     expect(server.requests.every((request) => request.headers["x-api-key"] === credential && request.headers.authorization === undefined)).toBe(true);
   });
@@ -156,12 +166,12 @@ describe("remote MCP client", () => {
   it("handles event streams with server pings, split CRLF events, notifications, and stream resumption", async () => {
     const pinging = await fake({ credential, mode: "sse", pingBeforeResponse: true });
     const first = client({ url: pinging.url }).catalog.session([{ server: "docs-search", tools: ["search"] }]);
-    expect(await first.call("docs-search__search", { query: "stream" })).toEqual({ ok: true, text: "Results for stream", truncated: false });
+    expect(await first.call("mcp_docs_search_search", { query: "stream" })).toEqual({ ok: true, text: "Results for stream", truncated: false });
     expect(pinging.clientReplies).toEqual([expect.objectContaining({ jsonrpc: "2.0", result: {} })]);
     await first.close();
     const resuming = await fake({ credential, mode: "sse", resumeAfterClose: true });
     const second = client({ url: resuming.url }).catalog.session([{ server: "docs-search", tools: ["search"] }]);
-    expect(await second.call("docs-search__search", { query: "resumed" })).toMatchObject({ ok: true, text: "Results for resumed" });
+    expect(await second.call("mcp_docs_search_search", { query: "resumed" })).toMatchObject({ ok: true, text: "Results for resumed" });
     expect(resuming.requests.find((request) => request.httpMethod === "GET")?.headers["last-event-id"]).toBe("prime-1");
     await second.close();
   });
@@ -172,12 +182,12 @@ describe("remote MCP client", () => {
     const selection = [{ server: "docs-search", tools: ["search"] }];
     const one = catalog.session(selection);
     const two = catalog.session(selection);
-    await one.call("docs-search__search", { query: "one" });
-    await two.call("docs-search__search", { query: "two" });
+    await one.call("mcp_docs_search_search", { query: "one" });
+    await two.call("mcp_docs_search_search", { query: "two" });
     const sessionIds = new Set(server.requests.filter((request) => request.rpcMethod === "tools/call").map((request) => request.headers["mcp-session-id"]));
     expect(sessionIds.size).toBe(2);
     server.expireSessions();
-    expect(await one.call("docs-search__search", { query: "again" })).toMatchObject({ ok: true, text: "Results for again" });
+    expect(await one.call("mcp_docs_search_search", { query: "again" })).toMatchObject({ ok: true, text: "Results for again" });
     expect(server.requests.filter((request) => request.rpcMethod === "initialize")).toHaveLength(3);
     expect(server.requests.at(-1)?.headers["mcp-protocol-version"]).toBe("2025-11-25");
     await Promise.all([one.close(), two.close()]);
@@ -188,18 +198,18 @@ describe("remote MCP client", () => {
     const { catalog: strict } = client({ url: server.url, auth: undefined, allowPrivateNetwork: false });
     const unavailable = await strict.describe([{ server: "docs-search", tools: ["search"] }]);
     expect(unavailable.tools[0]).toMatchObject({ available: false, inputSchema: { type: "object", additionalProperties: true } });
-    const refused = await strict.session([{ server: "docs-search", tools: ["search"] }]).call("docs-search__search", { query: "x" });
+    const refused = await strict.session([{ server: "docs-search", tools: ["search"] }]).call("mcp_docs_search_search", { query: "x" });
     expect(refused.ok).toBe(false);
     expect(refused.text).toContain("loopback address");
     expect(refused.text).not.toContain("127.0.0.1");
     const internal = await client({ url: server.url }, { internal: [{ host: "127.0.0.1", port: server.port }] }).catalog
-      .session([{ server: "docs-search", tools: ["search"] }]).call("docs-search__search", { query: "x" });
+      .session([{ server: "docs-search", tools: ["search"] }]).call("mcp_docs_search_search", { query: "x" });
     expect(internal.text).toContain("internal services");
     expect(server.requests).toEqual([]);
 
     const target = await fake();
     const redirecting = await fake({ redirectTo: target.url });
-    const redirected = await client({ url: redirecting.url }).catalog.session([{ server: "docs-search", tools: ["search"] }]).call("docs-search__search", { query: "x" });
+    const redirected = await client({ url: redirecting.url }).catalog.session([{ server: "docs-search", tools: ["search"] }]).call("mcp_docs_search_search", { query: "x" });
     expect(redirected.ok).toBe(false);
     expect(redirected.text).toContain("redirect");
     expect(target.requests).toEqual([]);
@@ -210,13 +220,13 @@ describe("remote MCP client", () => {
     const cases: Array<Record<string, string>> = [{}, { MCP_SECRET_DOCS_SEARCH_TOKEN: "short" }, { MCP_SECRET_DOCS_SEARCH_TOKEN: `${credential}\r\nX-Injected: 1` }];
     for (const secrets of cases) {
       const result = await client({ url: server.url }, { secrets }).catalog.session([{ server: "docs-search", tools: ["search"] }])
-        .call("docs-search__search", { query: "x" });
+        .call("mcp_docs_search_search", { query: "x" });
       expect(result.ok).toBe(false);
       expect(result.text).toMatch(/credential/);
     }
     expect(server.requests).toEqual([]);
     const wrong = await client({ url: server.url }, { secrets: { MCP_SECRET_DOCS_SEARCH_TOKEN: "a-different-synthetic-value" } }).catalog
-      .session([{ server: "docs-search", tools: ["search"] }]).call("docs-search__search", { query: "x" });
+      .session([{ server: "docs-search", tools: ["search"] }]).call("mcp_docs_search_search", { query: "x" });
     expect(wrong.text).toContain("rejected the configured credential (HTTP 401)");
   });
 
@@ -225,24 +235,24 @@ describe("remote MCP client", () => {
     const { catalog } = client({ url: server.url, timeoutSeconds: 1, maxResponseBytes: 256 * 1024 });
     const session = catalog.session([{ server: "docs-search", tools: ["slow", "big"] }]);
     const started = Date.now();
-    const timedOut = await session.call("docs-search__slow", {});
+    const timedOut = await session.call("mcp_docs_search_slow", {});
     expect(timedOut).toMatchObject({ ok: false });
     expect(timedOut.text).toContain("timed out");
     expect(Date.now() - started).toBeLessThan(5000);
     const controller = new AbortController();
-    const pending = session.call("docs-search__slow", {}, controller.signal);
+    const pending = session.call("mcp_docs_search_slow", {}, controller.signal);
     setTimeout(() => controller.abort(), 100);
     expect((await pending).text).toContain("cancelled");
     await expect.poll(() => server.cancellations.length).toBe(1);
-    const tooLarge = await session.call("docs-search__big", { bytes: 512 * 1024 });
+    const tooLarge = await session.call("mcp_docs_search_big", { bytes: 512 * 1024 });
     expect(tooLarge.text).toContain("larger than the allowed size");
-    const bounded = await session.call("docs-search__big", { bytes: 100_000 });
+    const bounded = await session.call("mcp_docs_search_big", { bytes: 100_000 });
     expect(bounded).toMatchObject({ ok: true, truncated: true });
     expect(bounded.text.length).toBeLessThan(70_000);
     await session.close();
 
     const old = await fake({ credential, protocolVersion: "2024-11-05" });
-    const incompatible = await client({ url: old.url }).catalog.session([{ server: "docs-search", tools: ["search"] }]).call("docs-search__search", { query: "x" });
+    const incompatible = await client({ url: old.url }).catalog.session([{ server: "docs-search", tools: ["search"] }]).call("mcp_docs_search_search", { query: "x" });
     expect(incompatible.text).toContain("compatible protocol version");
   });
 });
