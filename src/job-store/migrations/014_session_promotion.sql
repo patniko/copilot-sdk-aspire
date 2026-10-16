@@ -5,17 +5,6 @@
 ALTER TABLE session_files ADD COLUMN display_name text
   CONSTRAINT session_file_display_name CHECK (display_name IS NULL OR (display_name <> '' AND strpos(display_name, '/') = 0));
 
--- Session containers add the `container` placement kind. Until that migration is present, accept it here; once it
--- is, this block does nothing.
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shared_sessions_placement_kind'
-                   AND conrelid = 'shared_sessions'::regclass AND pg_get_constraintdef(oid) LIKE '%container%') THEN
-    ALTER TABLE shared_sessions DROP CONSTRAINT shared_sessions_placement_kind;
-    ALTER TABLE shared_sessions ADD CONSTRAINT shared_sessions_placement_kind CHECK (placement IN ('shared','container'));
-  END IF;
-END $$;
-
 -- No route demotes a session: once it leaves shared placement it never returns, and its generation only grows.
 CREATE FUNCTION shared_sessions_one_way_placement() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN

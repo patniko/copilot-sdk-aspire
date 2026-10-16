@@ -9,7 +9,7 @@ import type { RuntimeApprovalMode } from "@copilot-agent/contracts";
 import { SessionFileStore, type SessionFileLease } from "@copilot-agent/job-store";
 import { z } from "zod";
 import type { SharedSessionSettings } from "./harness-session.js";
-import { postgresSessionFilesystem } from "./postgres-filesystem.js";
+import { postgresSessionFilesystem, providerKey } from "./postgres-filesystem.js";
 import { SessionWorkspace } from "./workspace.js";
 
 export interface SharedActivationContext {
@@ -244,6 +244,21 @@ export class SharedSessionRuntime {
       });
     }
     return activation.close;
+  }
+
+  /**
+   * Provider keys of a session's runtime state directory and workspace anchor, derived exactly as `open` stores them:
+   * the areas a promotion snapshot reads.
+   */
+  async storageAreas(id: string): Promise<{ state: string; workspace: string }> {
+    if (!z.string().uuid().safeParse(id).success) throw new Error("Invalid shared session identity.");
+    const anchorDirectory = join(this.root, "anchors", id);
+    await mkdir(anchorDirectory, { recursive: true });
+    const conventions = process.platform === "win32" ? "windows" : "posix";
+    return {
+      state: providerKey(join(this.root, "session-state"), conventions).key,
+      workspace: providerKey(await realpath(anchorDirectory), conventions).key,
+    };
   }
 
   async sendSystem(id: string, prompt: string): Promise<string> {

@@ -70,6 +70,11 @@ interface StoredEntry { path: string; directory: boolean; display_name: string |
 const OPEN = ["requested", "moving", "starting"] as const;
 const PAGE_BYTES = 4 * 1024 * 1024;
 
+/** A cutover the ledger refused; the transaction rolls back and the promotion fails with `code`. */
+class CutoverRefused extends Error {
+  constructor(readonly code: PromotionErrorCode, message: string) { super(message); }
+}
+
 /**
  * The promotion ledger (docs/HOSTING-MODES-PLAN.md, section 7.3). It records requests idempotently, captures the
  * snapshot under a fenced storage lease, serves it only to the allocation started for the move, and performs the
@@ -249,44 +254,44 @@ export class PromotionStore {
    * A stale snapshot or a changed session fails the promotion instead; the session stays shared.
    */
   async commit(id: string, allocationId?: string): Promise<{ generation: number }> {
-    const outcome = await this.shared.transaction(async (db): Promise<{ generation: number } | { code: PromotionErrorCode; message: string }> => {
-      const promotion = (await db.query<PromotionRow>("SELECT * FROM session_promotions WHERE id=$1 FOR UPDATE", [id])).rows[0];
-      if (!promotion || promotion.state !== "starting" || !promotion.snapshot_epoch) {
-        throw new StoreError("invalid_state", "The promotion is not ready to commit.");
-      }
-      if (allocationId !== undefined && promotion.allocation_id !== allocationId) {
-        throw new StoreError("invalid_state", "Only the allocation started for the promotion can complete it.");
-      }
-      const session = (await db.query<{ definition: { harness?: { name: string; version: string; digest: string } } }>(
-        `UPDATE shared_sessions SET placement='container',placement_generation=placement_generation+1,last_activity_at=clock_timestamp()
-         WHERE id=$1 AND principal=$2 AND NOT closed AND placement='shared' AND placement_generation=$3 RETURNING definition`,
-        [promotion.session_id, promotion.principal, promotion.from_generation])).rows[0];
-      if (!session) return { code: "session_changed", message: "The conversation closed or changed placement during the move." };
-      const fenced = await db.query(
-        `UPDATE session_file_namespaces SET epoch=$3,worker=$4,lease_until='infinity'
-         WHERE id=$1 AND principal=$2 AND epoch=$5`,
-        [promotion.session_id, promotion.principal, randomUUID(), `promoted:${id}`, promotion.snapshot_epoch]);
-      if (!fenced.rowCount) return { code: "snapshot_stale", message: "The conversation's storage changed after its snapshot was read." };
-      await db.query("DELETE FROM shared_connection_tickets WHERE session_id=$1 AND used_at IS NULL", [promotion.session_id]);
-      await db.query("DELETE FROM shared_activations WHERE session_id=$1", [promotion.session_id]);
-      const generation = promotion.from_generation + 1;
-      const harness = session.definition.harness;
-      await db.query(
-        `INSERT INTO session_segments(session_id,generation,placement,reason,harness,ahp_session_id,promotion_id)
-         VALUES($1,$2,'container','promotion',$3,$1,$4)`,
-        [promotion.session_id, generation, harness ? JSON.stringify({ name: harness.name, version: harness.version, digest: harness.digest }) : null, id]);
-      await db.query(
-        "UPDATE session_promotions SET state='committed',committed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1", [id]);
-      return { generation };
-    }).catch(async (error: unknown) => {
-      // The session rejected the move (for example its placement trigger); nothing was committed.
-      if (error instanceof StoreError) throw error;
-      throw error;
-    });
-    if ("generation" in outcome) return outcome;
-    // The transaction above rolled back nothing it needed to keep; record the failure separately.
-    await this.fail(id, outcome.code, outcome.message);
-    throw new StoreError("invalid_state", outcome.message);
+    try {
+      return await this.shared.transaction(async (db) => {
+        const promotion = (await db.query<PromotionRow>("SELECT * FROM session_promotions WHERE id=$1 FOR UPDATE", [id])).rows[0];
+        if (!promotion || promotion.state !== "starting" || !promotion.snapshot_epoch) {
+          throw new StoreError("invalid_state", "The promotion is not ready to commit.");
+        }
+        if (allocationId !== undefined && promotion.allocation_id !== allocationId) {
+          throw new StoreError("invalid_state", "Only the allocation started for the promotion can complete it.");
+        }
+        const session = (await db.query<{ definition: { harness?: { name: string; version: string; digest: string } } }>(
+          `UPDATE shared_sessions SET placement='container',placement_generation=placement_generation+1,last_activity_at=clock_timestamp()
+           WHERE id=$1 AND principal=$2 AND NOT closed AND placement='shared' AND placement_generation=$3 RETURNING definition`,
+          [promotion.session_id, promotion.principal, promotion.from_generation])).rows[0];
+        if (!session) throw new CutoverRefused("session_changed", "The conversation closed or changed placement during the move.");
+        const fenced = await db.query(
+          `UPDATE session_file_namespaces SET epoch=$3,worker=$4,lease_until='infinity'
+           WHERE id=$1 AND principal=$2 AND epoch=$5`,
+          [promotion.session_id, promotion.principal, randomUUID(), `promoted:${id}`, promotion.snapshot_epoch]);
+        if (!fenced.rowCount) throw new CutoverRefused("snapshot_stale", "The conversation's storage changed after its snapshot was read.");
+        await db.query("DELETE FROM shared_connection_tickets WHERE session_id=$1 AND used_at IS NULL", [promotion.session_id]);
+        await db.query("DELETE FROM shared_activations WHERE session_id=$1", [promotion.session_id]);
+        const generation = promotion.from_generation + 1;
+        const harness = session.definition.harness;
+        await db.query(
+          `INSERT INTO session_segments(session_id,generation,placement,reason,harness,ahp_session_id,promotion_id)
+           VALUES($1,$2,'container','promotion',$3,$4,$5)`,
+          [promotion.session_id, generation, harness ? JSON.stringify({ name: harness.name, version: harness.version, digest: harness.digest }) : null,
+            promotion.session_id, id]);
+        await db.query(
+          "UPDATE session_promotions SET state='committed',committed_at=clock_timestamp(),updated_at=clock_timestamp() WHERE id=$1", [id]);
+        return { generation };
+      });
+    } catch (error) {
+      if (!(error instanceof CutoverRefused)) throw error;
+      // The cutover rolled back; the session stays shared and the promotion fails.
+      await this.fail(id, error.code, error.message);
+      throw new StoreError("invalid_state", error.message);
+    }
   }
 
   /**
