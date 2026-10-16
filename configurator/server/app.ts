@@ -230,6 +230,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       ...(override ? { policyOverride: Object.keys(override.overrides) } : {}),
       profiles,
       all: documents,
+      policyFor: (name: string) => policyFor(policies, name),
       committed,
     };
   }
