@@ -192,12 +192,12 @@ export class SharedSessionRuntime {
         });
         if (!applied.success || applied.mode !== approval.initial) throw new Error("The runtime refused the session's approval mode.");
       }
-      const hostOptions: AhpHostOptions & { approvalModes?: { available: RuntimeApprovalMode[]; default: RuntimeApprovalMode } } = {
+      const hostOptions: AhpHostOptions = {
         computeId: options.id,
         workingDirectory: anchor,
         expectedOwner: { githubApiUrl: "https://api.github.com", userId: options.githubUserId },
         localServer: { hostname: "127.0.0.1", port: 0 },
-        // The ceiling an attached client can switch within; SDKs without the option ignore it.
+        // The ceiling an attached client can switch within; the host advertises and enforces it.
         ...(approval ? { approvalModes: { available: [...approval.available], default: approval.initial } } : {}),
         onWorkspaceResource: (request, invocation) => {
           options.onActivity?.(context);

@@ -172,16 +172,17 @@ flowchart TD
     Handler -->|"ask"| Person
     Mode -->|"assisted"| Judge{"Runtime judge via the gateway"}
     Judge -->|"decline or error"| Person
-    Judge -->|"approve"| Host["AHP host participant"]
-    Host --> Person
+    Judge -->|"approve"| Runs
     Mode -->|"manual"| Person{"Attached client"}
     Person -->|"Approve once"| Runs
     Person -->|"Deny"| Denied2
     Person -->|"Nobody attached"| Pending["Pending until the turn deadline; does not run"]
 ```
 
-With the qualified runtime the host participant still prompts after a judge approval; the runtime work recorded in
-the [hosting modes plan](HOSTING-MODES-PLAN.md#stage-2-harness-driven-shared-mode) lets it approve.
+A judge approval runs without a prompt: the AHP host participant acts on it while a client has the session open, and
+the worker's handler follows it through the SDK's `followAssistedApproval` while none does. Both need runtime
+`d89cfe45b29` (host `006b030`) or later; see the
+[qualification record](HOSTING-MODES-PLAN.md#stage-2-harness-driven-shared-mode).
 
 Each session records a placement in the ledger: its kind (`shared`, or `container` for
 [session containers](#session-containers)) and a generation that increases on every change

@@ -3,7 +3,7 @@ import type { PermissionRequest } from "@github/copilot-sdk";
 import type { HarnessDefinition } from "@copilot-agent/contracts";
 import type { SharedApprovalPlan } from "../../src/session-host/src/admission.js";
 import { workspaceDraftsHandler, type CustomPermissionHandler } from "../../src/session-host/src/permission-handlers.js";
-import { SharedPermissionPolicy, type ToolRule } from "../../src/session-host/src/permissions.js";
+import { SharedPermissionPolicy, type JudgeResponder, type ToolRule } from "../../src/session-host/src/permissions.js";
 import { approvalManagedSettings } from "../../src/session-host/src/service.js";
 
 const rules = new Map<string, ToolRule>([
@@ -66,6 +66,37 @@ describe("shared permission policy", () => {
     expect(await rulesOnly.handle(tool("unknown_tool"), { sessionId: "session" })).toMatchObject({ kind: "reject" });
     expect(await rulesOnly.handle({ kind: "shell", fullCommandText: "ls" } as unknown as PermissionRequest, { sessionId: "session" }))
       .toMatchObject({ kind: "reject", feedback: expect.stringContaining("shared placement") });
+  });
+
+  it("follows the runtime judge's approval through the SDK's responder, which leaves everything else to a person", async () => {
+    const calls: Array<{ fallback: unknown; invocation: unknown }> = [];
+    const followJudge: JudgeResponder = (fallback) => async (_request, invocation) => {
+      calls.push({ fallback, invocation });
+      return (invocation as { assistedApproval?: { recommendation?: string } }).assistedApproval?.recommendation === "approve"
+        ? { kind: "approve-once" } : { kind: "no-result" };
+    };
+    const judged = (approval: SharedApprovalPlan, permissions: HarnessDefinition["permissions"] = ask, responder: JudgeResponder | null = followJudge) =>
+      new SharedPermissionPolicy({
+        harness: "fixture", sessionId: "session", principal: "alice", definition: { permissions }, approval, rules,
+        builtins: new Set(), handler: workspaceDraftsHandler, followJudge: responder,
+      });
+    const assisted = judged({ mode: "assisted", initial: "assisted", available: ["manual", "assisted"] });
+    const approve = { sessionId: "session", assistedApproval: { recommendation: "approve" } } as never;
+    const decline = { sessionId: "session", assistedApproval: { recommendation: "require_approval" } } as never;
+    expect(await assisted.handle(tool("write_workspace_file", { path: "notes.md" }), approve)).toEqual({ kind: "approve-once" });
+    expect(await assisted.handle(tool("web_fetch", { url: "https://example.com" }), decline)).toEqual({ kind: "no-result" });
+    // The SDK's own fallback (`no-result`) applies, and the invocation reaches the responder unchanged.
+    expect(calls).toEqual([{ fallback: undefined, invocation: approve }, { fallback: undefined, invocation: decline }]);
+    // A person may switch a manual harness to assisted within policy, so every runtime mode follows the verdict it carries.
+    expect(await judged(manual).handle(tool("write_workspace_file"), approve)).toEqual({ kind: "approve-once" });
+    expect(await judged(manual).handle(tool("write_workspace_file"), { sessionId: "session" })).toEqual({ kind: "no-result" });
+    // Harness rules decide first, a custom handler never defers to the judge, and without a responder a person decides.
+    calls.length = 0;
+    expect(await judged(manual, { default: "deny", kinds: { write: "deny" } }).handle(tool("write_workspace_file"), approve)).toMatchObject({ kind: "reject" });
+    const custom: SharedApprovalPlan = { mode: "custom", initial: "manual", available: ["manual"], handler: "workspace-drafts" };
+    expect(await judged(custom).handle(tool("write_workspace_file", { path: "final/plan.md" }), approve)).toMatchObject({ kind: "reject" });
+    expect(calls).toEqual([]);
+    expect(await judged(manual, ask, null).handle(tool("write_workspace_file"), approve)).toEqual({ kind: "no-result" });
   });
 
   it("lets a registered custom handler approve, deny, or ask a person", async () => {

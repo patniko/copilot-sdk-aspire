@@ -111,7 +111,7 @@ describe.skipIf(!enabled)("shared approval modes on the in-process runtime", () 
     expect(model.errors).toEqual([]);
   }, 90_000);
 
-  it("asks the runtime's judge through the session's provider, and fails closed when it declines or errors", async () => {
+  it("asks the runtime's judge through the session's provider, runs what it approves, and fails closed when it declines or errors", async () => {
     judge = "decline";
     const declined = await unattendedWrite("assisted-notes", "declined.md");
     expect(declined.judged).toBeGreaterThan(0);
@@ -122,9 +122,9 @@ describe.skipIf(!enabled)("shared approval modes on the in-process runtime", () 
     judge = "approve";
     const approved = await unattendedWrite("assisted-notes", "approved.md");
     expect(approved.judged).toBeGreaterThan(0);
-    // The judge's verdict goes to the AHP host participant, not the application's handler, so with nobody attached even
-    // an approved request stays pending until the turn deadline: an unattended assisted request does not run.
-    expect(approved.written).toBe(false);
+    // With nobody attached, the AHP host's participant never sees the request; the worker follows the judge's verdict
+    // through the SDK's responder, so an approved request runs while a declined one waits for a person.
+    expect(approved.written).toBe(true);
     const usage = await stack.store.get(principal, approved.session);
     expect(usage?.view.budget.usedTokens).toBeGreaterThan(0);
     expect(model.errors).toEqual([]);

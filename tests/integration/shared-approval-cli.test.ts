@@ -14,9 +14,6 @@ import { sharedStack, type SharedStack } from "./fixtures/shared-stack.js";
 import { inspect, syntheticModel, type SyntheticModel } from "./fixtures/synthetic-model.js";
 
 const enabled = process.env.HYBRID_CLI_TESTS === "1";
-// Set when the runtime pair implements the host approval ceiling (`startAhpHost({ approvalModes })`), which
-// publishes the session's own mode and the allowed modes to attached clients instead of manual only.
-const ceiling = process.env.HYBRID_APPROVAL_CEILING === "1";
 
 /** The first of `markers` to appear on the CLI's screen. */
 async function firstOf(cli: QualificationCli, markers: string[], timeout: number): Promise<string> {
@@ -99,13 +96,11 @@ it.skipIf(!enabled)("routes requests the judge declines to the attached CLI and 
     expect(await written(session.id, "refused.md")).toBe(false);
     console.info(`Permission prompt after a judge decline:\n${prompt}`);
 
-    if (ceiling) {
-      // The judge approves: the write runs without prompting the person.
-      judge = "allow";
-      await cli.send("WRITE approved.md");
-      expect(await firstOf(cli, ["WRITE_FINISHED approved.md", "Approve once"], 90_000)).toBe("WRITE_FINISHED approved.md");
-      expect(await written(session.id, "approved.md")).toBe(true);
-    }
+    // The judge approves: the write runs without prompting the person.
+    judge = "allow";
+    await cli.send("WRITE approved.md");
+    expect(await firstOf(cli, ["WRITE_FINISHED approved.md", "Approve once"], 90_000)).toBe("WRITE_FINISHED approved.md");
+    expect(await written(session.id, "approved.md")).toBe(true);
 
     // Switching approval modes from the CLI offers only the modes the harness's policy allows.
     await cli.send("/permissions");
@@ -115,7 +110,7 @@ it.skipIf(!enabled)("routes requests the judge declines to the attached CLI and 
     const picker = cli.screen;
     await cli.press("\x1b");
     console.info(`Approval picker for cli-assisted:\n${picker}`);
-    if (ceiling) expect(picker).toContain("Assisted Permissions");
+    expect(picker).toContain("Assisted Permissions");
     expect(picker).not.toContain("Allow All");
     await cli.send("/permissions allow-all");
     await cli.press("\r");

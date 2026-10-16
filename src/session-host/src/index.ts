@@ -10,7 +10,7 @@ export { buildSharedHost } from "./server.js";
 export { SharedAdmission, SHARED_WORKER_DEPLOYMENT, admittedModel, approvalPlan, type SharedActivationPlan, type SharedAdmissionOptions, type SharedApprovalPlan } from "./admission.js";
 export { SharedConfiguration, type SharedRegistry } from "./configuration.js";
 export { sharedSessionSettings, BUILTIN_AGENTS, type SharedSessionSettings } from "./harness-session.js";
-export { SharedPermissionPolicy, ruleFor, type SharedPermissionContext, type ToolRule, type ToolPermissionKind, type PreToolDecision } from "./permissions.js";
+export { SharedPermissionPolicy, ruleFor, type JudgeResponder, type SharedPermissionContext, type ToolRule, type ToolPermissionKind, type PreToolDecision } from "./permissions.js";
 export { PERMISSION_HANDLERS, workspaceDraftsHandler, type CustomPermissionDecision, type CustomPermissionHandler, type CustomPermissionRequest } from "./permission-handlers.js";
 export { sharedToolset, type SharedToolkitOptions, type SharedToolset } from "./toolkit.js";
 export { workspaceTools, taskListTools, delegationTools, type DelegationDependencies, type SharedTool } from "./tools.js";

@@ -193,10 +193,12 @@ on a person's behalf ([`permissions.ts`](../src/session-host/src/permissions.ts)
 - `manual`: the runtime prompts the attached client through AHP. With nobody attached, the request stays pending
   and does not run; the turn ends at its deadline.
 - `assisted`: the runtime's LLM judge reviews the request first, through the session's own provider, so the judge's
-  calls pass through the inference gateway and count against the session's budget. A decline or a judge error goes
-  to the attached person and never runs on its own. The judge is a probabilistic review, not a security boundary;
-  only a person's messages grant authority. With the qualified runtime (`0a32c39595f`), the attached client is
-  prompted even after the judge approves, and an unattended request does not run.
+  calls pass through the inference gateway and count against the session's budget. A request the judge approves
+  runs without a prompt: the AHP host acts on the verdict while a client is attached, and otherwise the worker follows
+  it through the SDK's `followAssistedApproval`. A decline or a judge error goes to the attached person; with nobody
+  attached it does not run. The worker never rejects on the judge's behalf, which would pre-empt the person. The
+  judge is a probabilistic review, not a security boundary; only a person's messages grant authority. This needs
+  runtime `d89cfe45b29` (host `006b030`) or later.
 - `allow-all`: the runtime approves requests without asking, except those the harness's rules deny. It is offered
   only when the policy allows it.
 - `custom`: an integrator handler that the worker registers by name decides

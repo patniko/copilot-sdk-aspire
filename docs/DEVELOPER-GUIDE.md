@@ -346,9 +346,9 @@ covers frame boundaries, ticket refusal, forwarded-only placement ingress, and `
 connections across an `agent-api` restart and a test-only placement change.
 
 The same flag enables `shared-approvals.test.ts`, which drives the in-process runtime against synthetic inference
-with no client attached: `allow-all` runs, `manual` never runs, the `assisted` judge is called through the gateway
-and a decline or judge error does not run, custom handlers approve, deny, and deny when they fail or time out, and
-managed settings refuse a mode the policy does not allow.
+with no client attached: `allow-all` runs, `manual` never runs, the `assisted` judge is called through the gateway,
+what it approves runs and a decline or judge error does not, custom handlers approve, deny, and deny when they fail
+or time out, and managed settings refuse a mode the policy does not allow.
 
 The same flag enables `shared-egress-runtime.test.ts` for the
 [shared-placement egress library](SECURITY.md#shared-placement-egress-and-remote-mcp). A
@@ -369,10 +369,10 @@ pnpm exec vitest run --project unit tests\unit\egress-filter.test.ts tests\unit\
 broker, with filtered web access and a fake remote MCP server, and checks principal and ticket isolation,
 `transport_unsupported` for the relay, refused internal addresses, credential redaction, and zero container
 allocations. Both principals bind to the one authorized GitHub account. `shared-approval-cli.test.ts` routes
-requests the `assisted` judge declines to the CLI's approval prompt, approves one and denies another, and checks
-that the CLI cannot switch to a mode the policy disallows. Set `HYBRID_APPROVAL_CEILING=1` only with a runtime
-pair that implements the host approval ceiling (`startAhpHost({ approvalModes })`): it adds that a judge approval
-runs without a prompt and that the CLI's picker offers the policy's modes.
+requests the `assisted` judge declines to the CLI's approval prompt, approves one and denies another, runs a request
+the judge approves without a prompt, and checks that the CLI's picker offers exactly the policy's modes and that a
+switch to another mode is refused. The approval gates need runtime `d89cfe45b29` (host `006b030`) or later, whose
+SDK passes the judge's verdict to the handler and whose host enforces `startAhpHost({ approvalModes })`.
 
 For the complete local CLI/container gate, build `copilot-hybrid-executor:local` (or set
 `HYBRID_EXECUTOR_IMAGE` to another tag), set the matching native/CLI paths and explicit account opt-in
