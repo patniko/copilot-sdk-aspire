@@ -16,7 +16,9 @@ import {
 } from './.aspire/modules/aspire.mjs';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
+import { OwnerHostList, ownerHostEnvSuffix, ownerHostResource, type OwnerHostDescriptor, type OwnerHostSize } from './contracts/src/host.js';
+import { effectiveHostingPolicy, ExecutionPolicy, HarnessPolicyOverride, policyFor } from './contracts/src/profile.js';
 import { SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits } from './contracts/src/shared.js';
 import { CUSTOMER_WORKSPACE_DIR, ensureCustomerWorkspace } from './configurator/server/workspace.js';
 
@@ -25,6 +27,8 @@ const isPublish = await builder.executionContext().isPublishMode();
 const repoRoot = await builder.appHostDirectory();
 const customerConfigRoot = join(repoRoot, CUSTOMER_WORKSPACE_DIR);
 await ensureCustomerWorkspace(repoRoot, customerConfigRoot);
+// Names Docker resources that must not collide with another checkout on the same engine.
+const checkoutId = createHash('sha256').update(repoRoot).digest('hex').slice(0, 12);
 
 // ---------------------------------------------------------------------------
 // Parameters
@@ -64,11 +68,52 @@ if (demoHostRuntimeDirectory && (!/^[A-Za-z0-9._/-]+$/.test(demoHostRuntimeDirec
   demoHostRuntimeDirectory.split('/').some((part) => part === '' || part === '..'))) {
   throw new Error('demo-host-runtime-dir must be a relative directory inside the build context.');
 }
-if (demoHostTransport !== 'disabled' && (
-  !/^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(demoHostOwner) ||
-  !/^[a-z][a-z0-9-]{1,62}$/.test(demoHostHarness)
-)) {
+// Per-harness owner hosts: one always-on, single-owner, managed host per listed isolated harness. They share the
+// demo host's GitHub owner, owner credential, and local runtime bundle; each has its own key, volume, and relay environment.
+const ownerHosts = OwnerHostList.parse(JSON.parse(await configured('Parameters:owner-hosts', '[]')));
+const validOwner = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?$/.test(demoHostOwner);
+if (demoHostTransport !== 'disabled' && (!validOwner || !/^[a-z][a-z0-9-]{1,62}$/.test(demoHostHarness))) {
   throw new Error('Configure a valid demo-host-owner and demo-host-harness before enabling the host.');
+}
+if (ownerHosts.length) {
+  if (isPublish) throw new Error('Per-harness owner hosts are local-only until the Azure stage. Publish with the single demo-host-* host instead.');
+  if (!validOwner) throw new Error('Configure demo-host-owner, the GitHub owner of every owner host, before enabling owner hosts.');
+  if (!demoHostRuntimeDirectory) throw new Error('Owner hosts run managed sessions on the local runtime: set demo-host-runtime-dir to a verified runtime bundle.');
+  if (demoHostTransport !== 'disabled' && ownerHosts.some((host) => host.harness === demoHostHarness)) {
+    throw new Error(`Harness '${demoHostHarness}' is configured both as the demo host and as an owner host.`);
+  }
+}
+/**
+ * The managed-runtime image stage installs a verified local bundle (deploy/build-hybrid-runtime.ps1 output) and builds
+ * for the bundle's own Linux architecture, so a native ARM64 bundle is never built through amd64 emulation.
+ * Publishing still requires an amd64 bundle.
+ */
+async function runtimeBundlePlatform(directory: string): Promise<ContainerTargetPlatform> {
+  let platform: unknown;
+  try {
+    platform = (JSON.parse(await readFile(join(repoRoot, directory, 'provenance.json'), 'utf8')) as { platform?: unknown }).platform;
+  } catch {
+    throw new Error(`demo-host-runtime-dir '${directory}' must contain a verified runtime bundle with provenance.json (deploy/build-hybrid-runtime.ps1).`);
+  }
+  if (platform === 'linux/amd64') return ContainerTargetPlatform.LinuxAmd64;
+  if (platform === 'linux/arm64' && !isPublish) return ContainerTargetPlatform.LinuxArm64;
+  throw new Error(`The runtime bundle platform '${String(platform)}' cannot be ${isPublish ? 'published; Azure requires linux/amd64' : 'hosted'}.`);
+}
+/** An owner host's always-on size: a name from its harness's effective `hosting.sizes`, or the policy's `defaultSize`. */
+async function ownerHostSize(harness: string, requested: string | undefined): Promise<OwnerHostSize> {
+  const policyRoot = join(customerConfigRoot, 'policy');
+  const base = ExecutionPolicy.parse(JSON.parse(await readFile(join(policyRoot, 'execution-policy.json'), 'utf8')));
+  let override: HarnessPolicyOverride | undefined;
+  try {
+    override = HarnessPolicyOverride.parse(JSON.parse(await readFile(join(policyRoot, 'harnesses', `${harness}.json`), 'utf8')));
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+  }
+  const hosting = effectiveHostingPolicy(policyFor({ base, overrides: new Map(override ? [[harness, override]] : []) }, harness));
+  const name = requested ?? hosting.defaultSize;
+  const size = hosting.sizes[name];
+  if (!size) throw new Error(`Owner host '${harness}' requests size '${name}', which its effective hosting policy does not offer.`);
+  return { name, ...size };
 }
 if (jobEventDetail !== 'sanitized' && jobEventDetail !== 'full') {
   throw new Error("Parameters:job-event-detail must be 'sanitized' or 'full'.");
@@ -195,6 +240,13 @@ if (hybridEnabled === 'true') {
     }));
 }
 
+let ownerCredential: Awaited<ReturnType<typeof builder.addParameter>> | undefined;
+/** The owner's GitHub credential for Mission Control registration, shared by every relay-enabled host. */
+async function githubOwnerCredential() {
+  ownerCredential ??= await builder.addParameter('demo-host-github-token', { secret: true });
+  return ownerCredential;
+}
+
 if (demoHostTransport !== 'disabled') {
   const hostKey = await builder.addParameterWithGeneratedValue('demo-host-key', generated, { secret: true, persist: true });
   const direct = demoHostTransport === 'direct' || demoHostTransport === 'both';
@@ -208,8 +260,14 @@ if (demoHostTransport !== 'disabled') {
     .withEnvironment('DEMO_HOST_HARNESS', demoHostHarness);
   await api
     .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
-    .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport);
+    .withEnvironment('DEMO_HOST_TRANSPORT', demoHostTransport)
+    .withEnvironment('DEMO_HOST_HARNESS', demoHostHarness);
   const hostStage = direct && demoHostRuntimeDirectory ? 'agent-host-runtime' : 'agent-host';
+  // Local runs build natively like the executor: an emulated amd64 build on ARM64 hosts exceeds Aspire's build
+  // timeout. Publishing requires amd64; the managed-runtime stage follows its bundle's architecture.
+  const hostPlatform = hostStage === 'agent-host-runtime'
+    ? await runtimeBundlePlatform(demoHostRuntimeDirectory)
+    : isPublish ? ContainerTargetPlatform.LinuxAmd64 : undefined;
   const host = await builder
     .addDockerfile('agent-host', '.', {
       dockerfilePath: 'deploy/Dockerfile',
@@ -220,11 +278,7 @@ if (demoHostTransport !== 'disabled') {
     .withBuildArg('NPM_REGISTRY', npmRegistry)
     .withBuildArg('PIP_INDEX_URL', pipIndexUrl)
     .withContainerBuildOptions(async (ctx) => {
-      // Local runs build natively like the executor: an emulated amd64 build on ARM64 hosts exceeds Aspire's build
-      // timeout. Publishing, and the managed-runtime stage's Linux x64 artifacts, require amd64.
-      if (isPublish || hostStage === 'agent-host-runtime') {
-        await ctx.targetPlatform.set(ContainerTargetPlatform.LinuxAmd64);
-      }
+      if (hostPlatform) await ctx.targetPlatform.set(hostPlatform);
     })
     .withHttpEndpoint({ targetPort: 8080, env: 'PORT' })
     .withHttpHealthCheck({ path: '/health' })
@@ -242,9 +296,55 @@ if (demoHostTransport !== 'disabled') {
       .waitFor(gateway);
   }
   if (demoHostTransport === 'github' || demoHostTransport === 'both') {
-    const githubToken = await builder.addParameter('demo-host-github-token', { secret: true });
-    await host.withEnvironment('DEMO_HOST_GITHUB_TOKEN', githubToken);
+    await host.withEnvironment('DEMO_HOST_GITHUB_TOKEN', await githubOwnerCredential());
   }
+}
+
+if (ownerHosts.length) {
+  const platform = await runtimeBundlePlatform(demoHostRuntimeDirectory);
+  const gatewayEndpoint = await gateway.getEndpoint('http');
+  const descriptors: OwnerHostDescriptor[] = [];
+  for (const settings of ownerHosts) {
+    const name = ownerHostResource(settings.harness);
+    const suffix = ownerHostEnvSuffix(settings.harness);
+    const direct = settings.transport !== 'github';
+    const size = await ownerHostSize(settings.harness, settings.size);
+    const key = await builder.addParameterWithGeneratedValue(`${name}-key`, generated, { secret: true, persist: true });
+    const host = await builder
+      .addDockerfile(name, '.', { dockerfilePath: 'deploy/Dockerfile', stage: 'agent-host-runtime' })
+      .withBuildArg('CUSTOMER_CONFIG_DIR', CUSTOMER_WORKSPACE_DIR)
+      .withBuildArg('DEMO_RUNTIME_DIR', demoHostRuntimeDirectory)
+      .withBuildArg('NPM_REGISTRY', npmRegistry)
+      .withBuildArg('PIP_INDEX_URL', pipIndexUrl)
+      .withContainerBuildOptions(async (ctx) => { await ctx.targetPlatform.set(platform); })
+      .withHttpEndpoint({ targetPort: 8080, env: 'PORT' })
+      .withHttpHealthCheck({ path: '/health' })
+      .withReference(dispatcherEndpoint)
+      .waitFor(dispatcher)
+      .withReference(gatewayEndpoint)
+      .waitFor(gateway)
+      .withEnvironment('DEMO_HOST_KEY', key)
+      .withEnvironment('DEMO_HOST_OWNER', demoHostOwner)
+      .withEnvironment('DEMO_HOST_HARNESS', settings.harness)
+      .withEnvironment('DEMO_HOST_TRANSPORT', settings.transport)
+      .withEnvironment('DEMO_HOST_EXECUTION', 'managed')
+      // The retained runtime home, catalog, and workspace; named per checkout so worktrees never share a volume.
+      .withVolume('/data', { name: `${name}-${checkoutId}` })
+      .withContainerRuntimeArgs(['--cpus', String(size.cpus), '--memory', `${size.memoryMiB}m`]);
+    if (direct) {
+      const connectionToken = await builder.addParameterWithGeneratedValue(`${name}-connection-token`, generated, { secret: true, persist: true });
+      await host.withEnvironment('DEMO_HOST_CONNECTION_TOKEN', connectionToken);
+      await api.withEnvironment(`OWNER_HOST_URL_${suffix}`, refExpr`${await host.getEndpoint('http')}`);
+    }
+    if (settings.transport !== 'direct') await host.withEnvironment('DEMO_HOST_GITHUB_TOKEN', await githubOwnerCredential());
+    await dispatcher.withEnvironment(`OWNER_HOST_KEY_${suffix}`, key);
+    descriptors.push({
+      harness: settings.harness, owner: demoHostOwner, principal: settings.principal, transport: settings.transport,
+      execution: 'managed', resource: name, size,
+    });
+  }
+  await dispatcher.withEnvironment('OWNER_HOSTS', JSON.stringify(descriptors));
+  await api.withEnvironment('OWNER_HOSTS', JSON.stringify(descriptors));
 }
 
 // On-demand mode creates no idle pool; the separate controller starts one-shot containers.

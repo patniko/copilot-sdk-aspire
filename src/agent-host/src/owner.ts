@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { CopilotClient, RuntimeConnection, type AhpHost, type CopilotSession, type SessionConfig } from "@github/copilot-sdk";
-import { HostedSession, renderSkillMarkdown, type HostControlRequest } from "@copilot-agent/contracts";
+import { canonicalSessionId, HostedSession, renderSkillMarkdown, type HostControlRequest } from "@copilot-agent/contracts";
 import { bindTools, buildSessionOptions } from "@copilot-agent/harness-hosting";
 import { SupervisorMessage, type OwnerConfiguration } from "./protocol.js";
 import { hostPermissionHandler, hostToolGuard } from "./policy.js";
 import { verifyOwnerGuard } from "./runtime-check.js";
+import { managedHostOptions } from "./transports.js";
 
 const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
 const sessions = new Map<string, CopilotSession>();
@@ -31,7 +32,7 @@ function control(request: HostControlRequest): Promise<unknown> {
 }
 
 async function start(config: OwnerConfiguration): Promise<void> {
-  if (config.execution === "managed") secrets.add(config.connectionToken);
+  if (config.execution === "managed" && config.connectionToken) secrets.add(config.connectionToken);
   if (config.githubToken) secrets.add(config.githubToken);
   const workspace = join(config.dataDirectory, "workspace");
   await mkdir(workspace, { recursive: true, mode: 0o700 });
@@ -90,11 +91,14 @@ async function start(config: OwnerConfiguration): Promise<void> {
   await client.start();
   const owner = client;
 
-  async function materialize(id: string, selected: Omit<SessionConfig, "onPermissionRequest">, resume: boolean): Promise<CopilotSession> {
+  /** `runtimeId` is the runtime's own spelling; grants, control requests, and close signals use the canonical UUID. */
+  async function materialize(runtimeId: string, selected: Omit<SessionConfig, "onPermissionRequest">, resume: boolean): Promise<CopilotSession> {
     if (selected.gitHubToken) secrets.add(selected.gitHubToken);
     if (stopping) throw new Error("The host is stopping.");
+    const id = canonicalSessionId(runtimeId);
+    if (!id) throw new Error("The host requires UUID session identities.");
     if (sessions.has(id)) return sessions.get(id)!;
-    const admitted = HostedSession.parse(await control({ operation: "session", sessionId: id, resume }));
+    const admitted = HostedSession.parse(await control({ operation: "session", sessionId: id, resume, ahpSessionId: runtimeId }));
     if (selected.model && selected.model !== admitted.model) throw new Error("The requested model is not admitted by the host.");
     const cwd = await realpath(selected.workingDirectory ?? workspacePath);
     const fromRoot = relative(workspacePath, cwd);
@@ -150,8 +154,8 @@ async function start(config: OwnerConfiguration): Promise<void> {
       },
     };
     const session = resume
-      ? await owner.resumeSession(id, { ...options, continuePendingWork: false })
-      : await owner.createSession({ ...options, sessionId: id });
+      ? await owner.resumeSession(runtimeId, { ...options, continuePendingWork: false })
+      : await owner.createSession({ ...options, sessionId: runtimeId });
     sessions.set(id, session);
     session.on((event) => {
       if (event.type === "session.idle" && activeSession === id && !event.agentId) {
@@ -162,11 +166,7 @@ async function start(config: OwnerConfiguration): Promise<void> {
     return session;
   }
 
-  host = await owner.startAhpHost({
-    localServer: { hostname: "0.0.0.0", port: config.port, token: config.connectionToken },
-    ...(config.transport === "both" ? {
-      githubEnvironment: { name: `Aspire demo (${config.owner})`, computeId: config.computeId },
-    } : {}),
+  host = await owner.startAhpHost(managedHostOptions(config, {
     createSession: async ({ config: selected, signal }) => {
       signal.throwIfAborted();
       if (!selected.sessionId) throw new Error("AHP did not supply a session identity.");
@@ -188,7 +188,7 @@ async function start(config: OwnerConfiguration): Promise<void> {
       }
     },
     onExit: () => { if (!stopping) fail("The AHP hosting task stopped."); },
-  });
+  }));
   process.send!({ kind: "ready", environmentId: host.environmentId });
 }
 

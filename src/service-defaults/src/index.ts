@@ -6,6 +6,7 @@ export * from "./postgres.js";
 export * from "./registry.js";
 export * from "./capability.js";
 export * from "./host-policy.js";
+export * from "./owner-hosts.js";
 export * from "./server-key.js";
 export * from "./ahp-proxy.js";
 export * from "./admission.js";

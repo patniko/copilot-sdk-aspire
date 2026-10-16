@@ -9,6 +9,8 @@ import {
   loadPolicySet,
   loadProfiles,
   optionalEnv,
+  ownerHostUrl,
+  readOwnerHosts,
   readPostgresConnection,
   requireEnv,
   serviceUrl,
@@ -25,7 +27,10 @@ await migrate(pool);
 const store = new JobStore(pool);
 const execution = optionalEnv("EXECUTOR_MODE", "pool");
 if (execution !== "pool" && execution !== "on-demand") throw new Error("EXECUTOR_MODE must be pool or on-demand.");
-const hostOwner = optionalEnv("DEMO_HOST_OWNER", "").toLowerCase();
+const ownerHosts = readOwnerHosts().map((host) => ({ ...host, url: ownerHostUrl(host) }));
+const hostStore = new HostStore(pool);
+const legacyHost = ownerHosts.find((host) => host.legacy);
+if (legacyHost) await hostStore.adoptLegacyHost(legacyHost.harness);
 const listener = new JobEventListener(pool);
 await listener.start();
 
@@ -40,12 +45,7 @@ const app = buildApi({
   execution: execution === "on-demand" ? "dedicated" : "pool",
   delegations: new DelegationStore(pool, new SharedStore(pool), store),
   ...(process.env.SHARED_WORKER_KEY ? { shared: { url: serviceUrl("session-host"), key: requireEnv("SHARED_WORKER_KEY") } } : {}),
-  ...(hostOwner ? {
-    host: {
-      store: new HostStore(pool), owner: hostOwner, principal: "dev",
-      transport: requireEnv("DEMO_HOST_TRANSPORT"),
-    },
-  } : {}),
+  ...(ownerHosts.length ? { hosts: { store: hostStore, hosts: ownerHosts, harnesses, policies, profiles } } : {}),
 });
 
 await listen(app, listenPort(8080));
