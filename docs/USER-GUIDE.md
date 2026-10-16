@@ -89,6 +89,14 @@ local connection broker, so reloading harnesses (which restarts the API) does no
 can delegate approved work and receive completion and retained artifacts. This is distinct from
 `--destination container` (the default existing host route) and from retrying a batch job.
 
+A `promotable` harness starts the same way, as a shared conversation, when session containers are enabled. When its
+agent needs a shell or real files, it calls `promote_session`, and the conversation moves, one way, into its own
+session container with its history and workspace files. If the harness's promotion approval is `ask`, you approve
+the move first in the `manual` approval mode. The launcher stays attached: it prints that the session moved and
+restarts the CLI on the container in the same terminal, so you do not rerun `pnpm host:connect`. The restarted CLI
+may ask for folder trust again. The session UUID does not change, so `--resume` keeps working. See
+[promotion](API.md#promotion).
+
 Approvals and questions appear in the CLI. The harness's approval mode decides which requests need you, and the
 CLI can switch only among the modes the operator's policy allows. While nobody is attached, a request that needs a
 person does not run. See [shared conversation approvals](SECURITY.md#shared-conversation-approvals).
