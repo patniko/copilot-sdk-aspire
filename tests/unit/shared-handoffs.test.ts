@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionRequest, Tool } from "@github/copilot-sdk";
 import type { HandoffRecord } from "@copilot-agent/job-store";
-import { HandoffRefusal, sharedWorkerDeployment, type SharedApprovalPlan } from "../../src/session-host/src/admission.js";
+import { HandoffRefusal, runningWorkersRefusal, sharedWorkerDeployment, type SharedApprovalPlan } from "../../src/session-host/src/admission.js";
 import { handoffTools, type HandoffOffer } from "../../src/session-host/src/handoff-tools.js";
 import { workspaceDraftsHandler } from "../../src/session-host/src/permission-handlers.js";
 import { SharedPermissionPolicy, type ToolRule } from "../../src/session-host/src/permissions.js";
@@ -168,6 +168,15 @@ describe("handoff admission on the shared worker", () => {
     expect(await refusal(admission.handoff({ principal: "alice", session: { ...session, harness: { ...session.harness!, definition: {
       ...session.harness!.definition!, hosting: { mode: "shared", handoffs: [{ harness: "crafted-target", description: "Never published." }] },
     } } }, from: "shared", target: "crafted-target" }))).toMatchObject({ code: "handoff_not_allowed", message: expect.stringContaining("not a published harness") });
+  });
+
+  it("lets an orchestrator coordinator hand off only once its workers have stopped", () => {
+    expect(runningWorkersRefusal([])).toBeUndefined();
+    expect(runningWorkersRefusal([{ state: "stopped" }, { state: "stopped" }])).toBeUndefined();
+    const refusal = runningWorkersRefusal([{ state: "stopped" }, { state: "idle" }, { state: "needs_input" }]);
+    expect(refusal).toBeInstanceOf(HandoffRefusal);
+    expect(refusal).toMatchObject({ code: "handoff_busy", message: "2 of this conversation's workers have not stopped; archive them before handing off." });
+    expect(runningWorkersRefusal([{ state: "working" }])?.message).toContain("1 of this conversation's workers has not stopped");
   });
 
   it("refuses a harness tool that takes a transfer tool's name", async () => {

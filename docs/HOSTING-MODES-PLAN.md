@@ -1744,8 +1744,9 @@ Recorded 2026-10-16 on branch `patniko-stage6-handoffs`: commits `723b301` (cont
 session separation), `ac22931` (same-placement handoffs on the shared worker and the API), `f0dfc87`, `be10116` and
 `3e7f1b8` (runtime, CLI, unit and ledger tests), `8cc8e00` (configurator ceilings and the CLI decline), `89955bd`
 (preparation for container moves, and docs), `a71e233` (handoffs into the target's own container), `0043905` (exit
-gate), and the commit that records this evidence. It merges the integration branch at `27ff06c` (`dd258fc`), `3d327f6`
-(`f685f2d`) and `93bc644` (`39647b8`), which brought promotion's generalized moves (`319176f`).
+gate), and the commits that record this evidence. It merges the integration branch at `27ff06c` (`dd258fc`), `3d327f6`
+(`f685f2d`), `93bc644` (`39647b8`), which brought promotion's generalized moves (`319176f`), and `0fc1b46`
+(`7747258`, orchestrator workers).
 
 Delivered, local only:
 
@@ -1771,7 +1772,8 @@ Delivered, local only:
   container target; a failed check refuses the call before anyone is asked. With `ask` a `preToolUse` decision forces
   a permission prompt in every approval mode, including `allow-all`; neither the judge nor a custom handler answers
   it, and the transfer is accepted only when the runtime reports `decisionSource: "human_response"`. Repeated calls
-  return the recorded outcome. The shared worker advertises the `handoffs` feature.
+  return the recorded outcome. An orchestrator coordinator hands off only after its workers have stopped
+  (`handoff_busy`), since the target could not manage them. The shared worker advertises the `handoffs` feature.
 - **Same-placement handoffs**: when the source's turn ends, the worker re-checks the pinned target, commits the
   cutover (the broker closes attached clients with `4301`), closes the source's activation, and opens the target's.
   `full` resumes the same runtime session under the target's instructions, tools, agents and approval mode (T6),

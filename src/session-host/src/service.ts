@@ -10,7 +10,9 @@ import {
   type HandoffRecord, type HandoffRequest, type PromotionStore, type SessionFileLease, type SharedSessionRecord, type SharedTurn,
 } from "@copilot-agent/job-store";
 import { handoffToolName, HttpError, readServerKey, type AhpProxyTarget } from "@copilot-agent/service-defaults";
-import { HandoffRefusal, type SharedActivationPlan, type SharedAdmission, type SharedApprovalPlan, type SharedHandoffPlan } from "./admission.js";
+import {
+  HandoffRefusal, runningWorkersRefusal, type SharedActivationPlan, type SharedAdmission, type SharedApprovalPlan, type SharedHandoffPlan,
+} from "./admission.js";
 import { HandoffMoves } from "./handoff-container.js";
 import type { HandoffOffer } from "./handoff-tools.js";
 import { sharedSessionSettings } from "./harness-session.js";
@@ -514,6 +516,9 @@ export class SharedSessionService {
    */
   async #checkHandoff(row: SharedSessionRecord, target: string): Promise<SharedHandoffPlan> {
     const checked = await this.options.admission.handoff({ principal: row.principal, session: row.definition, from: "shared", target });
+    const workers = this.options.toolkit?.workers?.workers;
+    const busy = workers ? runningWorkersRefusal(await workers.list(row.principal, row.id)) : undefined;
+    if (busy) throw busy;
     if (checked.placement === "container") {
       if (!this.#moves) {
         throw new HandoffRefusal("handoff_unavailable", "This worker cannot move conversations into session containers.", { kind: "host", name: "session-containers" });

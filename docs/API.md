@@ -277,7 +277,7 @@ person would be asked, and a transfer the person denies, fail the tool call with
 | `handoff_unavailable` | This deployment cannot host the target; `prerequisite` names what it lacks |
 | `handoff_one_way` | The target runs on the shared worker and the conversation runs in a container |
 | `handoff_declined` | The handoff needs a person's approval and no person approved it |
-| `handoff_busy` | Another handoff or a promotion of the conversation is in progress |
+| `handoff_busy` | Another handoff or a promotion of the conversation is in progress, or an orchestrator coordinator's workers have not stopped; archive them first |
 | `session_changed` | The conversation closed or moved while the handoff was in progress |
 | `handoff_failed` | The cutover, or the move into the target's container, could not complete |
 

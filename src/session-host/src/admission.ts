@@ -5,7 +5,7 @@ import {
   type HostingTransport, type PlacementKind, placementMoveAllowed, policyFor, PROMOTE_SESSION_TOOL, RUNTIME_APPROVAL_MODES, type RuntimeApprovalMode,
   SESSION_CONTAINER_FEATURES, SHARED_TOOLS, SHARED_WORKER_BINDINGS, SHARED_WORKER_FEATURES, SHARED_WORKER_TRANSPORTS, type SharedHarnessRef,
   type SharedSessionCreation, SharedSessionDefinition, SharedSessionLimits, CONVERSATION_PROFILE, startingPlacement, WORKER_CONTAINER_FEATURES,
-  WORKER_TOOLS,
+  WORKER_TOOLS, type WorkerState,
 } from "@copilot-agent/contracts";
 import { canonicalJson, handoffToolName, hostingError, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
 import { containerHandoffTarget, type ContainerHandoffTarget } from "./handoff-container.js";
@@ -74,6 +74,17 @@ export interface SharedHandoffPlan {
 /** A handoff check failed before any effect; the source stays in control. */
 export class HandoffRefusal extends Error {
   constructor(readonly code: HandoffErrorCode, message: string, readonly prerequisite?: HostingPrerequisite) { super(message); }
+}
+
+/**
+ * An orchestrator coordinator hands off only after its workers have stopped: the target could not manage them, and they
+ * may act on the person's inherited authority. Returns the refusal while any has not stopped.
+ */
+export function runningWorkersRefusal(workers: readonly { state: WorkerState }[]): HandoffRefusal | undefined {
+  const running = workers.filter((worker) => worker.state !== "stopped").length;
+  return running
+    ? new HandoffRefusal("handoff_busy", `${running} of this conversation's workers ${running === 1 ? "has" : "have"} not stopped; archive them before handing off.`)
+    : undefined;
 }
 
 export interface SharedAdmissionOptions {
