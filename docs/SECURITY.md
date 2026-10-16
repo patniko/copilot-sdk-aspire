@@ -219,8 +219,51 @@ on a person's behalf ([`permissions.ts`](../src/session-host/src/permissions.ts)
   approve, deny, or ask a person; one that throws, returns no valid decision, or does not answer within five seconds
   denies. The session stays in `manual`, so the runtime never approves without the handler.
 
-The worker starts each session in its harness's mode and applies managed settings that refuse the runtime modes the
-policy does not allow, so a client cannot switch into them. Batch harnesses keep `manual`.
+The worker starts each session in its harness's mode, and returns a resumed session to the mode its history records,
+before the AHP host publishes it. If the runtime will not hold that mode, activation fails rather than continuing in
+another one. Managed settings, always stated, refuse the runtime modes the policy does not allow, so a client cannot
+switch into them. The runtime offers assisted approval only behind its experimental `AUTO_APPROVAL` flag; the worker
+sets it in its own process, so assisted approval does not depend on the environment a host application supplies, and
+the flag alone admits no mode the policy disallows. Batch harnesses keep `manual`.
+
+### Shared conversation handoffs
+
+A [handoff](API.md#handoffs) moves control of a conversation to another published harness that the source's admitted
+snapshot lists. These controls apply ([`service.ts`](../src/session-host/src/service.ts),
+[`handoffs.ts`](../src/job-store/src/handoffs.ts)):
+
+- **Authorization before any effect.** The worker re-checks the target against current policy and this deployment
+  before it asks anyone and again at the cutover: it must be a published conversation harness whose own policy allows
+  its mode, within the source policy's `hosting.handoffs` ceilings, and hostable here. A failed check leaves the source
+  in control. Crafted harnesses cannot be targets.
+- **A person approves `ask` handoffs.** The worker forces a permission prompt for the transfer tool in every approval
+  mode, including `allow-all`, never lets the LLM judge or a custom handler answer it, and accepts the transfer only
+  when the runtime reports that a person answered through the attached client. With nobody attached, it does not run.
+  `ask` is the only approval the default policy allows; an operator can allow `allow`.
+- **History filters remove content and add no authority.** `full` continues the runtime session under the target's
+  instructions and tools, without the source's session-scoped approvals (`permissions.json`, `settings.json` and
+  `config.json`). `summary` and `none` start a new runtime session; on the shared worker the source's runtime history
+  moves aside in the session's storage, where it is retained and counts against the session's quota but the target
+  cannot reach it. The target's first turn quotes the source's payload as untrusted data in a system message, which is
+  not a person's message; only `full` keeps the person's own messages.
+- **Moves into a target's container.** A target that runs in its own session container receives the conversation
+  through the promotion snapshot: read under a fenced storage lease, served only to the allocation started for the move,
+  and committed only when that container is ready, after which no shared worker can write the session's shared storage
+  again. Without `full` the snapshot holds only the workspace, so the source's runtime history stays behind in that
+  read-only storage. The container runs the target's admitted snapshot with the model and limits of session-container
+  admission and the [session container boundaries](#session-container-boundaries).
+- **No new authority or budget.** A handoff never raises the conversation's aggregate token budget, job, or
+  continuation limits, and a conversation in a container never moves back to the shared worker.
+- **One move at a time.** The ledger records each transfer once per tool call, keeps at most one handoff open, refuses
+  one while a promotion is open, and admits no turns while one is open; the worker refuses a promotion while a handoff
+  is open. The cutover commits with a new placement generation, which voids outstanding connection tickets and closes
+  attached clients with `moved`.
+
+The person approves on the reason and summary the source agent wrote, which the CLI prompt shows; they are model
+output and can be wrong or manipulated by content the source read. Workspace files stay with the conversation across
+handoffs, so the target sees files the source wrote. Handoffs start only on the shared worker: session containers do
+not offer transfer tools yet, so harnesses that run there and list handoffs are reported unavailable rather than
+running without them.
 
 ### Shared-placement egress and remote MCP
 

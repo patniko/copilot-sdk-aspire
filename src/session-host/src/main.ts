@@ -4,7 +4,7 @@ import {
   SessionContainerSettings, SharedPrincipalBindings, SharedSessionLimits, SharedWorkerLimits, WORKER_CONTAINER_FEATURES,
 } from "@copilot-agent/contracts";
 import {
-  AllocationStore, DelegationStore, JobStore, migrate, PromotionStore, SessionFileStore, SharedStore, WorkerStore,
+  AllocationStore, DelegationStore, HandoffStore, JobStore, migrate, PromotionStore, SessionFileStore, SharedStore, WorkerStore,
 } from "@copilot-agent/job-store";
 import {
   Admission, assertOverridesMatchHarnesses, createLogger, createPostgresPool, listen, listenPort, loadHarnesses, loadProfiles,
@@ -42,7 +42,8 @@ for (const name of delegationHarnesses) {
   const harness = initial.harnesses.get(name)?.[0];
   if (!harness || harness.definition.interaction === "conversation") throw new Error("SHARED_JOB_HARNESSES must identify published batch harnesses.");
 }
-// With session containers deployed, `promotable` conversations can move into them one way.
+// With session containers deployed, `promotable` conversations can move into them one way, as can handoffs to targets
+// that run in their own container.
 const sessionSettings = optionalEnv("SESSION_CONTAINER_SETTINGS", "");
 const sessionContainers = sessionSettings ? SessionContainerSettings.parse(JSON.parse(sessionSettings)) : undefined;
 const admission = new SharedAdmission({
@@ -51,6 +52,7 @@ const admission = new SharedAdmission({
   delegationHarnesses,
   permissionHandlers: new Set(PERMISSION_HANDLERS.keys()),
   deployment: sharedWorkerDeployment({ promotion: !!sessionContainers, workerContainers: !!workerContainers }),
+  ...(sessionContainers ? { sessionContainers: { idleSeconds: sessionContainers.idleSeconds } } : {}),
 });
 const pool = await createPostgresPool(readPostgresConnection("jobsdb"));
 await migrate(pool);
@@ -108,6 +110,7 @@ const service = new SharedSessionService({
     } : {}),
   },
   permissionHandlers: PERMISSION_HANDLERS,
+  handoffs: new HandoffStore(pool, store),
   ...(workers ? { onHumanMessage: async (context) => { await workers.refreshAuthority(context.lease, await context.humanMessages()); } } : {}),
   ...(sessionContainers ? { promotion: { store: new PromotionStore(pool, store, allocations), settings: sessionContainers } } : {}),
 });

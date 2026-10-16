@@ -225,6 +225,10 @@ Authorization: Bearer {{apiKey}}
 GET {{baseUrl}}/v1/sessions/{{$dotenv SHARED_SESSION_ID}}/workers/{{workerId}}/definition
 Authorization: Bearer {{apiKey}}
 
+### Handoffs of a shared conversation, newest first (set SHARED_SESSION_ID in http/.env)
+GET {{baseUrl}}/v1/sessions/{{$dotenv SHARED_SESSION_ID}}/handoffs
+Authorization: Bearer {{apiKey}}
+
 ### Pending worker approvals and questions across your conversations (oldest first)
 # @name workerPending
 GET {{baseUrl}}/v1/worker-input-requests?state=pending

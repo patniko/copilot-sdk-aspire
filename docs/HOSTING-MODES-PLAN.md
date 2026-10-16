@@ -1390,6 +1390,51 @@ Limitations:
   not flag `shared:*` bindings in batch harnesses (job submission rejects them).
 - Local only: no Azure resources, TLS ingress, or multi-replica worker.
 
+#### Follow-up: assisted approvals without host-injected flags
+
+Recorded 2026-10-16 on the same branch, merged with the integration branch at `0fc1b46` (orchestrator workers):
+commit `812d378` and the commit that adds this entry. The workers slice found that the runtime offers assisted
+approval only behind its experimental `AUTO_APPROVAL` feature flag, which the in-process engine reads from the process
+environment when its client starts. The gates above passed only because the GitHub Copilot app injects
+`AUTO_APPROVAL=true` and other `COPILOT_*` variables into the processes it starts, and the test services inherited
+them. Reproduced on `51a3f71` with those variables removed: `shared-approvals.test.ts` failed both assisted cases
+(2 failed, 2 passed) with "The runtime refused the session's approval mode." A packaged worker or another machine
+would have refused assisted sessions, and a resumed session could have fallen back to manual approval silently.
+
+Fixed:
+
+- `SharedSessionRuntime` sets `AUTO_APPROVAL=true` in its own process before it creates its in-process client, for
+  the Node app, the image, and tests alike, regardless of which harnesses are served, because policy reloads without a
+  restart. The flag only makes assisted approval available; managed settings and the host's approval ceiling still
+  keep each session within its policy's modes.
+- Every activation applies the session's mode before publication, where the AHP host adopts it: the harness's mode
+  for a new session, and for a resumed one the mode its last `session.permissions_changed` event records (a person's
+  switch included), falling back to manual approval if the policy no longer allows it. The worker then confirms the
+  mode with `getMode`. If the runtime will not hold it, activation fails with `409 hosting_unavailable` (prerequisite
+  feature `approval-modes`) and the event `session.approval_mode_refused`, and nothing runs. Creation starts no
+  runtime session, so activation is the first point where the mode can be set.
+- Managed settings are always stated, including `{ permissions: {} }` when a policy allows every mode, as the
+  workers' are. This is defensive: with them omitted, the open-policy case below still passed on this runtime.
+- The test CLI no longer inherits the worker's in-process flag, as a person's CLI would not. The packaged-image check
+  asserts that the container starts without `AUTO_APPROVAL` or `COPILOT_CLI_ENABLED_FEATURE_FLAGS`, then holds an
+  assisted session's mode before and after a worker replacement.
+
+Commands and results, with every `COPILOT_*` variable except `COPILOT_CLI_PATH` and `COPILOT_AHP_FACTORY_PROFILE`, and
+`AUTO_APPROVAL`, removed from the test process (`GH_TOKEN` and `GH_HOST` kept for `gh`), runtime checkout
+`62a6b07a10a` (artifacts `d89cfe45b29`, hosting `006b030`):
+
+| Command | Result |
+| --- | --- |
+| `pnpm install`, `pnpm build`, `pnpm --filter @copilot-agent/configurator build`, `pnpm typecheck`, `pnpm typecheck:tests`, `pnpm --filter @copilot-agent/configurator typecheck`, `pnpm lint` | Passed |
+| `pnpm test:unit` | 694 passed, 1 skipped; new [`shared-approval-modes.test.ts`](../tests/unit/shared-approval-modes.test.ts) covers the flag, the recorded mode, confirmation, and the refusal |
+| `pnpm test:integration` | 138 passed, 24 opt-in skipped |
+| `HYBRID_SESSION_RUNTIME_TESTS=1`: `shared-approvals.test.ts` | 6 passed, including new cases: a policy that allows every mode starts in assisted and runs a judge-approved write unattended; a resumed session returns to assisted, to a person's switch to manual, and back |
+| `HYBRID_CLI_TESTS=1 HYBRID_USE_GH_ACCOUNT=1`: `shared-approval-cli.test.ts`, `shared-gate.test.ts` | 2 passed; the picker offered exactly "1. Manual Approval" and "2. Assisted Permissions ✓" with no flag in the CLI's environment |
+| The same flags: `shared-service`, `shared-session-runtime`, `shared-egress-runtime`, `shared-cli`, and `connection-broker` | 5 files, 8 tests passed |
+| `HYBRID_CONTAINER_TESTS=1 HYBRID_DEPLOYMENT_TESTS=1`, images rebuilt from this tree with bundle `hybrid-linux-arm64-d89cfe45b29-host-006b030` (session host `sha256:95250e9e…`, executor `sha256:3ef1ed50…`): `shared-image`, `artifact-safety`, `hybrid-deployment` | 3 passed |
+
+This also resolves the stage-4 record's note that a packaged shared worker without the flag refuses assisted sessions.
+
 ### Stage 3: session containers
 
 Recorded 2026-10-15 on branch `patniko-session-containers` (implementation commit `a7d44b7`; merged with the broker
@@ -1905,7 +1950,128 @@ Remaining:
 
 ### Stage 6: handoffs
 
-Pending.
+Recorded 2026-10-16 on branch `patniko-stage6-handoffs`: commits `723b301` (contracts, ceilings, ledger, runtime
+session separation), `ac22931` (same-placement handoffs on the shared worker and the API), `f0dfc87`, `be10116` and
+`3e7f1b8` (runtime, CLI, unit and ledger tests), `8cc8e00` (configurator ceilings and the CLI decline), `89955bd`
+(preparation for container moves, and docs), `a71e233` (handoffs into the target's own container), `0043905` (exit
+gate), and the commits that record this evidence. It merges the integration branch at `27ff06c` (`dd258fc`), `3d327f6`
+(`f685f2d`), `93bc644` (`39647b8`), which brought promotion's generalized moves (`319176f`), `0fc1b46`
+(`7747258`, orchestrator workers), and `5c68724` (final promotion records).
+
+Delivered, local only:
+
+- **Contracts** ([`handoff.ts`](../contracts/src/handoff.ts)): states `refused`, `accepted`, `committed` and `failed`;
+  error codes; the payload (`reason` up to 500 characters and, only for `summary` history, a `summary` up to 8,000,
+  as text without control characters other than tabs and line breaks); notices that quote the payload as untrusted
+  data, bounded at 20,000 characters; and `HandoffView`. Policy ceilings `hosting.handoffs.approval` (default `ask`
+  only) and `hosting.handoffs.history` (default all three) in [`profile.ts`](../contracts/src/profile.ts). Validation
+  checks each handoff's approval and its explicit or default history against them (D12: `full` within a placement,
+  `summary` across), and refuses a target on the shared worker for a harness that runs in a container, at
+  `hosting.handoffs.N.harness`.
+- **Ledger** (migration `015_session_handoffs.sql`, [`handoffs.ts`](../src/job-store/src/handoffs.ts)): one record
+  per tool call with the source and target snapshots, history, approval and approver, payload, generations, outcome,
+  and the move's promotion. At most one handoff of a session is open, none while a promotion is open, and none admits
+  turns. The same-placement cutover swaps the definition, increments the generation, voids tickets and the activation,
+  and records the segment with `handoff_id`. The target's first activation prepares storage once: `full` drops the
+  consent files, while `summary` and `none` move the source's runtime state to `segment-history/<handoff>`. A move into
+  a container is settled only from its own promotion of kind `handoff`.
+- **Transfer tools** ([`handoff-tools.ts`](../src/session-host/src/handoff-tools.ts)): `transfer_to_<harness>` per
+  predefined target, with the target's description and a history-specific schema, for the root agent only. Before any
+  effect the worker checks that the target is listed by the admitted snapshot, published as a conversation harness
+  whose own mode its policy allows, within the source's ceilings, and hostable here, with container capacity for a
+  container target; a failed check refuses the call before anyone is asked. With `ask` a `preToolUse` decision forces
+  a permission prompt in every approval mode, including `allow-all`; neither the judge nor a custom handler answers
+  it, and the transfer is accepted only when the runtime reports `decisionSource: "human_response"`. Repeated calls
+  return the recorded outcome. An orchestrator coordinator hands off only after its workers have stopped
+  (`handoff_busy`), since the target could not manage them. The shared worker advertises the `handoffs` feature.
+- **Same-placement handoffs**: when the source's turn ends, the worker re-checks the pinned target, commits the
+  cutover (the broker closes attached clients with `4301`), closes the source's activation, and opens the target's.
+  `full` resumes the same runtime session under the target's instructions, tools, agents and approval mode (T6),
+  while `summary` and `none` start a new one. The target's first turn is a system notice (turn source `handoff`). A
+  handoff never raises the aggregate token budget, jobs or continuations; per-turn limits are the target's. A failure
+  after acceptance tells the source in a system turn.
+- **Shared→container handoffs**: an `isolated` target runs in its own session container through `/v1/sessions`
+  placement, not an owner host, admitted under session-container rules. The move is a promotion of kind `handoff`
+  carrying the target's snapshot and definition, the runtime session (the current one for `full`, otherwise new), a
+  workspace-only snapshot for `summary` and `none`, and the notice, which the container sends once.
+  `SharedPromotions` drives it; the handoff settles from its outcome. Connections return `409 handoff_in_progress`
+  meanwhile, the launcher's supervisor resumes the new segment's `ahpSessionId`, and promotion is refused while a
+  handoff is open.
+- **API and configurator**: `GET /v1/sessions/{id}/handoffs`; `segment.ahpSessionId` names the current runtime
+  session in views and connections. The Policy page edits the handoff ceilings, and the harness editor disables
+  options outside them.
+- Docs: [API](API.md#handoffs), [security](SECURITY.md#shared-conversation-handoffs), the configurator, product
+  contract, architecture, and developer guides, and a REST example.
+
+Runtime: `copilot-agent-runtime-hybrid` at `62a6b07a10a` (artifacts from `d89cfe45b29`, hosting `006b030`). The
+Windows pair is `copilot-runtime.exe` `be1213d6…` with `runtime.node` `2dd77fc0…`, and the CLI is `dist-cli/index.js`
+from the same build. The Linux bundle `hybrid-linux-arm64-d89cfe45b29-host-006b030` has `copilot-runtime` `207690e4…`,
+`runtime.node` `21aebad9…` and `sdk.tgz` `1f056620…`. The final gates used the image
+`copilot-session-container:patniko-stage6-handoffs` (`sha256:d131b4f5…`, 3.9 GB), built from `e06a907`. Its packaged
+sources (contracts, service defaults, harness hosting, the session container, and tools) are unchanged at `59e1cc3`.
+The earlier runs used `sha256:b2c140db…`, built from `39647b8`.
+
+Exit evidence: "A shared triage harness hands off to an isolated coding harness with summary history; a disallowed or
+unavailable target fails without transferring control".
+
+- `HYBRID_HANDOFF_TESTS=1 HYBRID_CLI_TESTS=1 HYBRID_USE_GH_ACCOUNT=1` with
+  `HYBRID_SESSION_CONTAINER_IMAGE=copilot-session-container:patniko-stage6-handoffs`, `COPILOT_CLI_PATH` and
+  `HYBRID_CLI_PATH`: `pnpm exec vitest run --project integration tests\integration\handoff-container-cli.test.ts`
+  passed in 40 s at `0043905`, and in 41 s at `59e1cc3` without the app-injected environment (below). It ran the real
+  CLI under the launcher's supervisor, the in-process shared worker, a real container from the image, the broker, and
+  synthetic inference. After the target's policy was narrowed, the transfer was refused before anyone was asked: the
+  CLI showed "Denied by preToolUse hook: Handoff refused (handoff_not_allowed)", no handoff was recorded, and nothing
+  moved. With the policy restored, the CLI showed the approval prompt with the source's reason and summary, and the
+  person chose "Approve once". The handoff committed (`approvedBy: "person"`, `history: "summary"`, generation 2,
+  `container`, a new `ahpSessionId`), and the segment was recorded with reason `handoff`. The launcher printed "moved to
+  a new placement" and "Resuming session" once each in the same terminal. The coder's first request held the summary
+  and none of the earlier conversation; it read the moved `Plan.md` with the shell and later wrote `Build.log` there.
+- `tests\integration\handoff-container.test.ts` (4 tests, default suite; container simulated through its allocation
+  credential) covered three moves. `summary` moved only the workspace into a new runtime session under the target's
+  model, turn deadline and container limits, with the notice in the spec and `409` connections during the move.
+  `full` moved the runtime history and kept the runtime session. A failed restore, and exhausted container capacity
+  (`handoff_unavailable`), each left the source in control and admitting turns.
+- `HYBRID_SESSION_RUNTIME_TESTS=1`: `handoff-runtime.test.ts` (4 tests). The in-process runtime ran `full`, `summary`
+  and `none` handoffs on the shared worker; unavailable and disallowed targets were refused before anyone was asked;
+  with nobody attached, an `ask` handoff never ran. `HYBRID_CLI_TESTS=1` with the account opt-in:
+  `handoff-cli.test.ts`. The person denied one transfer in the real CLI ("Denial feedback"; no record, the source kept
+  control), then approved the next. The event `session.handoff_decision.approved_by_human_response` was recorded, and
+  a new CLI attached to the target's new runtime session, which saw the summary and not the person's earlier message.
+- Default suites: `handoffs.test.ts` (ledger: idempotency, one open handoff, refusals, commits, storage preparation,
+  settling only from the handoff's own move); unit `handoff-contracts`, `shared-handoffs` (tools, approval in every
+  mode, admission including container targets) and `handoff-container`; configurator ceiling tests.
+- Baseline at `59e1cc3` (after the last integration merge): `pnpm install`, `pnpm build`,
+  `pnpm --filter @copilot-agent/configurator build`, `aspire restore --apphost apphost.mts` (with
+  `ASPIRE_CLI_NUGET_SERVICE_INDEX` set to the package proxy and `NuGetAudit=false`, because NuGet audit warning NU1902
+  is treated as an error here), `pnpm typecheck`, `pnpm typecheck:tests`,
+  `pnpm --filter @copilot-agent/configurator typecheck` and `pnpm lint` passed. `pnpm test:unit`: 717 passed, 1
+  skipped. `pnpm test:integration`: 147 passed, 28 opt-in skipped.
+- Opt-in suites at `59e1cc3`, run with every `COPILOT_*` variable the GitHub Copilot app injects removed, plus
+  `AUTO_APPROVAL`; the runs set only `COPILOT_CLI_PATH` and `COPILOT_AHP_FACTORY_PROFILE`. With
+  `HYBRID_SESSION_RUNTIME_TESTS=1`, `handoff-runtime`, `shared-egress-runtime`, `shared-service` and
+  `shared-session-runtime` passed. With `HYBRID_CLI_TESTS=1` and the account opt-in, `handoff-cli`, `shared-cli` and
+  `shared-gate` passed. `handoff-container-cli` passed. With `HYBRID_PROMOTION_TESTS=1` and the image above,
+  `promotion-cli` passed, and `promotion-transplant` passed with
+  `HYBRID_SESSION_IMAGE=copilot-hybrid-session-host:stage-5-promotion`; it needs a shared-worker image with
+  promotion's restore code, and the older default `copilot-hybrid-session-host:local` fails on a missing export.
+  With `HYBRID_WORKER_TESTS=1` and `HYBRID_WORKER_IMAGE` set to the image above, `worker-runtime` passed.
+- The stage-2 suites `shared-approvals` and `shared-approval-cli` fail without those variables, because the runtime
+  refuses the assisted and allow-all approval modes. They pass with them (5 tests at `59e1cc3`), as did every suite
+  above at `0043905`. The handoff targets here use manual approval; a target with another approval mode inherits
+  that dependence. At `0043905`, one clean `shared-gate` run failed on a transient "relay authentication request
+  failed" at its second attach and passed on rerun.
+
+Remaining:
+
+- Handoffs from a conversation that runs in a container (container→container, and refusing shared targets there at
+  run time) are follow-up work. Session containers do not advertise `handoffs`, so `isolated` and `promotable`
+  harnesses that list handoffs are `hosting_unavailable`, with feature `handoffs` as the prerequisite. Container→shared
+  stays refused by validation, shared-worker admission, and the ledger (`handoff_one_way`).
+- One shared worker is assumed for cutover recovery. Container targets use the policy's default size, as mode-1
+  sessions do. The source's archived runtime state on the shared worker is retained without automated retention.
+  Completion notices for the source's delegated jobs that arrive during or after a move become `needs_review`, as
+  during promotion. Crafted harnesses cannot be targets.
+- Synthetic inference only, with one real account; Azure is out of scope.
 
 ### Runtime capabilities
 

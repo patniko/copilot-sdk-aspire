@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { HandoffHistory, HostingMode } from "./harness.js";
 
 /**
  * Where an application session's agent loop runs now. Each session has exactly one current placement, and
@@ -13,6 +14,26 @@ export const PlacementKind = z.enum(["shared", "container"]);
 export type PlacementKind = z.infer<typeof PlacementKind>;
 
 export const PlacementGeneration = z.number().int().positive().safe();
+
+/** Where a harness's sessions start: isolated harnesses in a session container, every other mode on the shared worker. */
+export function startingPlacement(mode: HostingMode): PlacementKind {
+  return mode === "isolated" ? "container" : "shared";
+}
+
+/** Every placement a session of a harness can hold: promotable sessions start shared and may move into a container. */
+export function placementsOf(mode: HostingMode): PlacementKind[] {
+  return mode === "isolated" ? ["container"] : mode === "promotable" ? ["shared", "container"] : ["shared"];
+}
+
+/** The history a handoff passes: the target's policy, or by default `full` within one placement and `summary` across placements. */
+export function handoffHistoryFor(history: HandoffHistory | undefined, from: PlacementKind, to: PlacementKind): HandoffHistory {
+  return history ?? (from === to ? "full" : "summary");
+}
+
+/** Placement is one way: no promotion or handoff moves a session from a container back to shared placement. */
+export function placementMoveAllowed(from: PlacementKind, to: PlacementKind): boolean {
+  return !(from === "container" && to === "shared");
+}
 
 /** A session's current placement, as recorded in the ledger. */
 export const SessionPlacement = z.object({

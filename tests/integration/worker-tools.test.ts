@@ -77,7 +77,7 @@ async function setup(definition: HarnessDefinition = lead, options: { files?: Sh
     definition, model: "fixture", policy: policyFor(source.policies, definition.name), delegation: [],
   } as unknown as SharedActivationPlan;
   const context = {
-    lease, signal: new AbortController().signal, stateDirectory: join(tmpdir(), `worker-tools-${record.id}`),
+    lease, signal: new AbortController().signal, stateDirectory: join(tmpdir(), `worker-tools-${record.id}`), runtimeSessionId: record.id,
     humanMessages: async () => options.humanMessages?.() ?? [],
   } as unknown as SharedActivationContext;
   const session = (await shared.get(principal, record.id))!;

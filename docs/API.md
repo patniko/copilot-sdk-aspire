@@ -164,6 +164,7 @@ deployed. The [hosting views](#hosting-views) show whether a harness can be crea
 | `POST` | `/v1/sessions/{id}/connection` | Body `{ "transport": "direct" }` (the default; `github` returns the harness's hosting error, such as `422 transport_unsupported` for shared hosting). Activate/resume, then return `{ sessionId, destination, transport: "direct", ahpSessionId, url, token, expiresAt, serverKey }` with `Cache-Control: no-store`. `destination` is `shared` or `container`; `url` is the connection broker's `/sessions/{id}` path; resume `ahpSessionId` (the current segment's runtime session) after attaching |
 | `POST` | `/v1/sessions/{id}/promote` | One-way [promotion](#promotion) of a `promotable` session into its own container; `202` when created, `200` with the existing promotion |
 | `GET` | `/v1/sessions/{id}/jobs` | Child job IDs/states and completion-notification state/error, including `needs_review` |
+| `GET` | `/v1/sessions/{id}/handoffs` | `{ handoffs }`: the session's [handoffs](#handoffs), newest first, up to 50 |
 | `POST` | `/v1/sessions/{id}/close` | Body `{ "cancelChildren": false }` by default; prevents new work and disconnects runtime residency without deleting retained data |
 
 Connect a WebSocket client to `url` with the ticket in a `tkn` query parameter. The URL belongs to the separate
@@ -184,6 +185,8 @@ harness whose mode needs a host the deployment lacks, or a feature its host lack
 its `prerequisite`; and the GitHub relay for a shared harness is `422 transport_unsupported`. The shared worker
 re-checks a session's harness against the current effective policy on every activation, so a narrowed policy
 refuses an existing session with the same codes, or with `409 policy_revoked` when its admitted model was removed.
+If the runtime will not hold the session's approval mode, activation returns `409 hosting_unavailable` with the
+prerequisite feature `approval-modes` instead of running it in another mode.
 Shared sessions created before harness-driven hosting cannot be activated (`409 invalid_state`); create a new one.
 
 Approvals and questions in a shared session go to the attached client, not to the job input-request API. The
@@ -194,9 +197,10 @@ among the modes the effective policy allows. With nobody attached, a request tha
 
 If a session's placement changes while a client is attached, the broker closes the WebSocket with code `4301`
 and reason `moved` after any frame already in flight. Request a new connection for the same session and
-reconnect to the same URL. [Promotion](#promotion) is the one operation that moves a session, from `shared` to
-`container`; its clients are closed this way when the move begins. `pnpm host:connect` reconnects for the person.
-Other closes, such as idle eviction, pass through unchanged.
+reconnect to the same URL, resuming the `ahpSessionId` the new connection returns. [Promotion](#promotion) moves a
+session from `shared` to `container`, and its clients are closed this way when the move begins; a [handoff](#handoffs)
+closes them when the target's segment starts, or when its move into the target's container begins.
+`pnpm host:connect` reconnects for the person. Other closes, such as idle eviction, pass through unchanged.
 
 Idle eviction disconnects the CLI but preserves history/files. Closure does not cancel already-admitted
 children unless `cancelChildren` is true. Child outputs remain available through job/artifact endpoints.
@@ -214,6 +218,77 @@ names, artifacts have SHA-256 digests, and downloads use attachment disposition 
 The coordinator can explicitly import an output into its session filesystem; overwriting an existing file
 requires its exact current etag. Arbitrary attempt files and runtime history are not exported.
 
+### Handoffs
+
+A conversation harness can hand its conversation to one of its predefined `hosting.handoffs` targets
+([hosting modes plan](HOSTING-MODES-PLAN.md#75-handoffs-and-crafted-harnesses)). The agent sees each target as a
+`transfer_to_<target>` tool (hyphens become underscores, and names over 64 characters are shortened with a hash)
+described by the target's `description`. Its arguments are a `reason` of up to 500 characters and, for `summary`
+history, a `summary` of up to 8,000 that the source writes for the target; nothing else is accepted.
+
+Before anything changes, the shared worker checks that the target is still one of the admitted harness's targets, is
+a published conversation harness whose own policy allows its mode, is within the source's handoff ceilings
+(`hosting.handoffs.approval` and `hosting.handoffs.history` in its effective policy), and can be hosted here. With
+`approval: "ask"`, the default, the attached person approves the transfer in the CLI; the LLM judge, custom handlers
+and `allow-all` never approve it, and with nobody attached it does not run
+([security](SECURITY.md#shared-conversation-handoffs)). A refused or declined transfer fails the tool call and leaves
+the source in control. Repeated calls of one tool call return its recorded outcome.
+
+An accepted handoff admits no new turns. When the source's turn ends, the cutover starts the target's segment under
+the same application session ID: the session's `harness` and `segment` change, its placement generation increases,
+attached clients are closed with `4301` "moved", and the target's first turn is a notice that quotes the source's
+reason, and for `summary` its summary, as untrusted data. Reconnect and resume the new `ahpSessionId`.
+
+| History | The target sees | Runtime session (`ahpSessionId`) |
+| --- | --- | --- |
+| `full` | The whole conversation, under its own instructions and tools | Continues |
+| `summary` | The source's summary and reason | New |
+| `none` | Only the reason | New |
+
+Without an explicit `history`, a target in the same placement gets `full` and one in another placement `summary`.
+History policies filter the conversation only; the session's workspace files stay with it. A handoff never raises the
+conversation's aggregate token budget or its job and continuation limits; per-turn limits are the target's. A
+conversation in a container never hands off to a harness that runs on the shared worker (`handoff_one_way`).
+
+A target that runs in its own [session container](#session-containers), an `isolated` harness, needs session containers
+in the deployment; without them it is refused with `handoff_unavailable`. The conversation then moves one way into a
+new container for the target, through the same snapshot, allocation and cutover steps as a promotion:
+
+- The workspace files move, and the runtime history only with `full`; the source's consent files never move.
+- The container runs the target's snapshot under session-container rules: the first model its policy approves, the
+  policy's default size, its turn deadline, no delegated jobs, and the containers' idle stop. The aggregate token budget
+  is never raised.
+- While the move runs, `POST /v1/sessions/{id}/connection` returns `409 handoff_in_progress`; retry it, as the launcher's
+  supervisor does. When the container is ready the cutover commits, attached clients are closed with `4301`, and the
+  next connection returns `destination: "container"` with the target's `ahpSessionId`: the current one with `full`,
+  otherwise a new one. The container sends the handoff notice as the target's first turn.
+- A move that fails before the cutover leaves the source in control: no container capacity is `handoff_unavailable`,
+  and a container that cannot start or restore the snapshot is `handoff_failed`.
+
+Handoffs start only on the shared worker. A conversation that already runs in a container, as an `isolated` harness or
+after a promotion, cannot hand off yet: session containers do not implement the `handoffs` feature, so `isolated` and
+`promotable` harnesses that list handoffs are `hosting_unavailable` (prerequisite feature `handoffs`). Handoffs from
+containers are follow-up work.
+
+`GET /v1/sessions/{id}/handoffs` lists the transfers the tool ran. Each has `id`, `state` (`refused`, `accepted`,
+`committed` or `failed`), the `source` and `target` harnesses, `history`, `approval`, `approvedBy` (`person` or
+`policy`), `reason` and `summary`, `from` and, once committed, `to` (`generation`, `placement`, `ahpSessionId`),
+timestamps, and an `error` with `code`, `message` and an optional `prerequisite`. A target that is refused before a
+person would be asked, and a transfer the person denies, fail the tool call without a record.
+
+| Code | Meaning; the source stays in control |
+| --- | --- |
+| `handoff_not_allowed` | Not one of the source's targets, not a published conversation harness, or its mode, the approval or the history is outside current policy |
+| `handoff_unavailable` | This deployment cannot host the target; `prerequisite` names what it lacks |
+| `handoff_one_way` | The target runs on the shared worker and the conversation runs in a container |
+| `handoff_declined` | The handoff needs a person's approval and no person approved it |
+| `handoff_busy` | Another handoff or a promotion of the conversation is in progress, or an orchestrator coordinator's workers have not stopped; archive them first |
+| `session_changed` | The conversation closed or moved while the handoff was in progress |
+| `handoff_failed` | The cutover, or the move into the target's container, could not complete |
+
+A handoff that fails after it was accepted also tells the source agent, in a system turn, why it did not happen. While a
+handoff is open, `POST /v1/sessions/{id}/promote` returns `409 handoff_in_progress`.
+
 ### Session containers
 
 When session containers are deployed, creating a session for a published `interaction: "conversation"` harness whose
@@ -228,9 +303,9 @@ per-turn budget, so its `turnTokenBudget` reports the aggregate cap.
 The first connection, and the first after an idle stop, starts the session's container and waits up to about
 two minutes for it to become ready. Only the `direct` transport is offered; other transports return the hosting
 error for that harness. The response has `destination: "container"`, `transport: "direct"`, the connection broker's
-`url` like shared sessions, and the current segment's `ahpSessionId` (the session ID unless a later segment replaced
-its runtime session); the container accepts only connections the broker forwards. Closing retires the container and
-releases its retained volume.
+`url` like shared sessions, and the current segment's `ahpSessionId`: the session ID, unless a [handoff](#handoffs)
+started a new runtime session. The container accepts only connections the broker forwards. Closing retires the
+container and releases its retained volume.
 
 | Status | Code | Meaning |
 | --- | --- | --- |
@@ -353,9 +428,9 @@ Implemented in [hosting-routes.ts](../src/agent-api/src/hosting-routes.ts) with 
 `executor` (`pool` or `dedicated`), `isolatedHosts` (each managed agent host and the harness it serves, with its
 transports), `sharedWorker` (the local hybrid worker), `sessionContainers` (per-session containers, when enabled), and
 `workerContainers` (orchestrator workers, when enabled). Each host lists the harness `features` it implements: the
-shared worker implements `remote-mcp`, `approval-modes`, and `custom-approval`, plus `promotion` when it has the
-session-container settings; worker containers implement `approval-modes`, `crafted-workers`, `inherited-authority`,
-and `shared-storage`; agent hosts and session containers implement none, and no host implements handoffs yet.
+shared worker implements `remote-mcp`, `approval-modes`, `custom-approval`, and `handoffs`, plus `promotion` when it
+has the session-container settings; worker containers implement `approval-modes`, `crafted-workers`,
+`inherited-authority`, and `shared-storage`; agent hosts and session containers implement none.
 GitHub-native demo hosting runs Copilot's own sessions rather than a harness, so it adds no isolated host. Owner
 principals are not returned.
 

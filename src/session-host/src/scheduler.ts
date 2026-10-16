@@ -37,14 +37,14 @@ export class SharedTurnScheduler {
     return entry.state.turn;
   }
 
-  async acquire(lease: SessionFileLease, signal: AbortSignal, source: "user" | "completion" = "user", operationKey: string = randomUUID()): Promise<SharedTurn> {
+  async acquire(lease: SessionFileLease, signal: AbortSignal, source: "user" | "completion" | "handoff" = "user", operationKey: string = randomUUID()): Promise<SharedTurn> {
     signal.throwIfAborted();
     const existing = this.#entries.get(lease.id);
     if (existing) {
       if (existing.state.lease.epoch !== lease.epoch || existing.state.lease.principal !== lease.principal) {
         throw new StoreError("invalid_state", "Another activation owns this conversation turn.");
       }
-      if (source === "completion" && existing.state.operationKey !== operationKey) {
+      if (source !== "user" && existing.state.operationKey !== operationKey) {
         throw new StoreError("quota_exceeded", "The conversation is busy; completion delivery must wait.");
       }
       if (existing.finish) {
@@ -66,7 +66,7 @@ export class SharedTurnScheduler {
     return entry.finish;
   }
 
-  private async wait(state: WaitingTurn, signal: AbortSignal, source: "user" | "completion", operationKey: string): Promise<SharedTurn> {
+  private async wait(state: WaitingTurn, signal: AbortSignal, source: "user" | "completion" | "handoff", operationKey: string): Promise<SharedTurn> {
     const combined = AbortSignal.any([signal, state.controller.signal, AbortSignal.timeout(this.limits.queueWaitSeconds * 1000)]);
     let queued: SharedTurn | undefined;
     try {

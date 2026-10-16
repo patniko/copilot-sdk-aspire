@@ -100,7 +100,12 @@ On the **Hosting** tab:
   worker harnesses (only isolated conversation harnesses qualify; others say why), concurrency within the policy
   ceilings, shared storage, inherited human authority when the policy allows it, and an optional crafting template.
 - **Handoffs**: other conversation harnesses whose own policy allows their hosting mode, each with a description for
-  the model, a history policy and an approval.
+  the model, a history policy and an approval. History and approval options the policy's handoff ceilings do not allow
+  are disabled. Without an explicit history, a target in the same placement receives full history and one in another
+  placement a summary, and the editor reports when the ceilings do not allow that default. A harness that runs in a
+  container cannot list a target that runs on the shared worker, because a conversation never moves back. Handoffs
+  start only on the shared worker today, so the running service reports isolated and promotable harnesses that list
+  handoffs as unavailable.
 - **Approval mode**: manual, assisted with an optional judge model from the harness's approved models, allow all, or a
   custom handler that the policy allows and the TypeScript conversation profile provides. The per-kind rules on the
   **Permissions** tab still run first and deny always wins; the approval mode decides only requests those rules
@@ -122,9 +127,9 @@ documented defaults rather than the base policy's values.
   name** with an optional header, and a development-only private-network allowance. The secret field accepts only a
   lowercase name and discards input that looks like a credential instead of keeping it in the browser draft; the
   hosting process [resolves the name](SECURITY.md#shared-placement-egress-and-remote-mcp).
-- **Hosting**: allowed modes and client transports, promotion approval, the container size catalog and default size,
-  worker limits including inherited human authority and whether coordinators may answer worker questions, and
-  crafting templates.
+- **Hosting**: allowed modes and client transports, promotion approval, handoff approval and history (by default only
+  asking a person, with every history policy), the container size catalog and default size, worker limits including
+  inherited human authority and whether coordinators may answer worker questions, and crafting templates.
 
 Policy validation also warns about settings that cannot take effect, such as a permission handler no profile
 provides, shared modes without the direct transport, inherited authority without the assisted mode, or a crafting

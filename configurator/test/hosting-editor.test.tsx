@@ -48,6 +48,7 @@ function hosting(mutate: (h: HostingDetail) => void = () => undefined): HostingD
       defaultSize: "small",
       workers: { maxConcurrentPerSession: 4, maxPerSession: 16, maxPerPrincipal: 8, idleSeconds: 900, maxLifetimeSeconds: 3600, allowInheritedAuthority: false, allowCoordinatorAnswers: false },
       promotion: { approval: ["ask"] },
+      handoffs: { approval: ["ask"], history: ["full", "summary", "none"] },
       craftingTemplates: [],
       mcpServers: [{ server: "docs-search", tools: ["search", "fetch_page"] }],
     },
@@ -164,6 +165,19 @@ describe("harness hosting section", () => {
     expect(html).toContain('<option value="repo-analyst" selected="">repo-analyst (isolated)</option>');
     expect(html).toContain('<option value="researcher" disabled="">researcher (its policy does not allow shared hosting)</option>');
     expect(html).toContain('<option value="job" disabled="">job (batch harness)</option>');
+  });
+
+  it("offers only the handoff approvals and history policies the operator policy allows", () => {
+    const shared = manifest((m) => void (m.hosting = { mode: "shared", handoffs: [{ harness: "repo-analyst", description: "Coding work" }] }));
+    const defaults = render(shared);
+    expect(defaults).toMatch(/disabled="" title="Not allowed by the operator policy"[^>]*>Automatic/);
+    expect(defaults).not.toMatch(/disabled="" title="Not allowed by the operator policy"[^>]*>(Full|Summary|None)</);
+    expect(defaults).toContain("A conversation in a container never moves back to the shared worker.");
+    const narrowed = render(shared, hosting((h) => void (h.ceilings.handoffs = { approval: ["ask", "allow"], history: ["summary"] })));
+    expect(narrowed).not.toMatch(/disabled="" title="Not allowed by the operator policy"[^>]*>Automatic/);
+    expect(narrowed).toMatch(/disabled="" title="Not allowed by the operator policy"[^>]*>Full/);
+    expect(narrowed).toMatch(/disabled="" title="Not allowed by the operator policy"[^>]*>None/);
+    expect(narrowed).not.toMatch(/disabled="" title="Not allowed by the operator policy"[^>]*>Summary/);
   });
 
   it("points to the local stack before it can show the running service's view", () => {

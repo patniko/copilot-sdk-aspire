@@ -27,7 +27,9 @@ import {
   toolPolicyViolations,
   transportsForMode,
   WorkerPolicy,
+  HandoffCeilings,
 } from "./profile.js";
+import { handoffHistoryFor, placementMoveAllowed, placementsOf, startingPlacement } from "./placement.js";
 
 /** The execution profile whose TypeScript SDK mapping hosts conversations; hosted conversations are TypeScript only. */
 export const CONVERSATION_PROFILE = "node-ts-agent";
@@ -196,11 +198,14 @@ export interface HostingEvaluation {
 
 /**
  * Checks worker and handoff targets: each must be a published conversation harness whose own mode its policy allows,
- * and a worker must use isolated hosting.
+ * and a worker must use isolated hosting. With the source's effective `policy`, it also checks that the history a
+ * handoff without one resolves to (summary across placements, full within one) is allowed for every placement move
+ * the source and target modes imply. Moves from a container back to shared placement are refused at handoff time.
  */
 export function hostingReferenceViolations(
   definition: Pick<HarnessDefinition, "interaction" | "hosting">,
   lookup: (harness: string) => HostingTarget | undefined,
+  policy?: Pick<ExecutionPolicy, "hosting">,
 ): PolicyViolation[] {
   if (definition.interaction !== "conversation") return [];
   const problems: PolicyViolation[] = [];
@@ -222,6 +227,8 @@ export function hostingReferenceViolations(
       }
     });
   }
+  const sourcePlacements = placementsOf(hostingModeOf(definition));
+  const allowedHistory = policy ? effectiveHostingPolicy(policy).handoffs.history : undefined;
   definition.hosting?.handoffs?.forEach((handoff, index) => {
     const path = `hosting.handoffs.${index}.harness`;
     const found = target(handoff.harness, path, "Handoff target");
@@ -229,6 +236,21 @@ export function hostingReferenceViolations(
     const mode = hostingModeOf(found.definition);
     if (!effectiveHostingPolicy(found.policy).modes.includes(mode)) {
       problems.push({ path, message: `The operator policy does not allow ${mode} hosting for handoff target '${handoff.harness}'.` });
+    }
+    const to = startingPlacement(mode);
+    const moves = sourcePlacements.filter((from) => placementMoveAllowed(from, to));
+    if (moves.length === 0) {
+      problems.push({ path, message: `Handoff target '${handoff.harness}' runs on the shared worker, and a conversation in a container never moves back to shared placement.` });
+      return;
+    }
+    if (!allowedHistory || handoff.history !== undefined) return;
+    const defaults = [...new Set(moves.map((from) => handoffHistoryFor(undefined, from, to)))];
+    const refused = defaults.filter((history) => !allowedHistory.includes(history));
+    if (refused.length) {
+      problems.push({
+        path: `hosting.handoffs.${index}.history`,
+        message: `The default history for '${handoff.harness}' (${refused.join(", ")}) is not allowed by the operator policy; choose a history it allows.`,
+      });
     }
   });
   return problems;
@@ -272,7 +294,7 @@ export function conversationPolicyProblems(
     }
   });
   for (const violation of hostingPolicyViolations(definition, policy)) problems.push({ ...violation });
-  if (lookup) for (const violation of hostingReferenceViolations(definition, lookup)) rejected(violation.path, violation.message);
+  if (lookup) for (const violation of hostingReferenceViolations(definition, lookup, policy)) rejected(violation.path, violation.message);
   return problems;
 }
 
@@ -464,6 +486,7 @@ export const HostingCeilings = z
     defaultSize: z.string(),
     workers: WorkerPolicy.required(),
     promotion: z.object({ approval: z.array(z.enum(HOSTING_APPROVALS)) }).strict(),
+    handoffs: HandoffCeilings,
     craftingTemplates: z.array(z.string()),
     mcpServers: z.array(z.object({ server: z.string(), tools: z.array(z.string()) }).strict()),
   })
@@ -481,6 +504,7 @@ export function hostingCeilingsOf(policy: ExecutionPolicy): HostingCeilings {
     defaultSize: hosting.defaultSize,
     workers: hosting.workers,
     promotion: hosting.promotion,
+    handoffs: hosting.handoffs,
     craftingTemplates: Object.keys(hosting.crafting.templates).sort(),
     mcpServers: Object.entries(policy.mcpServers ?? {})
       .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))

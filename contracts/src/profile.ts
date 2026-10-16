@@ -163,6 +163,17 @@ export const HostingPolicy = z
       .object({ approval: z.array(z.enum(HOSTING_APPROVALS)).min(1).max(HOSTING_APPROVALS.length).refine(distinct, DISTINCT).optional() })
       .strict()
       .optional(),
+    /**
+     * Handoff ceilings: the approvals a harness's handoff targets may use (omitted means ask only) and the history
+     * policies they may pass (omitted means all three). Only `full` keeps the person's messages as approval authority.
+     */
+    handoffs: z
+      .object({
+        approval: z.array(z.enum(HOSTING_APPROVALS)).min(1).max(HOSTING_APPROVALS.length).refine(distinct, DISTINCT).optional(),
+        history: z.array(z.enum(HANDOFF_HISTORY)).min(1).max(HANDOFF_HISTORY.length).refine(distinct, DISTINCT).optional(),
+      })
+      .strict()
+      .optional(),
     /** Templates for crafted workers, by name. Omitted means none, so crafting is disabled. */
     crafting: z.object({ templates: z.record(z.string().regex(SLUG), CraftingTemplate) }).strict().optional(),
   })
@@ -498,6 +509,12 @@ export function transportsForMode(mode: HostingMode): HostingTransport[] {
   return mode === "isolated" ? [...HOSTING_TRANSPORTS] : ["direct"];
 }
 
+/** Handoff approvals and history policies the effective policy allows. */
+export const HandoffCeilings = z
+  .object({ approval: z.array(z.enum(HOSTING_APPROVALS)), history: z.array(z.enum(HANDOFF_HISTORY)) })
+  .strict();
+export type HandoffCeilings = z.infer<typeof HandoffCeilings>;
+
 /** Hosting ceilings with defaults applied. */
 export const EffectiveHostingPolicy = z
   .object({
@@ -507,6 +524,7 @@ export const EffectiveHostingPolicy = z
     defaultSize: z.string(),
     workers: WorkerPolicy.required(),
     promotion: z.object({ approval: z.array(z.enum(HOSTING_APPROVALS)) }).strict(),
+    handoffs: HandoffCeilings,
     crafting: z.object({ templates: z.record(z.string(), CraftingTemplate) }).strict(),
   })
   .strict();
@@ -536,6 +554,10 @@ export function effectiveHostingPolicy(policy: Pick<ExecutionPolicy, "hosting">)
     defaultSize: hosting?.defaultSize ?? smallestSize(sizes),
     workers: withDefaults(DEFAULT_WORKER_POLICY, hosting?.workers),
     promotion: { approval: [...(hosting?.promotion?.approval ?? [DEFAULT_HOSTING_APPROVAL])] },
+    handoffs: {
+      approval: [...(hosting?.handoffs?.approval ?? [DEFAULT_HOSTING_APPROVAL])],
+      history: [...(hosting?.handoffs?.history ?? HANDOFF_HISTORY)],
+    },
     crafting: { templates: structuredClone(hosting?.crafting?.templates ?? {}) },
   };
 }
@@ -547,8 +569,9 @@ export interface HostingViolation extends PolicyViolation {
 
 /**
  * Checks a conversation harness's hosting request against its effective policy: the mode and a transport for it,
- * promotion, worker sizes, inherited human authority, and the crafting template. Worker and handoff targets are
- * checked against the registry in hosting.ts. Batch harnesses always run on the executor and return no problems.
+ * promotion, worker sizes, inherited human authority, the crafting template, and each handoff's approval and explicit
+ * history. Worker and handoff targets are checked against the registry in hosting.ts. Batch harnesses always run on
+ * the executor and return no problems.
  */
 export function hostingPolicyViolations(
   definition: Pick<HarnessDefinition, "interaction" | "hosting">,
@@ -593,6 +616,17 @@ export function hostingPolicyViolations(
       rejected("hosting.workers.crafting.template", `The operator policy has no crafting template '${template}'.`);
     }
   }
+  // Omitted history resolves per move (summary across placements, full within one); hosting.ts checks that default
+  // against the target's placement.
+  hosting?.handoffs?.forEach((handoff, index) => {
+    const approval = handoff.approval ?? DEFAULT_HOSTING_APPROVAL;
+    if (!ceilings.handoffs.approval.includes(approval)) {
+      rejected(`hosting.handoffs.${index}.approval`, `The operator policy does not allow '${approval}' approval for handoffs.`);
+    }
+    if (handoff.history !== undefined && !ceilings.handoffs.history.includes(handoff.history)) {
+      rejected(`hosting.handoffs.${index}.history`, `The operator policy does not allow '${handoff.history}' history for handoffs.`);
+    }
+  });
   return problems;
 }
 

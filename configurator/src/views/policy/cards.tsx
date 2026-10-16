@@ -23,6 +23,12 @@ const SLUG = /^[a-z][a-z0-9-]{1,62}$/;
 const MCP_TOOL = /^[A-Za-z0-9_.-]{1,128}$/;
 const BUILTIN_GROUPS = ["files", "shell", "web", "agents"] as const;
 const PROMOTION_APPROVALS = ["ask", "allow"] as const;
+const HANDOFF_HISTORIES = ["full", "summary", "none"] as const;
+const HANDOFF_HISTORY_INFO: Record<(typeof HANDOFF_HISTORIES)[number], { label: string; description: string }> = {
+  full: { label: "Full", description: "The target continues the same conversation; the person's messages keep their authority." },
+  summary: { label: "Summary", description: "The target starts fresh from a bounded summary the source writes." },
+  none: { label: "None", description: "The target starts fresh with only the source's stated reason." },
+};
 
 /** The members of `order` that are in `current`, with `value` switched on or off. */
 function toggled<T extends string>(order: readonly T[], current: readonly T[], value: T, on: boolean): T[] {
@@ -505,6 +511,37 @@ export function HostingCeilingsCard({ policy, update, locked, title, actions, fo
                   onChange={(on) => edit((h) => void (h.promotion = { approval: toggled(PROMOTION_APPROVALS, effective.promotion.approval, approval, on) }))}
                   label={approval === "ask" ? "Ask a person" : "Automatic"}
                   description={approval === "ask" ? "A person approves a model-initiated promotion first." : "Promotable harnesses may promote without asking."}
+                />
+              ))}
+            </div>
+            <div className="space-y-2">
+              <div className="flex items-center gap-1">
+                <span className="label !mb-0">Handoff approval</span>
+                <HelpButton topic="policy.hosting.handoffs" />
+              </div>
+              {PROMOTION_APPROVALS.map((approval) => (
+                <Toggle
+                  key={approval}
+                  checked={effective.handoffs.approval.includes(approval)}
+                  disabled={effective.handoffs.approval.length === 1 && effective.handoffs.approval.includes(approval)}
+                  onChange={(on) => edit((h) => void (h.handoffs = { ...h.handoffs, approval: toggled(PROMOTION_APPROVALS, effective.handoffs.approval, approval, on) }))}
+                  label={approval === "ask" ? "Ask a person" : "Automatic"}
+                  description={approval === "ask"
+                    ? "The attached person approves each handoff in their client; the safety judge and handlers cannot."
+                    : "Harnesses may mark handoff targets that run without asking."}
+                />
+              ))}
+            </div>
+            <div className="space-y-2">
+              <span className="label !mb-0">Handoff history</span>
+              {HANDOFF_HISTORIES.map((history) => (
+                <Toggle
+                  key={history}
+                  checked={effective.handoffs.history.includes(history)}
+                  disabled={effective.handoffs.history.length === 1 && effective.handoffs.history.includes(history)}
+                  onChange={(on) => edit((h) => void (h.handoffs = { ...h.handoffs, history: toggled(HANDOFF_HISTORIES, effective.handoffs.history, history, on) }))}
+                  label={HANDOFF_HISTORY_INFO[history].label}
+                  description={HANDOFF_HISTORY_INFO[history].description}
                 />
               ))}
             </div>
