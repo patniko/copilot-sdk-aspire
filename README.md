@@ -13,7 +13,8 @@ For a source-based explanation of the product, local/cloud topology, sessions, a
 comparison support, see the [detailed product overview](docs/PRODUCT-OVERVIEW.md).
 
 An opt-in GitHub-native host supports Mission Control demos with retained state and Copilot's own inference,
-permissions, and billing. Managed harness/Foundry hosting over direct WSS remains a separate, gated integration.
+permissions, and billing. Managed harness/Foundry hosting remains a separate, gated integration: it runs locally on
+a locally built runtime, and deployed managed hosting awaits a released runtime.
 See [demo setup](docs/USER-GUIDE.md#demo-agent-host) and the
 [managed runtime handoff](docs/DEPLOYMENT.md#demo-host-compatibility-gate).
 

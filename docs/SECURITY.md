@@ -220,11 +220,12 @@ on a person's behalf ([`permissions.ts`](../src/session-host/src/permissions.ts)
   denies. The session stays in `manual`, so the runtime never approves without the handler.
 
 The worker starts each session in its harness's mode, and returns a resumed session to the mode its history records,
-before the AHP host publishes it. If the runtime will not hold that mode, activation fails rather than continuing in
-another one. Managed settings, always stated, refuse the runtime modes the policy does not allow, so a client cannot
-switch into them. The runtime offers assisted approval only behind its experimental `AUTO_APPROVAL` flag; the worker
-sets it in its own process, so assisted approval does not depend on the environment a host application supplies, and
-the flag alone admits no mode the policy disallows. Batch harnesses keep `manual`.
+before the AHP host publishes it. If the runtime will not hold that mode, activation fails with `409 hosting_unavailable`
+(prerequisite feature `approval-modes`) and the worker logs the lifecycle event `session.approval_mode_refused`, rather
+than continuing in another mode. Managed settings, always stated, refuse the runtime modes the policy does not allow, so
+a client cannot switch into them. The runtime offers assisted approval only behind its experimental `AUTO_APPROVAL`
+flag; the worker sets it in its own process, so assisted approval does not depend on the environment a host
+application supplies, and the flag alone admits no mode the policy disallows. Batch harnesses keep `manual`.
 
 ### Shared conversation handoffs
 

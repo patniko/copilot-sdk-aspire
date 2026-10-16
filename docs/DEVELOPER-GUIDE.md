@@ -17,7 +17,7 @@ and model setup; this guide owns the implementation workflow.
 | [`src/job-store/src`](../src/job-store/src) | Shared transactional PostgreSQL ledger, migrations, event notifications |
 | [`src/agent-executor/src`](../src/agent-executor/src) | Executor slots, uid isolation, runner lifecycle, protocol and result validation |
 | [`src/agent-host/src`](../src/agent-host/src) | Experimental long-lived SDK owner, AHP ingress, connection provisioning, and host supervision |
-| [`src/session-host/src`](../src/session-host/src) | Experimental native-anchor workspace bridge for a future shared host; library only, not an enabled deployment service |
+| [`src/session-host/src`](../src/session-host/src) | Experimental local hybrid shared worker: one in-process runtime serving many shared harnesses, with harness admission, base tools, approval modes, promotion, coordinator worker tools, and the native-anchor workspace bridge |
 | [`src/connection-broker/src`](../src/connection-broker/src) | Experimental connection broker: one WebSocket path per session, ticket consumption through the dispatcher, forwarding to placements, "moved" closes |
 | [`src/session-container/src`](../src/session-container/src) | Experimental per-session container: root supervisor (allocation credential, broker-only ingress, heartbeats) and unprivileged owner (runtime, harness mapping, AHP host) |
 | [`src/execution-controller/src`](../src/execution-controller/src) | Local Docker controller for one-shot job and resumable session containers, volumes, and reconciliation |
@@ -272,7 +272,11 @@ those source snapshots with the runtime's unchanged generated Bazel definitions.
 ```
 
 The output directory must be absent or empty. It contains `copilot-runtime`, `runtime.node`, `sdk.tgz`,
-`provenance.json` (source revisions and input hashes), and verified `SHA256SUMS`. The Docker engine's
+`provenance.json` (source revisions and input hashes), and verified `SHA256SUMS`. Build the bundles for the
+shared-worker, session-container, and managed host images from the revisions above, and check `provenance.json`
+before using one. The recorded gates used artifacts from runtime `d89cfe45b29` with hosting `006b030`; a bundle from
+an earlier runtime, such as `0a32c39595f`, lacks the approval-mode ceilings, judge verdicts, and inherited human
+authority that shared sessions and workers need. The Docker engine's
 native Linux architecture is used; no emulated amd64 target is imposed on ARM64. The default `fast`
 configuration is a large, unoptimized qualification build; use `-Configuration release` for an optimized
 candidate and qualify it separately before comparative performance claims. `-NpmRegistry` supports the
@@ -294,8 +298,10 @@ never through the anchor's native files. It supports bounded binary/text files a
 and serializes create-only/etag checks with SDK file mutations. It does not provide cross-worker fencing
 or durable storage itself; the owning application must supply both. Access requests confirm only the
 already-bound namespace and never widen it. Optional session SQLite and directory copying are unsupported.
-The package is excluded from the existing Docker build context until a dedicated shared-host image stages
-its local SDK/native artifacts. Existing container services continue building from their published SDK pins.
+The main [`Dockerfile`](../deploy/Dockerfile) build context excludes the package; the dedicated
+[`SessionHost.Dockerfile`](../deploy/SessionHost.Dockerfile) packages it with the bundle's matching SDK and native
+artifacts. Other images keep their published SDK pins, except the managed host's `agent-host-runtime` stage, which
+installs the bundle's SDK ([`demo-host-runtime-dir`](DEPLOYMENT.md#optional-demo-agent-host)).
 
 `SessionFileStore` in `job-store` provides the prototype's PostgreSQL storage authority.
 Namespaces bind a principal to an expiring activation epoch; every filesystem read/write locks and checks

@@ -98,8 +98,17 @@ may ask for folder trust again. The session UUID does not change, so `--resume` 
 [promotion](API.md#promotion).
 
 Approvals and questions appear in the CLI. The harness's approval mode decides which requests need you, and the
-CLI can switch only among the modes the operator's policy allows. While nobody is attached, a request that needs a
-person does not run. See [shared conversation approvals](SECURITY.md#shared-conversation-approvals).
+CLI can switch only among the modes the operator's policy allows. A resumed conversation returns to the mode it last
+used, or to manual approval if the policy no longer allows that mode; if the runtime cannot hold the mode, the
+connection fails (`409 hosting_unavailable`) instead of continuing in another one. While nobody is attached, a
+request that needs a person does not run. See [shared conversation approvals](SECURITY.md#shared-conversation-approvals).
+
+A shared conversation whose harness lists handoff targets can hand control to one of them. By default the CLI asks
+you to approve the transfer and shows the agent's reason and, for summary history, its summary; the judge, custom
+handlers and `allow-all` never approve it for you, and with nobody attached it does not run. After the transfer the launcher
+reconnects you to the target in the same terminal, including when the target runs in its own session container,
+and the session UUID stays the same. Conversations that already run in a container cannot hand off yet. See
+[handoffs](API.md#handoffs).
 
 An orchestrator harness, such as the `hybrid-orchestrator` example, connects the same way when the deployment
 enables [orchestrator workers](DEPLOYMENT.md#orchestrator-workers). Its coordinator starts workers in their own
@@ -122,9 +131,9 @@ In the configurator, choose **Demo agent host** in Local run or in an Azure depl
 
 | Choice | Experience |
 | --- | --- |
-| Direct | Managed harness/Foundry over local or Azure WSS; runtime work pending |
+| Direct | Managed harness/Foundry over WSS: locally on a locally built runtime bundle; in Azure, pending the runtime work |
 | GitHub | GitHub-native Copilot through the account's Mission Control environment; no public host ingress |
-| Both | Managed harness/Foundry through both transports; runtime work pending |
+| Both | Managed harness/Foundry through both transports: locally on a locally built runtime bundle; in Azure, pending the runtime work |
 
 For GitHub-native mode, the harness and custom runtime-directory fields are unused. When the configurator was
 started with `CONFIGURATOR_GITHUB_CLIENT_ID`, choose **Sign in with GitHub**, open the displayed device-activation
@@ -155,9 +164,10 @@ Use the remote session picker to select conversations, or pass the remote sessio
 pnpm host:connect --target azure --transport github --resume <remote-session-id>
 ```
 
-After the managed path is qualified, `--transport direct` provisions a fresh, 60-second single-use ticket and
-the exact endpoint's public-key pin. A direct reconnect needs a new ticket. The token-bearing URL exists in
-the CLI's process arguments; do not record it. Neither profile makes interrupted side effects safe to repeat.
+On the managed path (locally, with the locally built runtime bundle), `--transport direct` provisions a fresh,
+60-second single-use ticket and the exact endpoint's public-key pin. A direct reconnect needs a new ticket. The
+token-bearing URL exists in the CLI's process arguments; do not record it. Neither profile makes interrupted side
+effects safe to repeat.
 
 ### Per-harness owner hosts
 

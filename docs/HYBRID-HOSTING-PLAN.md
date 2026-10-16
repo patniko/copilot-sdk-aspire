@@ -4,13 +4,17 @@
 
 Date: 2026-10-11
 
-**Status: implementation plan, recorded before implementation.** This document owns the proposed hybrid
-demonstrator and its acceptance gates. It does not add supported deployment modes, CLI options, or security
-guarantees. The current guides remain authoritative until the corresponding implementation is delivered.
+**Status: design and delivery record.** Recorded before implementation, this document owns the hybrid
+demonstrator's design, acceptance gates, and qualification evidence. Its local path has since been implemented
+([qualification record](#13-qualification-record), [local completion slice](#14-local-deployment-completion-slice-2026-10-12));
+the current guides, such as [architecture](ARCHITECTURE.md#local-hybrid-hosting) and
+[deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment), describe its behavior. Azure, two-real-account
+qualification, and measured latency or cost comparisons remain open.
 
-**Follow-on proposal (2026-10-15):** the [per-harness hosting modes plan](HOSTING-MODES-PLAN.md) builds on this
-record to make hosting selectable per harness. Its explicit, one-way promotion is a new proposal; it does not
-change this record's exclusion of transparent runtime migration.
+**Follow-on plan (2026-10-15):** the [per-harness hosting modes plan](HOSTING-MODES-PLAN.md) builds on this
+record to make hosting selectable per harness; its stages 1 to 6 are implemented locally
+([stage status](HOSTING-MODES-PLAN.md#14-delivery-sequence-and-acceptance-gates)). Its explicit, one-way promotion
+does not change this record's exclusion of transparent runtime migration.
 
 ## 1. Purpose and agreed scope
 
