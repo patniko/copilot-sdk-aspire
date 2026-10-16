@@ -58,15 +58,16 @@ or improved latency/cost without measurement.
 
 The experimental demo host offers a GitHub-native Mission Control profile using Copilot's own inference,
 permissions, and billing. It requires a normally enabled relay client and suitable persistent storage.
-Managed direct/both profiles have separate runtime prerequisites and remain deferred to the engineering
-handoff. The [deployment guide](DEPLOYMENT.md#demo-host-compatibility-gate) distinguishes these paths; the
+Managed direct/both profiles have separate runtime prerequisites: locally they run on a locally built runtime,
+including one experimental owner host per isolated harness with its own relay environment, while deployed managed
+hosting remains deferred to the engineering handoff. The [deployment guide](DEPLOYMENT.md#demo-host-compatibility-gate) distinguishes these paths; the
 table below describes the established batch product.
 
 | Capability | Current scope | Evidence / detail |
 | --- | --- | --- |
 | Separate customer workspace | Harnesses and policy live in a gitignored customer workspace; profiles, examples, and implementation remain platform source | [Configurator](CONFIGURATOR.md) |
 | Per-harness policy | Operator overrides replace selected policy ceilings and required controls for one harness; jobs record the effective policy and are matched to executors per job | [Configurator](CONFIGURATOR.md), [Security](SECURITY.md) |
-| Hosting contract and view | Conversation harnesses can declare a hosting mode, remote MCP tools, and an approval mode within policy ceilings; validation, admission, and a read-only [hosting view](API.md#hosting-views) report disallowed or unavailable combinations with field paths and prerequisites. Harness-driven conversations run in isolated mode on the demo host and in shared mode on the local hybrid worker, which serves remote MCP tools and the approval modes its policy allows ([current limits](SECURITY.md#shared-conversation-approvals)); promotable and orchestrator modes are not served yet | [Hosting modes plan](HOSTING-MODES-PLAN.md#17-qualification-record), [developer checklist](DEVELOPER-GUIDE.md#hosting-approval-mode-and-remote-mcp-fields) |
+| Hosting contract and view | Conversation harnesses can declare a hosting mode, remote MCP tools, and an approval mode within policy ceilings; validation, admission, and a read-only [hosting view](API.md#hosting-views) report disallowed or unavailable combinations with field paths and prerequisites. Harness-driven conversations run in isolated mode on agent hosts (the demo host or local per-harness owner hosts) and in session containers, and in shared mode on the local hybrid worker, which serves remote MCP tools and the approval modes its policy allows ([current limits](SECURITY.md#shared-conversation-approvals)); promotable and orchestrator modes are not served yet | [Hosting modes plan](HOSTING-MODES-PLAN.md#17-qualification-record), [developer checklist](DEVELOPER-GUIDE.md#hosting-approval-mode-and-remote-mcp-fields) |
 | Structured agent jobs | Input validation, durable state, schema-validated results, JSON result artifact | [API](API.md) |
 | Two runner implementations | TypeScript SDK reference runner and Python SDK sample on one protocol | [Runner protocol](RUNNER-PROTOCOL.md) |
 | Rich harnesses | Prompt sections, reasoning/context options, sub-agents, delegated tools, packaged skills | [Harness contract](../contracts/src/harness.ts) |

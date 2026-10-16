@@ -20,7 +20,7 @@ const harness = harnesses.get("interactive-demo")![0]!;
 describe("opt-in demo host", () => {
   it("keeps GitHub-native execution independent of managed factory and provider settings", () => {
     const native = {
-      execution: "github-native", transport: "github", owner: "alice", ownerUserId: 1,
+      execution: "github-native", transport: "github", owner: "alice", ownerUserId: 1, harness: "interactive-demo",
       computeId: randomUUID(), dataDirectory: "workspace", githubToken: "test-credential".repeat(3),
     };
     expect(OwnerConfiguration.safeParse(native).success).toBe(true);

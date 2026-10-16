@@ -5,11 +5,12 @@ import {
   type HarnessSnapshot,
   type JobEventView,
 } from "@copilot-agent/contracts";
-import { HostStore, JobEventListener, JobStore, StoreError, type DelegationStore, type WorkerStore } from "@copilot-agent/job-store";
+import { JobEventListener, JobStore, StoreError, type DelegationStore, type WorkerStore } from "@copilot-agent/job-store";
 import { ApiKeyAuthenticator, createService, HttpError, type HostingCatalog } from "@copilot-agent/service-defaults";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { Admission } from "@copilot-agent/service-defaults";
 import { registerConsole } from "./console.js";
+import { registerHostRoutes, type HostApiDependencies } from "./host-routes.js";
 import { registerHostingRoutes } from "./hosting-routes.js";
 import { registerSharedSessionRoutes, type SharedApiDependencies } from "./shared-routes.js";
 import type { ContainerSessionService } from "./container-sessions.js";
@@ -24,7 +25,8 @@ export interface ApiDependencies {
   maxOpenJobsPerPrincipal: number;
   /** Serve the browser job console at `/`. Defaults to true. */
   console?: boolean;
-  host?: { store: HostStore; owner: string; principal: string; transport: string };
+  /** Per-harness owner hosts, including the legacy single demo host. */
+  hosts?: HostApiDependencies;
   shared?: SharedApiDependencies;
   /** Per-session isolated containers (hosting mode 1). */
   containers?: ContainerSessionService;
@@ -52,42 +54,8 @@ export function buildApi(deps: ApiDependencies): FastifyInstance {
   }
   if (deps.workers) registerWorkerRoutes(app, deps.workers, principalOf);
   if (deps.hosting) registerHostingRoutes(app, deps.hosting, principalOf);
-  if (deps.host) {
-    const host = deps.host;
-    const authorizeHost = (request: FastifyRequest) => {
-      if (principalOf(request) !== host.principal) throw new HttpError(404, "not_found", "Demo host not found.");
-    };
-    app.get("/v1/host", async (request) => {
-      authorizeHost(request);
-      return { transport: host.transport, ...(await host.store.status(host.owner)) };
-    });
-    app.get("/v1/host/sessions", async (request) => {
-      authorizeHost(request);
-      if (host.transport === "github") throw new HttpError(409, "native_host", "Manage GitHub-native conversations in the connected Copilot CLI.");
-      return { sessions: await host.store.list(host.owner) };
-    });
-    app.post("/v1/host/connection", async (request, reply) => {
-      authorizeHost(request);
-      reply.header("cache-control", "no-store");
-      const status = await host.store.status(host.owner);
-      let connection: { token: string; expiresAt: string } | undefined;
-      if (host.transport === "direct" || host.transport === "both") {
-        try {
-          connection = await host.store.issueConnection(host.owner);
-        } catch (error) {
-          throw mapStoreError(error);
-        }
-      }
-      return { transport: host.transport, ...connection, ...status };
-    });
-    app.post("/v1/host/sessions/:id/close", async (request) => {
-      authorizeHost(request);
-      if (host.transport === "github") throw new HttpError(409, "native_host", "Manage GitHub-native conversations in the connected Copilot CLI.");
-      const id = (request.params as { id: string }).id;
-      if (!UUID.test(id) || !(await host.store.close(host.owner, id))) throw new HttpError(404, "not_found", "Hosted session not found.");
-      return { closed: true };
-    });
-  }
+  // Per-harness owner hosts and the legacy single demo host routes.
+  if (deps.hosts?.hosts.length) registerHostRoutes(app, deps.hosts, principalOf);
   const jobIdOf = (request: FastifyRequest) => {
     const id = (request.params as { id: string }).id;
     if (!UUID.test(id)) {

@@ -23,6 +23,7 @@ loading the page alone grants no access to job data. Caller authentication is cu
 | `GET` | `/v1/harnesses` | `{ harnesses }` with published versions, digests, allowed/default profiles, and input/output schemas |
 | `GET` | `/v1/hosting` | Read-only [hosting views](#hosting-views): the deployment's hosts and every published harness's effective hosting |
 | `GET` | `/v1/hosting/{harness}` | One harness's hosting view; `?version=` selects a published version, otherwise the latest |
+| `GET` | `/v1/hosts`, `/v1/hosts/{harness}` | Experimental [agent hosts](#experimental-demo-host-control) with their cost inputs; connection material and sessions are owner-only |
 | `POST` | `/v1/jobs` | `202` and a job view on creation; `200` on idempotent replay; `Location` header in both cases |
 | `GET` | `/v1/jobs` | `{ jobs, next? }`; newest first, without results |
 | `GET` | `/v1/jobs/{id}` | One job view, including result when successful |
@@ -294,17 +295,17 @@ whether this deployment can host it, from the harness's optional `hosting` block
 policy plus any override), and the hosts the deployment provides. They are read-only: they create no session, issue
 no connection material, and change nothing. Any authenticated principal can read them; transports are evaluated for
 the calling principal. The [hosting modes plan](HOSTING-MODES-PLAN.md) describes the modes. Today conversations run
-in `isolated` mode on the optional [demo host](#experimental-demo-host-control) or in
-[session containers](#session-containers), and in `shared` mode on the local hybrid worker
+in `isolated` mode on an optional [agent host](#experimental-demo-host-control) (the demo host or a local per-harness
+owner host) or in [session containers](#session-containers), and in `shared` mode on the local hybrid worker
 ([shared conversations](#experimental-shared-conversations)); batch harnesses run as jobs.
 Implemented in [hosting-routes.ts](../src/agent-api/src/hosting-routes.ts) with contracts in
 [hosting.ts](../contracts/src/hosting.ts).
 
 `GET /v1/hosting` returns `{ hosts, harnesses }`. `hosts` lists what the deployment provides: the batch
-`executor` (`pool` or `dedicated`), `isolatedHosts` (the managed demo host and the harness it serves, with its
+`executor` (`pool` or `dedicated`), `isolatedHosts` (each managed agent host and the harness it serves, with its
 transports), `sharedWorker` (the local hybrid worker), `sessionContainers` (per-session containers, when enabled), and later
 `workerContainers`. Each host lists the harness `features` it implements: the shared worker implements `remote-mcp`,
-`approval-modes`, and `custom-approval`; the demo host and session containers implement none, and no host implements
+`approval-modes`, and `custom-approval`; agent hosts and session containers implement none, and no host implements
 handoffs, promotion, or workers yet. GitHub-native demo hosting runs Copilot's own sessions rather than a harness, so
 it adds no isolated host. Owner principals are not returned.
 
@@ -431,17 +432,45 @@ Runnable examples, including negative cases, are in [`http/agent-api.http`](../h
 
 ## Experimental demo host control
 
-The optional conversation host has a separate control API. These routes are registered only when
-`DEMO_HOST_OWNER` is configured on the API. They require the configured demo principal's caller key
-(`dev` in the AppHost); other authenticated principals receive `404`. They do not turn jobs into
-resumable conversations, and `/v1/harnesses` continues to list batch harnesses only.
+Agent hosts have their own control API, registered when the API is configured with hosts: the local per-harness
+owner hosts (`OWNER_HOSTS`) and the single demo host (`DEMO_HOST_OWNER`). Each host serves one harness and belongs
+to one API principal: an owner host's configured `principal`, or `dev` for the demo host. These routes do not
+turn jobs into resumable conversations, and `/v1/harnesses` continues to list batch harnesses only. Implemented in
+[host-routes.ts](../src/agent-api/src/host-routes.ts) with contracts in [host.ts](../contracts/src/host.ts).
 
 | Method | Path | Behavior |
 | --- | --- | --- |
-| `GET` | `/v1/host` | Transport, execution kind, active ownership lease (`online`), optional Mission Control environment ID and public server key |
-| `GET` | `/v1/host/sessions` | Managed sessions: IDs, harness snapshots, models, budgets, usage, and closed state; `409 native_host` for GitHub-native mode |
-| `POST` | `/v1/host/connection` | Explicit connection-material retrieval; `Cache-Control: no-store`; issues a 60-second, single-use direct connection ticket when enabled |
-| `POST` | `/v1/host/sessions/{id}/close` | Close a managed session and revoke future inference; `409 native_host` for GitHub-native mode |
+| `GET` | `/v1/hosts` | Every host, for any authenticated principal: `harness`, `transport`, `execution`, `owned`, `online`, and the cost inputs `resource` and `size` (name, CPUs, memory). Only the owner also sees `environmentId` and the public `serverKey` |
+| `GET` | `/v1/hosts/{harness}` | One host, as above. `404` for an unknown harness; `409 hosting_unavailable` (prerequisite `isolated-host`) when no host serves an isolated harness |
+| `GET` | `/v1/hosts/{harness}/sessions` | The owner's managed sessions: ledger IDs, the client-visible `ahpSessionId` once known, harness snapshots, models, budgets, usage, and closed state. Other principals receive `404`; GitHub-native hosts `409 native_host` |
+| `POST` | `/v1/hosts/{harness}/connection` | Connection material, below, with `Cache-Control: no-store` |
+| `POST` | `/v1/hosts/{harness}/sessions/{id}/close` | Close a managed session (either spelling of its ledger ID) and revoke future inference |
+| `GET`, `POST` | `/v1/host`, `/v1/host/sessions`, `/v1/host/connection`, `/v1/host/sessions/{id}/close` | The single demo host, unchanged, for the `dev` principal; other principals receive `404` |
+
+`POST /v1/hosts/{harness}/connection` accepts `{ "transport"?: "direct" | "github", "sessionId"?: string }`. The
+transport defaults to `direct` when the host offers it. `sessionId` names a retained managed session to resume, by
+ledger ID or AHP session ID. The response is `{ harness, transport, execution, ahpSessionId? }` plus, for `direct`,
+`url`, a 60-second, single-use `token`, `expiresAt`, and the host's public `serverKey`, or, for `github`, the
+host's own Mission Control `environmentId`. `ahpSessionId` is the ID the CLI resumes with
+(`copilot --resume <id>`). The runtime mints its own session IDs, so it is returned only after the host has recorded
+the client's ID from its session catalog. The route applies the same hosting evaluation as admission, for this host:
+
+| Request | Response |
+| --- | --- |
+| The relay, by a principal other than the host's owner | `403 relay_owner_only` |
+| Direct WSS, by another principal | `409 hosting_unavailable` with prerequisite `session-containers` |
+| A transport the harness's effective policy does not allow | `422 transport_not_allowed` |
+| A host that is offline, does not enable the transport, or has not registered its environment or published its key | `409 hosting_unavailable` |
+| The GitHub-native demo host, which runs Copilot's own sessions rather than the harness | `409 hosting_unavailable`; use `/v1/host/connection` |
+| An unknown or closed session | `404` |
+
+When the deployment runs the [connection broker](#experimental-shared-conversations) (hybrid mode), direct material
+for a host whose endpoint the control plane knows points at the broker's `/hosts/{harness}`; otherwise `url` is the
+host's own endpoint (and is absent for a deployed demo host, whose endpoint the launcher resolves). Either way, the
+ticket opens only that harness's host at its current ownership epoch. The broker exchanges it, through the
+dispatcher, for a one-use upstream ticket that the host checks as its own, so the client's ticket never reaches the
+host. This is a host route, not `POST /v1/sessions/{id}/connection`: clients create an owner host's sessions on the
+host itself, and the relay serves only the host's owner.
 
 `online` means the control-plane ownership lease is active, not that a CLI handshake has succeeded.
 Use the host's `/health` for owner-process and initial hosting readiness; it is not a live Mission Control
@@ -449,12 +478,12 @@ connectivity probe. Connection material is sensitive: do not log the response or
 include token-bearing URLs in recordings. The public server key can be provisioned to a compatible
 CLI through this authenticated API; it is not a secret, but its integrity is security-critical.
 
-Managed hosting retains at most ten open sessions. Closing frees a slot but does not delete retained files,
+Each managed host retains at most ten open sessions. Closing frees a slot but does not delete retained files,
 runtime history, or backups. The host observes closed sessions on its next heartbeat. Closing is not
 instantaneous cancellation of an already forwarded request or rollback of external effects.
 
 Those session limits, snapshots, and inference grants apply only to `execution: "managed"`. With
-`execution: "github-native"`, connection provisioning returns the Mission Control environment ID without a
+`execution: "github-native"`, `/v1/host/connection` returns the Mission Control environment ID without a
 direct ticket. Copilot owns conversation lifecycle, models, permissions, and billing; the app does not
 fabricate managed-session records or Foundry usage for that path.
 

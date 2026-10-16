@@ -22,7 +22,9 @@ describe.skipIf(process.env.DEMO_GITHUB_HOST_TESTS !== "1")("GitHub-native host 
     }).trim();
     const pool = new pg.Pool({ connectionString: inject("databaseUrl") });
     await migrate(pool);
-    await pool.query("TRUNCATE demo_host, hosted_sessions, hosted_connection_tickets CASCADE");
+    await pool.query("TRUNCATE demo_host, owner_hosts, hosted_sessions, hosted_connection_tickets CASCADE");
+    // The legacy native host is keyed by its configured harness like every owner host; native execution ignores it.
+    const host = { harness: "not-a-managed-harness", owner };
     const policy = await loadPolicy(join(import.meta.dirname, "..", "..", "examples", "customer-config"));
     const store = new HostStore(pool);
     const serviceKey = randomUUID().repeat(2);
@@ -30,7 +32,10 @@ describe.skipIf(process.env.DEMO_GITHUB_HOST_TESTS !== "1")("GitHub-native host 
     const dispatcher = buildDispatcher({
       store: new JobStore(pool), hostStore: store, policies: { base: policy, overrides: new Map() },
       executorKey: "unused".repeat(8), gatewayKey: "unused-gateway".repeat(4), signingKey,
-      host: { store, key: serviceKey, owner, execution: "github-native", policy, signingKey },
+      host: {
+        store, signingKey,
+        hosts: [{ harness: host.harness, owner, key: serviceKey, transport: "github", execution: "github-native", policy }],
+      },
     });
     await dispatcher.listen({ host: "0.0.0.0", port: 0 });
     const managementHome = await mkdtemp(join(tmpdir(), "github-host-management-"));
@@ -50,12 +55,12 @@ describe.skipIf(process.env.DEMO_GITHUB_HOST_TESTS !== "1")("GitHub-native host 
         .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g, "[redacted]");
     };
     async function start(): Promise<{ environmentId: string }> {
-      container = docker("run", "-d", "--platform", "linux/amd64", "-p", "127.0.0.1::8080", "-v", `${volume}:/data`,
+      container = docker("run", "-d", "-p", "127.0.0.1::8080", "-v", `${volume}:/data`,
         ...(process.env.DEMO_HOST_TEST_SOURCE === "1"
           ? ["-v", `${join(import.meta.dirname, "..", "..", "src", "agent-host", "dist")}:/app/src/agent-host/dist:ro`] : []),
         "-e", "DEMO_HOST_TRANSPORT=github", "-e", `DEMO_HOST_OWNER=${owner}`,
         "-e", "DEMO_HOST_GITHUB_TOKEN", "-e", `DEMO_HOST_KEY=${serviceKey}`,
-        "-e", "DEMO_HOST_HARNESS=not-a-managed-harness", "-e", "LOG_LEVEL=error",
+        "-e", `DEMO_HOST_HARNESS=${host.harness}`, "-e", "LOG_LEVEL=error",
         "-e", `JOB_DISPATCHER_URL=http://host.docker.internal:${(dispatcher.server.address() as AddressInfo).port}`,
         process.env.DEMO_GITHUB_HOST_TEST_IMAGE ?? "copilot-aspire-agent-host:native-demo");
       const endpoint = `http://${docker("port", container, "8080/tcp").split("\n")[0]}`;
@@ -83,9 +88,9 @@ describe.skipIf(process.env.DEMO_GITHUB_HOST_TESTS !== "1")("GitHub-native host 
       await management.start();
       const { environment } = await management.rpc.environments.get(first);
       expect(environment.id).toBe(first.environmentId);
-      expect(await store.status(owner)).toMatchObject({ execution: "github-native", online: true, environmentId: first.environmentId });
-      await expect(store.issueConnection(owner)).rejects.toThrow(/not ready/);
-      const epoch = (await pool.query<{ epoch: string }>("SELECT epoch FROM demo_host WHERE id = 1")).rows[0]!.epoch;
+      expect(await store.status(host)).toMatchObject({ execution: "github-native", online: true, environmentId: first.environmentId });
+      await expect(store.issueConnection(host)).rejects.toThrow(/not ready/);
+      const epoch = (await pool.query<{ epoch: string }>("SELECT epoch FROM owner_hosts WHERE harness = $1", [host.harness])).rows[0]!.epoch;
       const unsupported = await dispatcher.inject({
         method: "POST", url: "/internal/host/session", headers: { "x-internal-key": serviceKey },
         payload: { epoch, sessionId: randomUUID(), resume: false },

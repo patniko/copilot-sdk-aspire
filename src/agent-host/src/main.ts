@@ -1,9 +1,10 @@
 import { fork, type ChildProcess } from "node:child_process";
-import { chmod, chown, mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, chown, mkdir, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DemoHostSettings, HostLease, policyFor } from "@copilot-agent/contracts";
+import { DemoHostSettings, HostExecution, HostLease, policyFor } from "@copilot-agent/contracts";
 import { createService, loadHarnesses, loadPolicySet, loadProfiles, admitHostedHarness, optionalEnv, requireEnv, serviceUrl, listenPort } from "@copilot-agent/service-defaults";
+import { readHostIdentity, writeHostIdentity } from "./identity.js";
 import { OwnerMessage, type OwnerConfiguration } from "./protocol.js";
 import { resolveGitHubOwner, verifyGitHubOwner } from "./proxy.js";
 import { readServerKey, registerAhpProxy, type ServerKey } from "@copilot-agent/service-defaults";
@@ -18,19 +19,23 @@ const settings = DemoHostSettings.parse({
 });
 if (settings.transport === "disabled") throw new Error("Do not start the demo host when disabled.");
 const transport = settings.transport;
+// The legacy single host maps transport `github` to GitHub-native execution; per-harness hosts set this explicitly.
+const executionKind = HostExecution.parse(optionalEnv("DEMO_HOST_EXECUTION", transport === "github" ? "github-native" : "managed"));
+if (executionKind === "github-native" && transport !== "github") throw new Error("GitHub-native hosting is reachable only through the GitHub relay.");
+const direct = transport === "direct" || transport === "both";
+const relay = transport === "github" || transport === "both";
 const token = optionalEnv("DEMO_HOST_CONNECTION_TOKEN", "");
-if (transport !== "github" && token.length < 32) throw new Error("The demo host connection token must contain at least 32 characters.");
+if (direct && token.length < 32) throw new Error("The demo host connection token must contain at least 32 characters.");
 const serviceKey = requireEnv("DEMO_HOST_KEY");
 const githubToken = process.env.DEMO_HOST_GITHUB_TOKEN;
-const needsGitHub = transport === "github" || transport === "both";
-const ownerUserId = needsGitHub
+const ownerUserId = relay
   ? (githubToken ? await verifyGitHubOwner(githubToken, settings.owner) : undefined)
   : await resolveGitHubOwner(settings.owner);
 if (!ownerUserId) {
   throw new Error("Mission Control requires a valid GitHub credential for the configured demo owner.");
 }
 const policy = policyFor(await loadPolicySet(), settings.harness);
-const managed = transport === "github" ? undefined : await (async () => {
+const managed = executionKind === "github-native" ? undefined : await (async () => {
   const [harnesses, profiles] = await Promise.all([loadHarnesses(), loadProfiles()]);
   const harness = harnesses.get(settings.harness)?.[0];
   if (!harness) throw new Error("The demo host harness is not published.");
@@ -39,6 +44,19 @@ const managed = transport === "github" ? undefined : await (async () => {
 if (policy.requirements.egress === "gateway-only" && !policy.acknowledgedGaps.includes("egress-not-enforced")) {
   throw new Error("Demo host egress is not enforced; the operator policy has not acknowledged this gap.");
 }
+/** The source revision recorded with a locally built runtime bundle, for qualification evidence. */
+const runtimeRevision = await (async () => {
+  const launcher = process.env.DEMO_HOST_RUNTIME_PATH;
+  if (!launcher) return undefined;
+  try {
+    const provenance: unknown = JSON.parse(await readFile(join(dirname(launcher), "provenance.json"), "utf8"));
+    const revision = provenance && typeof provenance === "object" && "revisions" in provenance && provenance.revisions
+      && typeof provenance.revisions === "object" && "runtime" in provenance.revisions ? provenance.revisions.runtime : undefined;
+    return typeof revision === "string" && /^[0-9a-f]{7,40}$/.test(revision) ? revision : undefined;
+  } catch {
+    return undefined;
+  }
+})();
 const dispatcher = serviceUrl("job-dispatcher");
 async function post(operation: string, body: unknown): Promise<unknown> {
   const response = await fetch(`${dispatcher}/internal/host/${operation}`, {
@@ -53,12 +71,17 @@ async function post(operation: string, body: unknown): Promise<unknown> {
 }
 
 const data = optionalEnv("DEMO_HOST_DATA", "/data");
-const execution = join(data, transport === "github" ? "github-native" : "execution");
+const execution = join(data, executionKind === "github-native" ? "github-native" : "execution");
 await mkdir(data, { recursive: true, mode: 0o711 });
 await mkdir(execution, { recursive: true, mode: 0o700 });
 await chown(execution, 10001, 10001);
 await chmod(execution, 0o700);
-const lease = HostLease.parse(await post("acquire", { ownerUserId }));
+const identity = await readHostIdentity(data, { harness: settings.harness, ownerUserId });
+const lease = HostLease.parse(await post("acquire", {
+  ownerUserId, harness: settings.harness, ...(identity ? { computeId: identity.computeId } : {}),
+}));
+if (identity && identity.computeId !== lease.computeId) throw new Error("The durable host identity differs from this volume's identity.");
+if (!identity) await writeHostIdentity(data, { harness: settings.harness, ownerUserId, computeId: lease.computeId });
 let ready = false;
 let stopping = false;
 let child: ChildProcess | undefined;
@@ -67,7 +90,7 @@ let serverKey: ServerKey | undefined;
 const app = createService({ name: "agent-host", ready: async () => {
   if (!ready) throw new Error("The demo host is not ready.");
 } });
-if (transport === "direct" || transport === "both") {
+if (direct) {
   registerAhpProxy(app, {
     token, targetPort: 8765, ready: () => ready,
     authorize: async (ticket) => {
@@ -76,7 +99,10 @@ if (transport === "direct" || transport === "both") {
     },
   });
 }
-app.get("/", async () => ({ service: "agent-host", transport, execution: transport === "github" ? "github-native" : "managed", ready, environmentId }));
+app.get("/", async () => ({
+  service: "agent-host", harness: settings.harness, transport, execution: executionKind, ready, environmentId,
+  ...(runtimeRevision ? { runtimeRevision } : {}),
+}));
 
 async function shutdown(): Promise<void> {
   if (stopping) return;
@@ -111,20 +137,20 @@ async function shutdown(): Promise<void> {
 }
 
 app.addHook("onClose", shutdown);
-const common = { owner: settings.owner, ownerUserId, computeId: lease.computeId, dataDirectory: execution };
+const common = { owner: settings.owner, ownerUserId, computeId: lease.computeId, dataDirectory: execution, harness: settings.harness };
 let childConfig: OwnerConfiguration;
-if (transport === "github") {
+if (executionKind === "github-native") {
   if (!githubToken) throw new Error("GitHub-native hosting requires the owner's credential.");
-  childConfig = { ...common, execution: "github-native", transport, githubToken };
+  childConfig = { ...common, execution: "github-native", transport: "github", githubToken };
 } else {
   if (!managed) throw new Error("Managed hosting configuration is unavailable.");
   childConfig = {
     ...common, execution: "managed", transport,
-    connectionToken: token, ...(needsGitHub ? { githubToken } : {}),
+    ...(direct ? { connectionToken: token, port: 8765 } : {}), ...(relay ? { githubToken } : {}),
     runtimePath: process.env.DEMO_HOST_RUNTIME_PATH,
     runtimeProvider: process.env.DEMO_HOST_RUNTIME_PROVIDER,
     gatewayUrl: `${serviceUrl("inference-gateway")}/openai/v1/`,
-    model: managed.model, maxTurnSeconds: managed.maxTurnSeconds, port: 8765,
+    model: managed.model, maxTurnSeconds: managed.maxTurnSeconds,
   };
 }
 child = fork(fileURLToPath(new URL("./owner.js", import.meta.url)), [], {
@@ -137,7 +163,8 @@ child.stderr?.on("data", () => app.log.error("The host owner reported a runtime 
 child.on("message", (value: unknown) => {
   const parsed = OwnerMessage.safeParse(value);
   if (!parsed.success) {
-    app.log.error("Invalid host-owner protocol message.");
+    // Paths and codes only: message values can carry credentials.
+    app.log.error({ issues: parsed.error.issues.slice(0, 5).map((issue) => `${issue.path.join(".")}: ${issue.code}`) }, "Invalid host-owner protocol message.");
     ready = false;
     void app.close();
     return;
@@ -146,11 +173,11 @@ child.on("message", (value: unknown) => {
   if (message.kind === "ready") {
     environmentId = message.environmentId;
     const provision = async () => {
-      if (transport === "direct" || transport === "both") serverKey = await readServerKey(8765, token);
+      if (direct) serverKey = await readServerKey(8765, token);
       await post("heartbeat", { epoch: lease.epoch, environmentId, serverKey });
       if (stopping) return;
       ready = true;
-      app.log.info({ transport, environmentId }, "Demo agent host ready.");
+      app.log.info({ harness: settings.harness, transport, environmentId, runtimeRevision }, "Demo agent host ready.");
     };
     void provision().catch(() => {
       app.log.error("The host connection metadata could not be provisioned.");
@@ -170,7 +197,11 @@ child.on("message", (value: unknown) => {
       child?.send({ kind: "response", id: message.id, error: "Close sessions through the authenticated application API." });
       return;
     }
-    void post(request.operation, { epoch: lease.epoch, sessionId: request.sessionId, ...(request.operation === "session" ? { resume: request.resume } : {}) })
+    void post(request.operation, {
+      epoch: lease.epoch, sessionId: request.sessionId,
+      ...(request.operation === "session" ? { resume: request.resume } : {}),
+      ...(request.operation === "catalog" ? { ahpSessionId: request.ahpSessionId } : {}),
+    })
       .then((result) => { if (!stopping && child?.connected) child.send({ kind: "response", id: message.id, result }); })
       .catch((error: unknown) => {
         app.log.error({ operation: request.operation }, "Host session control failed.");

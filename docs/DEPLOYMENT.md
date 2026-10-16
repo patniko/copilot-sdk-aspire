@@ -329,7 +329,7 @@ supported stdio connection. This avoids relying on the SDK's unqualified bundled
 | `Parameters:demo-host-owner` | Expected GitHub login; resolved to a numeric account ID and pinned in durable host ownership |
 | `Parameters:demo-host-harness` | Managed profiles only: a conversation harness; defaults to `interactive-demo` |
 | `Parameters:demo-host-github-token` | Owner credential for Mission Control; store only in Aspire secrets, never in the customer workspace or target JSON |
-| `Parameters:demo-host-runtime-dir` | Managed profiles only: optional relative build-context directory containing matching Linux x64 `copilot-runtime` and `runtime.node` artifacts |
+| `Parameters:demo-host-runtime-dir` | Managed profiles only: relative build-context directory holding a verified Linux runtime bundle from `deploy/build-hybrid-runtime.ps1` (`provenance.json`, `SHA256SUMS`, `copilot-runtime`, `runtime.node`, `sdk.tgz`). The image installs that runtime and its matching SDK in place of the published one. Local runs build for the bundle's architecture, so an arm64 bundle builds natively on ARM64; publishing requires a linux/amd64 bundle. Required for owner hosts |
 
 For production-mode deployment, the corresponding names are `Parameters__demo-host-*`. The configurator forwards
 the GitHub credential from the protected local Aspire secret only when the selected target explicitly enables
@@ -339,6 +339,39 @@ without returning it from the settings API or placing it in a command line.
 For managed profiles, the `interactive-demo` example is seeded into new customer workspaces. Existing workspaces are not overwritten:
 copy/adapt the example explicitly if it is absent. Its model names still need to match the configured policy and
 Foundry deployments. A conversation harness cannot be submitted as a batch job.
+
+### Per-harness owner hosts
+
+Local runs can host several `isolated` conversation harnesses, each on its own always-on, single-owner managed host.
+`Parameters:owner-hosts` is a JSON list of at most eight hosts, for example
+`[{"harness":"interactive-demo","transport":"both"}]`:
+
+| Field | Meaning |
+| --- | --- |
+| `harness` | A published `isolated` conversation harness, at most 27 characters so that `host-<harness>` fits 32 |
+| `transport` | `direct`, `github` (the relay only), or `both`; execution is always managed, on the local runtime |
+| `principal` | The API principal that owns the host and alone receives its connection material; defaults to `dev` |
+| `size` | A size from the harness's effective `hosting.sizes`; defaults to the policy's `defaultSize` |
+
+Owner hosts share `demo-host-owner` (their GitHub owner), `demo-host-runtime-dir` (required), and, when any host
+enables the relay, `demo-host-github-token`. A harness cannot be served by both the demo host and an owner host.
+Each host gets its own container resource `host-<harness>` limited to its size's CPUs and memory, generated
+`host-<harness>-key` and, for direct WSS, `host-<harness>-connection-token` secrets, a named volume
+`host-<harness>-<checkout>` at `/data`, and, for the relay, its own Mission Control environment named
+`Aspire <harness> (<owner>)`. Startup fails closed when the harness's effective policy disallows a configured
+transport (`transport_not_allowed`), the harness is not `isolated`, or it needs a feature the host does not
+implement. Publishing with owner hosts fails: Azure keeps the single demo host until the Azure stage.
+
+Each owner host is always-on compute and storage, even with no client attached. `GET /v1/hosts` reports each host's
+resource and size, so the configurator can show the cost per harness. With `hybrid-hosting` on, clients reach direct
+hosts through the connection broker's `/hosts/<harness>` path, which exchanges their one-use ticket for one the host
+accepts; otherwise they dial the host's own endpoint. Connect with
+`pnpm host:connect --harness <name> --transport direct|github --target local [--resume <id>]`
+([user guide](USER-GUIDE.md#demo-agent-host)).
+
+Stopping the AppHost keeps each host's volume and, for relay hosts, its registered environment, which goes offline;
+restarting reuses both. Delete an environment you no longer need in Mission Control, and remove a volume only to
+discard that host's conversations and identity.
 
 ### Demo host compatibility gate
 
@@ -359,6 +392,11 @@ checks, sealed authentication, or managed session restrictions to make an older 
 The engineering handoff is `..\copilot-agent-runtime\docs\aspire-agent-host-handoff.md`; it records source commits,
 reproductions, remaining release work, and actual validation. Keep build artifacts out of Git; `.runtime-artifacts/`
 is ignored for that purpose.
+
+Locally, managed profiles and [owner hosts](#per-harness-owner-hosts) run on a locally built runtime bundle carrying
+these changes (`demo-host-runtime-dir`), qualified in the
+[stage-3 record](HOSTING-MODES-PLAN.md#stage-3-per-harness-owner-hosts-and-relay); deployed managed hosting still
+awaits a released runtime.
 
 Managed startup performs a credential-free, empty-workspace negative probe before exposing the real host:
 the runtime must reject malformed expected-owner configuration with the documented error. An older runtime that

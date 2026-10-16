@@ -13,6 +13,8 @@ import {
   loadPolicySet,
   loadProfiles,
   optionalEnv,
+  ownerHostUrl,
+  readOwnerHosts,
   readPostgresConnection,
   requireEnv,
   serviceUrl,
@@ -31,9 +33,10 @@ await migrate(pool);
 const store = new JobStore(pool);
 const execution = optionalEnv("EXECUTOR_MODE", "pool");
 if (execution !== "pool" && execution !== "on-demand") throw new Error("EXECUTOR_MODE must be pool or on-demand.");
-const hostOwner = optionalEnv("DEMO_HOST_OWNER", "").toLowerCase();
-// The AppHost's generated caller key belongs to this principal; it alone controls the demo host.
-const hostPrincipal = "dev";
+const ownerHosts = readOwnerHosts().map((host) => ({ ...host, url: ownerHostUrl(host) }));
+const hostStore = new HostStore(pool);
+const legacyHost = ownerHosts.find((host) => host.legacy);
+if (legacyHost) await hostStore.adoptLegacyHost(legacyHost.harness);
 const sessionSettings = optionalEnv("SESSION_CONTAINER_SETTINGS", "");
 const sessionContainers = sessionSettings ? SessionContainerSettings.parse(JSON.parse(sessionSettings)) : undefined;
 const orchestratorWorkers = optionalEnv("ORCHESTRATOR_WORKERS", "false");
@@ -42,12 +45,7 @@ if (orchestratorWorkers === "true" && (!sessionContainers || !process.env.SHARED
   throw new Error("Orchestrator workers need the shared worker and session containers.");
 }
 const deployment = hostingDeployment({
-  executor: execution,
-  ...(hostOwner ? {
-    demoHost: { transport: requireEnv("DEMO_HOST_TRANSPORT"), harness: optionalEnv("DEMO_HOST_HARNESS", "interactive-demo"), principal: hostPrincipal },
-  } : {}),
-  sharedWorker: !!process.env.SHARED_WORKER_KEY,
-  sessionContainers: !!sessionContainers,
+  executor: execution, ownerHosts, sharedWorker: !!process.env.SHARED_WORKER_KEY, sessionContainers: !!sessionContainers,
   workerContainers: orchestratorWorkers === "true",
 });
 const listener = new JobEventListener(pool);
@@ -79,10 +77,10 @@ const app = buildApi({
       brokerUrl: requireEnv("CONNECTION_BROKER_URL"),
     }),
   } : {}),
-  ...(hostOwner ? {
-    host: {
-      store: new HostStore(pool), owner: hostOwner, principal: hostPrincipal,
-      transport: requireEnv("DEMO_HOST_TRANSPORT"),
+  ...(ownerHosts.length ? {
+    hosts: {
+      store: hostStore, hosts: ownerHosts, harnesses, policies, profiles,
+      ...(process.env.CONNECTION_BROKER_URL ? { brokerUrl: process.env.CONNECTION_BROKER_URL } : {}),
     },
   } : {}),
 });
