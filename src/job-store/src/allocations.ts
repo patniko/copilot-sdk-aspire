@@ -356,9 +356,12 @@ export class AllocationStore {
     return result.rowCount === 1;
   }
 
-  /** The container's AHP listener is ready; the first readiness of an allocation counts one session activation. */
-  async ready(allocationId: string, serverKey: SharedServerKey): Promise<void> {
-    const key = SharedServerKey.parse(serverKey);
+  /**
+   * The container is ready. A session container publishes its AHP listener's key; the first readiness of an allocation
+   * counts one session activation. A worker container has no client listener, so it publishes readiness without a key.
+   */
+  async ready(allocationId: string, serverKey?: SharedServerKey): Promise<void> {
+    const key = serverKey === undefined ? undefined : SharedServerKey.parse(serverKey);
     await this.shared.transaction(async (db) => {
       const row = (await db.query<{ session_id: string; worker_id: string | null; server_key: SharedServerKey | null }>(
         `SELECT s.id AS session_id,e.worker_id,e.server_key FROM execution_allocations e JOIN shared_sessions s ON s.id=${SUBJECT_SESSION}
@@ -366,6 +369,15 @@ export class AllocationStore {
            AND NOT s.closed AND NOT EXISTS (SELECT 1 FROM session_workers w WHERE w.id=e.worker_id AND w.state='stopped')
          FOR UPDATE OF e`, [allocationId])).rows[0];
       if (!row) throw new StoreError("not_found", "The session allocation is not active.");
+      if ((key === undefined) !== (row.worker_id !== null)) {
+        throw new StoreError("invalid_request", row.worker_id ? "A worker container has no client listener to publish." : "A session container must publish its server key.");
+      }
+      if (!key) {
+        await db.query(
+          "UPDATE execution_allocations SET ready_at=clock_timestamp(),heartbeat_at=clock_timestamp(),activity_at=clock_timestamp() WHERE id=$1 AND ready_at IS NULL",
+          [allocationId]);
+        return;
+      }
       if (row.server_key) {
         if (JSON.stringify(SharedServerKey.parse(row.server_key)) !== JSON.stringify(key)) {
           throw new StoreError("invalid_state", "The allocation already published a different server key.");
@@ -375,7 +387,7 @@ export class AllocationStore {
       await db.query(
         `UPDATE execution_allocations SET server_key=$2,ready_at=clock_timestamp(),heartbeat_at=clock_timestamp(),
          activity_at=clock_timestamp() WHERE id=$1`, [allocationId, JSON.stringify(key)]);
-      if (!row.worker_id) await db.query("UPDATE session_containers SET activations=activations+1 WHERE session_id=$1", [row.session_id]);
+      await db.query("UPDATE session_containers SET activations=activations+1 WHERE session_id=$1", [row.session_id]);
       await db.query("UPDATE shared_sessions SET last_activity_at=clock_timestamp() WHERE id=$1", [row.session_id]);
     });
   }
