@@ -14,7 +14,7 @@ import type {
   ToolStatus,
 } from "./types.js";
 
-const HIDDEN_LOCAL = /-installer$|^(dev-api-key|executor-key|gateway-key|capability-signing-key|foundry-endpoint|foundry-deployments|npm-registry|pip-index-url|postgres-password)$/;
+const HIDDEN_LOCAL = /-installer$|^(dev-api-key|executor-key|gateway-key|capability-signing-key|foundry-endpoint|foundry-deployments|github-inference-token|github-inference-models|npm-registry|pip-index-url|postgres-password)$/;
 
 export interface StatusDeps {
   root: string;

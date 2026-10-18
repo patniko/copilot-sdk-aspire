@@ -59,7 +59,7 @@ function CardFooter({ issues, differences }: { issues: Issue[]; differences?: Re
 }
 
 export function PolicyView() {
-  const { workspace, refreshWorkspace, toast } = useApp();
+  const { workspace, refreshWorkspace, toast, settings } = useApp();
   const [scope, setScope] = useState(BASE);
   const [base, setBase] = useState<ExecutionPolicy>();
   const [saved, setSaved] = useState<PolicyDraft>();
@@ -384,8 +384,13 @@ export function PolicyView() {
               />
             ))}
           </div>
-          <Field label="Approved models" help="policy.allowedModels" className="mt-5" hint="Model names served by the inference gateway. Each environment maps them to Foundry deployments.">
-            <ChipsInput values={policy.allowedModels} onChange={(values) => update((p) => void (p.allowedModels = values))} placeholder="Add a model and press Enter" />
+          <Field label="Approved models" help="policy.allowedModels" className="mt-5" hint="Model names served by the inference gateway. Each environment maps them to Foundry deployments; GitHub Copilot models use github/<id> names (for example github/claude-sonnet-5.5).">
+            <ChipsInput
+              values={policy.allowedModels}
+              onChange={(values) => update((p) => void (p.allowedModels = values))}
+              placeholder="Add a model and press Enter"
+              suggestions={settings?.local.githubInferenceModels?.map((id) => `github/${id}`)}
+            />
           </Field>
         </Locked>
         {footer("agents")}

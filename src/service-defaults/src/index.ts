@@ -17,3 +17,4 @@ export * from "./promotion-restore.js";
 export * from "./handoffs.js";
 export * from "./websocket-frames.js";
 export * from "./workers.js";
+export * from "./inline-harness.js";

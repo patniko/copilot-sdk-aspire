@@ -14,3 +14,4 @@ export * from "./hosting.js";
 export * from "./promotion.js";
 export * from "./handoff.js";
 export * from "./workers.js";
+export * from "./inference.js";

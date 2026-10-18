@@ -49,7 +49,10 @@ See [workflow and authentication](CONFIGURATOR.md#copilot-assisted-authoring) an
 ![Default local and Azure placements, plus experimental local hybrid services and the explicit unqualified Azure hybrid boundary](images/local-and-azure.svg)
 
 Locally, the gateway uses the developer's Azure CLI identity. In Azure, its managed identity receives model
-access on an existing Foundry account. The deployed API and dispatcher use Entra-authenticated PostgreSQL access.
+access on an existing Foundry account. Optionally, the gateway also serves the operator's GitHub Copilot models as
+`github/<model>`, using a GitHub token that only the gateway holds and the Copilot SDK to resolve each model's endpoint
+([boundaries](SECURITY.md#github-copilot-inference)). Each model is served over `/chat/completions` or `/responses`;
+runtimes look up which before they open a session. The deployed API and dispatcher use Entra-authenticated PostgreSQL access.
 By default, only `agent-api` has external service ingress; the executor always has no ingress.
 Enabling the experimental host's direct transport adds an authenticated WebSocket ingress.
 GitHub-only hosting uses outbound Mission Control/WPS connections, not public host ingress.
@@ -446,7 +449,7 @@ target that runs in its own container reuses the same move with the target's har
 session unless it carries full history, and the handoff notice as the opening note.
 
 `pnpm host:connect` keeps the person's terminal attached across the move: it runs the CLI under a supervisor
-([`cli-supervisor.ts`](../configurator/server/cli-supervisor.ts)) whose loopback relay spends one broker ticket per CLI
+([`cli-supervisor.ts`](../src/agent-client/src/cli-supervisor.ts)) whose loopback relay spends one broker ticket per CLI
 connection. On a `moved` close, or when a new ticket carries another server key (a replacement container after a
 crash), the supervisor stops the CLI, provisions the same session again through the launcher's routing (retrying
 while a move completes), and restarts the CLI with `--resume` and the new server key in the same terminal. Without

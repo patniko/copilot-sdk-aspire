@@ -13,7 +13,7 @@ import { WebSocketServer } from "ws";
 import { SharedConnection, SharedSessionDefinition, SharedSessionLimits, SharedSessionView, type SharedSessionCreation } from "@copilot-agent/contracts";
 import { JobEventListener, JobStore, migrate, PlacementStore, SessionFileStore, SharedStore, StoreError, type SessionFileLease } from "@copilot-agent/job-store";
 import { Admission, ApiKeyAuthenticator, loadHarnesses, loadPolicySet, loadProfiles } from "@copilot-agent/service-defaults";
-import { superviseSessionCli } from "../../configurator/server/cli-supervisor.js";
+import { superviseSessionCli } from "../../src/agent-client/src/cli-supervisor.js";
 import { buildApi } from "../../src/agent-api/src/server.js";
 import { buildDispatcher } from "../../src/job-dispatcher/src/server.js";
 import { buildSharedHost } from "../../src/session-host/src/server.js";

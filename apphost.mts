@@ -58,9 +58,8 @@ const executorKey = await builder.addParameterWithGeneratedValue('executor-key',
 const gatewayKey = await builder.addParameterWithGeneratedValue('gateway-key', generated, { secret: true, persist: true });
 const signingKey = await builder.addParameterWithGeneratedValue('capability-signing-key', { minLength: 64, special: false }, { secret: true, persist: true });
 
-// Foundry (Azure AI) model route served by the inference gateway.
-const foundryEndpoint = await builder.addParameter('foundry-endpoint');
-const foundryDeployments = await builder.addParameter('foundry-deployments');
+// Model upstreams served by the inference gateway: Foundry (Azure AI, through the gateway's Entra identity) and/or
+// GitHub Copilot (through the operator's GitHub token). They are declared with the gateway below.
 
 // Package registries used inside image builds. Override with `Parameters:npm-registry` and
 // `Parameters:pip-index-url` (user secrets, environment, or deployment configuration) to use a proxy.
@@ -200,9 +199,21 @@ const dispatcherEndpoint = await dispatcher.getEndpoint('http');
 const gateway = await service('inference-gateway')
   .withReference(dispatcherEndpoint)
   .withEnvironment('GATEWAY_KEY', gatewayKey)
-  .withEnvironment('CAPABILITY_SIGNING_KEY', signingKey)
-  .withEnvironment('FOUNDRY_ENDPOINT', foundryEndpoint)
-  .withEnvironment('FOUNDRY_DEPLOYMENTS', foundryDeployments);
+  .withEnvironment('CAPABILITY_SIGNING_KEY', signingKey);
+
+// GitHub Copilot models (`github/<id>`) use the operator's GitHub token, held only by the gateway. Foundry stays
+// required unless GitHub inference is configured, and always when publishing.
+const githubInference = await configuration.exists('Parameters:github-inference-token');
+if (githubInference) {
+  await gateway
+    .withEnvironment('GITHUB_INFERENCE_TOKEN', await builder.addParameter('github-inference-token', { secret: true }))
+    .withEnvironment('GITHUB_INFERENCE_MODELS', await configured('Parameters:github-inference-models', ''));
+}
+if (isPublish || !githubInference || await configuration.exists('Parameters:foundry-endpoint')) {
+  await gateway
+    .withEnvironment('FOUNDRY_ENDPOINT', await builder.addParameter('foundry-endpoint'))
+    .withEnvironment('FOUNDRY_DEPLOYMENTS', await builder.addParameter('foundry-deployments'));
+}
 
 if (isPublish) {
   // Existing customer-owned Foundry account; the template never creates or deletes it.

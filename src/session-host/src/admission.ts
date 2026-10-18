@@ -7,7 +7,9 @@ import {
   type SharedSessionCreation, SharedSessionDefinition, SharedSessionLimits, CONVERSATION_PROFILE, startingPlacement, WORKER_CONTAINER_FEATURES,
   WORKER_TOOLS, type WorkerState,
 } from "@copilot-agent/contracts";
-import { canonicalJson, handoffToolName, hostingError, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
+import {
+  assertInlineAllowed, canonicalJson, handoffToolName, hostingError, HttpError, inlineHarnessSnapshot, policyDigest, sha256Hex,
+} from "@copilot-agent/service-defaults";
 import { containerHandoffTarget, type ContainerHandoffTarget } from "./handoff-container.js";
 import type { SharedConfiguration, SharedRegistry } from "./configuration.js";
 import type { HandoffOffer } from "./handoff-tools.js";
@@ -117,18 +119,23 @@ export class SharedAdmission {
     SharedSessionLimits.parse(options.sessionLimits);
   }
 
-  /** The admitted snapshot for a new session. */
+  /** The admitted snapshot for a new session, from a published harness or a definition the caller submitted. */
   async admit(principal: string, request: SharedSessionCreation): Promise<SharedSessionDefinition> {
     const registry = await this.options.configuration.current();
-    const versions = registry.harnesses.get(request.harness);
-    const snapshot = request.version ? versions?.find((entry) => entry.definition.version === request.version) : versions?.[0];
+    let snapshot: HarnessSnapshot | undefined;
+    if (request.definition) {
+      snapshot = inlineHarnessSnapshot(request.definition, registry.harnesses, registry.policies);
+    } else {
+      const versions = registry.harnesses.get(request.harness!);
+      snapshot = request.version ? versions?.find((entry) => entry.definition.version === request.version) : versions?.[0];
+    }
     if (!snapshot) throw new HttpError(404, "harness_not_found", "The requested harness version is not published.");
     const policy = policyFor(registry.policies, snapshot.definition.name);
     const evaluation = this.#evaluate(registry, snapshot.definition, policy, principal);
-    return this.#admitted(registry, snapshot, policy, evaluation.mode);
+    return this.#admitted(registry, snapshot, policy, evaluation.mode, request.definition ? "inline" : undefined);
   }
 
-  #admitted(registry: SharedRegistry, snapshot: HarnessSnapshot, policy: ExecutionPolicy, mode: HostingMode): SharedSessionDefinition {
+  #admitted(registry: SharedRegistry, snapshot: HarnessSnapshot, policy: ExecutionPolicy, mode: HostingMode, source?: "inline"): SharedSessionDefinition {
     const { definition } = snapshot;
     const model = admittedModel(definition, policy);
     const ceilings = this.options.sessionLimits;
@@ -145,7 +152,7 @@ export class SharedAdmission {
       limits,
       harness: {
         name: definition.name, version: definition.version, digest: snapshot.digest,
-        mode, definition, policyDigest: policyDigest(policy),
+        mode, definition, policyDigest: policyDigest(policy), ...(source ? { source } : {}),
       },
       ...(delegates ? { delegation: { harnesses: this.#delegationTargets(registry) } } : {}),
     });
@@ -277,6 +284,7 @@ export class SharedAdmission {
       throw new HttpError(409, "invalid_state", "The conversation's admitted harness snapshot failed its integrity check.");
     }
     const registry = await this.options.configuration.current();
+    if (harness.source === "inline") assertInlineAllowed(registry.policies);
     const policy = policyFor(registry.policies, harness.name);
     this.#evaluate(registry, harness.definition, policy, principal);
     if (!policy.allowedModels.includes(definition.model)) {
@@ -301,6 +309,7 @@ export class SharedAdmission {
       throw new HttpError(409, "invalid_state", "This conversation was created before harness-driven shared hosting; create a new conversation.");
     }
     const registry = await this.options.configuration.current();
+    if (harness.source === "inline") assertInlineAllowed(registry.policies);
     const evaluation = this.#evaluation(registry, harness.definition, policyFor(registry.policies, harness.name), principal);
     const problem = connectionProblem(evaluation, transport);
     if (problem) throw hostingError(problem);

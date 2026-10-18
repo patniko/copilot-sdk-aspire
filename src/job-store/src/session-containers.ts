@@ -16,6 +16,8 @@ export interface ContainerSessionAdmission {
   limits: SharedSessionLimits;
   /** Digest of the harness's effective operator policy at admission, for provenance. */
   policyDigest: string;
+  /** `inline` when the caller submitted the definition rather than naming a published harness. */
+  source?: "inline";
   size: string;
   resources: ContainerSize;
 }
@@ -60,7 +62,7 @@ export class SessionContainerStore {
       limits: SharedSessionLimits.parse({ ...admitted.limits, maxJobs: 0, maxContinuations: 0 }),
       harness: {
         name: snapshot.definition.name, version: snapshot.definition.version, digest: snapshot.digest, mode: "isolated",
-        policyDigest: admitted.policyDigest,
+        policyDigest: admitted.policyDigest, ...(admitted.source ? { source: admitted.source } : {}),
       },
     });
     return this.shared.transaction(async (db) => {
@@ -223,6 +225,7 @@ export class SessionContainerStore {
       generation: row.placement_generation, activations: row.activations,
       harness: { definition: HarnessDefinition.parse(row.harness.definition), digest: row.harness.digest },
       model: definition.model, limits: definition.limits, policyDigest: definition.harness?.policyDigest ?? "",
+      ...(definition.harness?.source ? { source: definition.harness.source } : {}),
       size: row.size, resources: ContainerSize.parse(row.resources),
     };
   }

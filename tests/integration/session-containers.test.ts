@@ -69,7 +69,7 @@ const wait = async (predicate: () => Promise<boolean> | boolean, label: string, 
   }
 };
 
-async function environment(options: { limits?: Partial<SharedWorkerLimits>; containers?: boolean } = {}) {
+async function environment(options: { limits?: Partial<SharedWorkerLimits>; containers?: boolean; inline?: boolean } = {}) {
   const namespace = `session-test-${randomUUID().slice(0, 12)}`;
   const principals = { a: randomUUID(), b: randomUUID(), unbound: randomUUID() };
   const keys = { a: `key-a-${randomUUID()}`, b: `key-b-${randomUUID()}`, unbound: `key-u-${randomUUID()}` };
@@ -80,7 +80,7 @@ async function environment(options: { limits?: Partial<SharedWorkerLimits>; cont
   const store = new SessionContainerStore(pool, shared);
   const delegations = new DelegationStore(pool, shared, jobs);
   const base = await loadPolicySet(join(repo, "examples", "customer-config"));
-  const policies = { base: base.base, overrides: new Map() };
+  const policies = { base: { ...base.base, ...(options.inline ? { allowInlineHarnesses: true } : {}) }, overrides: new Map() };
   const profiles = await loadProfiles(repo);
   const limits = SharedWorkerLimits.parse({ executionContainers: 4, containersPerPrincipal: 2, ...options.limits });
   const settings = SessionContainerSettings.parse({ image: "session:test", idleSeconds: 30, heartbeatSeconds: 2, startupSeconds: 30, shutdownSeconds: 1 });
@@ -151,7 +151,7 @@ async function environment(options: { limits?: Partial<SharedWorkerLimits>; cont
   const view = async (who: keyof typeof keys, id: string) => SharedSessionView.parse((await api.inject({ method: "GET", url: `/v1/sessions/${id}`, headers: headers(who) })).json());
   const active = async () => (await pool.query<{ count: number }>(
     "SELECT count(*)::int AS count FROM execution_allocations WHERE (namespace=$1 OR namespace IS NULL) AND kind='session' AND state<>'retired'", [namespace])).rows[0]!.count;
-  return { namespace, principals, keys, bindings, jobs, shared, allocations, store, dispatcher, api, fake, controller, headers, asContainer, ready, create, connect, view, active, limits, settings };
+  return { namespace, principals, keys, bindings, jobs, shared, allocations, store, dispatcher, api, fake, controller, headers, asContainer, ready, create, connect, view, active, limits, settings, policies };
 }
 
 describe("resumable session containers", () => {
@@ -364,5 +364,39 @@ describe("resumable session containers", () => {
     const unavailable = await withoutContainers.api.inject({ method: "POST", url: "/v1/sessions", headers: withoutContainers.headers("a"),
       payload: { harness: "session-coder" } });
     expect([unavailable.statusCode, unavailable.json().error.code]).toEqual([409, "hosting_unavailable"]);
+  }, 60_000);
+
+  it("runs a definition submitted in code in its own container only while the operator allows it", async () => {
+    const definition = { ...coder.definition, name: "code-defined-coder", description: "Defined in code." };
+    const closed = await environment();
+    const refused = await closed.api.inject({ method: "POST", url: "/v1/sessions", headers: closed.headers("a"), payload: { definition } });
+    expect([refused.statusCode, refused.json().error.code]).toEqual([403, "inline_harnesses_disabled"]);
+
+    const env = await environment({ inline: true });
+    await env.controller().start();
+    const create = (payload: object) => env.api.inject({ method: "POST", url: "/v1/sessions", headers: env.headers("a"), payload });
+    const published = await create({ definition: coder.definition });
+    expect([published.statusCode, published.json().error.code]).toEqual([409, "harness_name_published"]);
+    const invalid = await create({ definition: { ...definition, model: { preferred: "x" } } });
+    expect([invalid.statusCode, invalid.json().error.code]).toEqual([400, "invalid_request"]);
+    expect(invalid.json().error.details.issues.length).toBeGreaterThan(0);
+    const unapproved = await create({ definition: { ...definition, model: { preferred: "unapproved", allowed: ["unapproved"] } } });
+    expect([unapproved.statusCode, unapproved.json().error.code]).toEqual([422, "policy_rejected"]);
+
+    const response = await create({ definition, label: "from code" });
+    expect(response.statusCode, response.body).toBe(201);
+    const session = SharedSessionView.parse(response.json());
+    expect(session).toMatchObject({ placement: "container", harness: { name: "code-defined-coder" } });
+    const stored = (await pool.query<{ definition: { harness: { source?: string } } }>("SELECT definition FROM shared_sessions WHERE id=$1", [session.id])).rows[0]!;
+    expect(stored.definition.harness.source).toBe("inline");
+    const { spec } = await env.connect("a", session.id);
+    expect(spec.harness.definition.name).toBe("code-defined-coder");
+
+    // Withdrawing the setting stops new containers for the session.
+    await env.api.inject({ method: "POST", url: `/v1/sessions/${session.id}/close`, headers: env.headers("a"), payload: {} });
+    const again = SharedSessionView.parse((await create({ definition, label: "again" })).json());
+    env.policies.base.allowInlineHarnesses = false;
+    const withdrawn = await env.api.inject({ method: "POST", url: `/v1/sessions/${again.id}/connection`, headers: env.headers("a") });
+    expect([withdrawn.statusCode, withdrawn.json().error.code]).toEqual([403, "inline_harnesses_disabled"]);
   }, 60_000);
 });

@@ -51,10 +51,22 @@ CONFIGURATOR_GITHUB_CLIENT_ID=your-oauth-app-client-id
    shown on the card it affects, a summary sits under **Applies to**, and saving is blocked while there are errors.
    As in the harness editor, the header offers undo, redo and Save (Ctrl/Cmd+S), and unsaved policy edits are kept
    in this browser per scope and offered for restore when you return.
-4. **Local run**: set the Foundry endpoint and deployments (or discover them from your subscription), optional package
-   proxies, then **Build & start** the stack. URL fields check their format as you type, and **Test** reports whether
+4. **Local run**: set the Foundry endpoint and deployments (or discover them from your subscription) and/or GitHub
+   Copilot inference (see below), optional package proxies, then **Build & start** the stack. URL fields check their
+   format as you type, and **Test** reports whether
    the address answers from this machine. After saving harness edits, **Reload harnesses** (or **Save & reload
    local API** in the editor) restarts only the API. Unit and full test suites run from here too.
+
+   **GitHub Copilot inference** (local only) lets the gateway serve the Copilot models your GitHub account can use,
+   alongside Foundry or instead of it; Foundry fields are then optional. Paste a GitHub token with Copilot access (for
+   example a fine-grained PAT with the **Copilot Requests** permission) and **Save token**. It is stored only as
+   `Parameters:github-inference-token` in the AppHost user secrets, outside the repository; the page shows only whether
+   one is stored and never returns it to the browser. **Clear** removes it. **Discover models** lists the account's
+   usable models server-side with the Copilot SDK (excluding `auto` and models its policy has not enabled). Pick models
+   to expose, saved as `Parameters:github-inference-models`, or leave the list empty to expose all of them. The gateway
+   routes each as `github/<id>` (for example `github/claude-sonnet-5.5`); harness models and the policy's **Approved
+   models** must use those names. Requests are billed to that account's Copilot plan. Rerun the AppHost (**Stop**, then
+   **Build & start**) so the gateway picks up changes. Azure deployment targets still require Foundry.
 5. **Try it**: pick the local stack or the selected Azure target, a harness version, an agent, and input (prefilled
    from the example). Input is a form generated from the harness input schema: text areas for long strings, chips for
    lists, nested groups for objects, and an inline JSON box for shapes the form cannot express (such as a table of
@@ -338,7 +350,8 @@ attempt deadline. Only the job's caller (its API key) can answer. The REST endpo
 | Shipped starter examples | `examples/customer-config/harnesses/` and `examples/customer-config/policy/` | Yes; platform-owned and not edited by the configurator |
 | Execution profiles and implementations | `execution-profiles/`, `src/`, and `tools/` | Yes; platform-owned |
 | Unsaved harness and policy drafts | Browser local storage for the configurator origin | No |
-| Local run parameters (Foundry endpoint and deployments, diagnostic event detail, package proxies) | The AppHost's Aspire user secrets | No (outside the repo) |
+| Local run parameters (Foundry endpoint and deployments, GitHub Copilot inference models, diagnostic event detail, package proxies) | The AppHost's Aspire user secrets | No (outside the repo) |
+| GitHub inference token | The AppHost's Aspire user secrets (`Parameters:github-inference-token`) | No; write-only, never returned to the browser |
 | Deployment targets, NuGet override for the Aspire CLI | `.configurator/settings.json` | No (git-ignored; IDs and names only) |
 | Generated keys (dev API key, service keys, signing key) | Aspire user secrets and deployment state | Never shown, except on an explicit "Copy API key" |
 

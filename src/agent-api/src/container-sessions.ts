@@ -6,7 +6,7 @@ import {
   type SharedSessionView,
 } from "@copilot-agent/contracts";
 import { StoreError, type AllocationStore, type SessionContainerStore, type SessionDirectory } from "@copilot-agent/job-store";
-import { hostingError, HttpError, policyDigest, type HostingCatalog } from "@copilot-agent/service-defaults";
+import { assertInlineAllowed, hostingError, HttpError, policyDigest, type HostingCatalog } from "@copilot-agent/service-defaults";
 import { brokerOrigin } from "./shared-routes.js";
 
 export interface ContainerSessionDependencies {
@@ -79,10 +79,11 @@ export class ContainerSessionService {
     return { policy, evaluation };
   }
 
-  async create(principal: string, request: SharedSessionCreation): Promise<SharedSessionView> {
+  /** Creates a session from a published harness version, or from `inline`, a submitted definition the route admitted. */
+  async create(principal: string, request: SharedSessionCreation, inline?: HarnessSnapshot): Promise<SharedSessionView> {
     const identity = this.identity(principal);
-    const versions = this.deps.catalog.harnesses.get(request.harness) ?? [];
-    const snapshot = request.version ? versions.find((entry) => entry.definition.version === request.version) : versions[0];
+    const versions = request.definition ? [] : this.deps.catalog.harnesses.get(request.harness!) ?? [];
+    const snapshot = request.definition ? inline : request.version ? versions.find((entry) => entry.definition.version === request.version) : versions[0];
     if (!snapshot) throw new HttpError(404, "harness_not_found", "The requested harness version is not published.");
     const { policy } = this.evaluate(snapshot, principal);
     const { definition } = snapshot;
@@ -103,6 +104,7 @@ export class ContainerSessionService {
     });
     const record = await store(() => this.deps.store.create(principal, identity, request.label, {
       harness: snapshot, model, limits, policyDigest: policyDigest(policy), size, resources: hosting.sizes[size]!,
+      ...(request.definition ? { source: "inline" as const } : {}),
     }, this.#limits.retainedSessionsPerPrincipal));
     return (await this.view(principal, record.id))!;
   }
@@ -168,6 +170,7 @@ export class ContainerSessionService {
           throw new HttpError(503, "container_unavailable", `The session container could not start: ${allocation.error ?? "it stopped before becoming ready."}`);
         }
         this.evaluate(record.harness, principal, await promoted());
+        if (record.source === "inline") assertInlineAllowed(this.deps.catalog.policies);
         const created = await store(() => this.deps.allocations.request({
           sessionId: id, principal, purpose: "session", size: record.size, resources: record.resources,
           volumes: [{ purpose: "session", sessionId: id, target: "/data", readOnly: false }],

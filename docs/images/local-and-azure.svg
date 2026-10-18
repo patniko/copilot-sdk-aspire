@@ -81,6 +81,6 @@
   <text x="954" y="925" class="body" text-anchor="middle">Publishing refuses the local Docker controller mode</text>
   <text x="954" y="951" class="body" text-anchor="middle">Azure execution adapter and recovery require qualification</text>
   <text x="954" y="977" class="body" text-anchor="middle">Default pool and separate container-host paths remain</text>
-  <text x="32" y="1061" class="body">Provider choice remains explicit: batch/shared managed loops use Foundry; GitHub-native hosting uses Copilot.</text>
+  <text x="32" y="1061" class="body">Provider choice remains explicit: managed loops use gateway models (Foundry, or optional github/* Copilot models); GitHub-native hosting uses Copilot.</text>
   <text x="32" y="1093" class="label">Placement is not production hardening. Egress remains unenforced; see docs/SECURITY.md and docs/DEPLOYMENT.md.</text>
 </svg>

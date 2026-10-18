@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { CopilotClient, RuntimeConnection, type CopilotSession, type SessionConfig, type SessionEvent } from "@github/copilot-sdk";
 import { z } from "zod";
 import {
-  renderSkillMarkdown, WorkerAuthorityGrant, WorkerControl, WorkerInputPoll,
+  gatewayWireApi, renderSkillMarkdown, WorkerAuthorityGrant, WorkerControl, WorkerInputPoll,
   type InputRequestBody, type InputResponseBody, type WorkerContainerSpec,
 } from "@copilot-agent/contracts";
 import { bindTools, buildSessionOptions, hostToolGuard } from "@copilot-agent/harness-hosting";
@@ -221,6 +221,7 @@ async function start(config: WorkerOwnerConfiguration): Promise<void> {
     throw new Error("The volume holds a different worker or harness snapshot.");
   }
   const models = [...new Set([spec.model, ...(spec.judgeModel ? [spec.judgeModel] : []), ...(definition.agents ?? []).flatMap((agent) => agent.model ? [agent.model] : [])])];
+  const wireApi = await gatewayWireApi(config.gatewayUrl, models);
   // The in-process runtime uses this process's working directory; it cannot take a client-level one.
   process.chdir(workspace);
   // The runtime offers assisted approval only behind its experimental AUTO_APPROVAL flag, which the in-process engine
@@ -255,7 +256,7 @@ async function start(config: WorkerOwnerConfiguration): Promise<void> {
     enableConfigDiscovery: false,
     skipCustomInstructions: true,
     provider: {
-      type: "openai", baseUrl: config.gatewayUrl, wireApi: "completions",
+      type: "openai", baseUrl: config.gatewayUrl, wireApi,
       bearerTokenProvider: async () => {
         if (stopping) throw new Error("The worker is stopping.");
         activity();

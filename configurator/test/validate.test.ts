@@ -248,7 +248,7 @@ describe("deployment inputs", () => {
 
   it("maps a target to the variables aspire deploy reads", () => {
     expect(
-      deployEnvironment(target, { foundryEndpoint: "", foundryDeployments: [], npmRegistry: "https://npm.example/", pipIndexUrl: "", nugetServiceIndex: "" }),
+      deployEnvironment(target, { foundryEndpoint: "", foundryDeployments: [], githubInferenceModels: ["gpt-5.4"], npmRegistry: "https://npm.example/", pipIndexUrl: "", nugetServiceIndex: "" }),
     ).toMatchObject({
       Azure__SubscriptionId: target.subscriptionId,
       Azure__ResourceGroup: "rg-agents",
@@ -256,6 +256,13 @@ describe("deployment inputs", () => {
       "Parameters__foundry-account": "acct",
       "Parameters__npm-registry": "https://npm.example/",
     });
+  });
+
+  it("keeps GitHub inference local-only when publishing to Azure", () => {
+    const env = deployEnvironment(target, {
+      foundryEndpoint: "", foundryDeployments: [], githubInferenceModels: ["gpt-5.4"], npmRegistry: "", pipIndexUrl: "", nugetServiceIndex: "",
+    });
+    expect(Object.keys(env).filter((key) => key.includes("github-inference"))).toEqual([]);
   });
 
   it("rejects endpoints with credentials or query strings", () => {

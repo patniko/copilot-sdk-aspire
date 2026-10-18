@@ -17,7 +17,9 @@ from datetime import datetime
 from enum import Enum
 from importlib.metadata import version
 from typing import Any
-from urllib.parse import urlparse
+from urllib.error import URLError
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
 from copilot import CopilotClient
 from copilot.generated.rpc import PermissionDecisionApproveOnce, PermissionDecisionReject
@@ -31,6 +33,32 @@ RESULT_CONTRACT = (
     "complete final result. The arguments must satisfy the tool's JSON schema."
 )
 DEFAULT_INPUT_TIMEOUT_SECONDS = 600
+WIRE_APIS = ("completions", "responses")
+
+
+def _described_wire_api(base_url: str, model: str) -> str:
+    """The wire API the gateway serves `model` over; `completions` when it does not say."""
+    request = Request(f"{base_url.rstrip('/')}/models/{quote(model, safe='')}", headers={"Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=5) as response:
+            described = json.loads(response.read(64 * 1024))
+    except (URLError, OSError, ValueError):
+        return "completions"
+    if isinstance(described, dict) and described.get("id") == model and described.get("wire_api") in WIRE_APIS:
+        return described["wire_api"]
+    return "completions"
+
+
+def gateway_wire_api(base_url: str, models: list[str]) -> str:
+    """Mirrors contracts' gatewayWireApi: a session's single provider needs one wire API for all its models."""
+    apis = {_described_wire_api(base_url, model): model for model in dict.fromkeys(models)}
+    if len(apis) > 1:
+        described = ", ".join(f"{model}: {api}" for api, model in apis.items())
+        raise RuntimeError(
+            f"This session's models use different inference APIs ({described}). "
+            "Use models that share one API for a harness and its sub-agents."
+        )
+    return next(iter(apis), "completions")
 # Built-in SDK agents stay unreachable; only the harness's own sub-agents can be delegated to.
 BUILTIN_AGENTS = ["explore", "task", "general-purpose", "code-review", "research", "rubber-duck", "security-review", "rem-agent"]
 BUILTIN_TOOL_GROUPS = {
@@ -668,13 +696,15 @@ async def run(start: dict[str, Any], cancelled: asyncio.Event, input_bridge: Inp
 
     await client.start()
     try:
+        agent_models = [agent["model"] for agent in definition.get("agents") or [] if agent.get("model")]
+        wire_api = await asyncio.to_thread(gateway_wire_api, start["inference"]["baseUrl"], [start["inference"]["model"], *agent_models])
         session = await client.create_session(
             model=start["inference"]["model"],
             provider={
                 "type": "openai",
                 "base_url": start["inference"]["baseUrl"],
                 "api_key": start["inference"]["token"],
-                "wire_api": "completions",
+                "wire_api": wire_api,
             },
             tools=tools,
             on_permission_request=build_permission_handler(definition.get("permissions"), ask_input, workspace, files),

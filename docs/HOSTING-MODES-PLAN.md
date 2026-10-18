@@ -632,7 +632,7 @@ new CLI process with a fresh ticket and the new host's server key. A seamless mo
 
 Until those exist, the launcher can supervise the CLI: on a "moved" close it provisions the new placement and
 restarts the CLI with `--resume`, so the conversation replays in the same terminal. Stage 5 implemented this
-supervision ([`cli-supervisor.ts`](../configurator/server/cli-supervisor.ts)), which also restarts the CLI when a
+supervision ([`cli-supervisor.ts`](../src/agent-client/src/cli-supervisor.ts)), which also restarts the CLI when a
 new ticket carries another server key, as after a container crash; none of the three CLI-side changes exists yet
 (N5). Promotable sessions are direct-WSS only, so relay continuity does not arise in the first delivery.
 
@@ -2096,7 +2096,7 @@ Delivered:
 - **Broker and launcher**:
   - While a move is open, placements are marked `moving`, so the broker closes shared routes with `4301` as the move
     begins.
-  - `pnpm host:connect` runs the CLI under a loopback relay supervisor (`configurator/server/cli-supervisor.ts`), the
+  - `pnpm host:connect` runs the CLI under a loopback relay supervisor (`src/agent-client/src/cli-supervisor.ts`), the
     first step of N5. On `moved`, or when a new ticket carries another server key, it stops the CLI and re-provisions
     through `connect-route.ts` (`reprovisionSession`). It retries while a move is in progress and stops on a permanent
     route change. It then restarts the CLI with `--resume` and the new key in the same terminal. A re-provisioning

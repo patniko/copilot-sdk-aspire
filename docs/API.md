@@ -158,7 +158,7 @@ deployed. The [hosting views](#hosting-views) show whether a harness can be crea
 
 | Method | Path | Behavior |
 | --- | --- | --- |
-| `POST` | `/v1/sessions` | Body `{ "harness": "<published conversation harness>", "version": "<optional>", "label": "<optional>" }`; the harness's hosting mode decides placement (`shared` on the shared worker, `isolated` in a [session container](#session-containers)). `201` with a retained session, including its harness, mode, placement, and current segment, and `Location`. Does not allocate an execution container or activate a runtime session. |
+| `POST` | `/v1/sessions` | Body `{ "harness": "<published conversation harness>", "version": "<optional>", "label": "<optional>" }`, or `{ "definition": { <harness definition> }, "label": "<optional>" }` to run a [definition submitted in code](#definitions-submitted-in-code); the harness's hosting mode decides placement (`shared` on the shared worker, `isolated` in a [session container](#session-containers)). `201` with a retained session, including its harness, mode, placement, and current segment, and `Location`. Does not allocate an execution container or activate a runtime session. |
 | `GET` | `/v1/sessions` | `{ sessions }`, up to 100 recent principal-owned sessions, including closed ones |
 | `GET` | `/v1/sessions/{id}` | The session view: `harness` (`name`, `version`, `digest`), `mode`, `placement` (`shared` or `container`), the current `segment` (`generation`, `placement`, `harness`, `ahpSessionId`, `startedAt`), the latest [`promotion`](#promotion) if any, a session container's `container` status, admitted model, limits, activity timestamp, closed/online state, used/reserved/remaining budget, and jobs and continuation counts |
 | `POST` | `/v1/sessions/{id}/connection` | Body `{ "transport": "direct" }` (the default; `github` returns the harness's hosting error, such as `422 transport_unsupported` for shared hosting). Activate/resume, then return `{ sessionId, destination, transport: "direct", ahpSessionId, url, token, expiresAt, serverKey }` with `Cache-Control: no-store`. `destination` is `shared` or `container`; `url` is the connection broker's `/sessions/{id}` path; resume `ahpSessionId` (the current segment's runtime session) after attaching |
@@ -188,6 +188,25 @@ refuses an existing session with the same codes, or with `409 policy_revoked` wh
 If the runtime will not hold the session's approval mode, activation returns `409 hosting_unavailable` with the
 prerequisite feature `approval-modes` instead of running it in another mode.
 Shared sessions created before harness-driven hosting cannot be activated (`409 invalid_state`); create a new one.
+
+### Definitions submitted in code
+
+When the base execution policy sets `"allowInlineHarnesses": true`, a caller can start a conversation from a complete
+[harness definition](../contracts/src/harness.ts) (`interaction: "conversation"`, inline `instructions` and skills)
+instead of a published name. The [example client](../examples/managed-agent/README.md) builds one in code and opens
+the CLI on the new session.
+
+- The definition gets the base policy and every check a published harness gets: schema, input and output schemas,
+  approved models, tools and bindings, built-in tools, permissions and approval modes, MCP servers, and the hosting
+  mode and its host. Refusals use the codes above; a schema error is `400 invalid_request` with up to 20
+  `details.issues` (`path`, `message`).
+- It is snapshotted with its content digest and recorded with the session as `source: "inline"`. It is never
+  published, cannot be a handoff or worker target, and its name cannot be a published harness's
+  (`409 harness_name_published`), so it never borrows a per-harness policy override.
+- Without the setting, creation returns `403 inline_harnesses_disabled` with the prerequisite
+  `{ "kind": "policy", "name": "allowInlineHarnesses" }`. Removing it later refuses activating, connecting to, or
+  starting a container for those sessions the same way; their data is kept.
+- `pnpm host:connect --resume <session-uuid>` attaches to such a session without naming a harness.
 
 Approvals and questions in a shared session go to the attached client, not to the job input-request API. The
 harness's approval mode decides how ([security](SECURITY.md#shared-conversation-approvals)): `manual` prompts the

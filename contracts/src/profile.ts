@@ -300,6 +300,12 @@ export const ExecutionPolicy = z
       .optional(),
     /** Hosting ceilings for conversation harnesses. Omitted means isolated hosting with the default settings. */
     hosting: HostingPolicy.optional(),
+    /**
+     * Whether callers may start conversations from harness definitions they submit (`POST /v1/sessions` with
+     * `definition`) instead of a published harness. Base policy only; omitted means not allowed. Submitted definitions
+     * get this base policy and every check a published harness gets.
+     */
+    allowInlineHarnesses: z.boolean().optional(),
   })
   .strict();
 export type ExecutionPolicy = z.infer<typeof ExecutionPolicy>;

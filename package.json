@@ -16,8 +16,10 @@
     "test:integration": "vitest run --project integration",
     "test:runtime": "vitest run --config vitest.runtime.config.ts",
     "typecheck:tests": "tsc -p tests/tsconfig.json",
-    "configure": "pnpm -r --filter ./contracts --filter ./src/service-defaults run build && pnpm --filter @copilot-agent/configurator start",
+    "configure": "pnpm -r --filter ./contracts --filter ./src/service-defaults --filter ./src/agent-client run build && pnpm --filter @copilot-agent/configurator start",
     "host:connect": "tsx configurator/server/connect-host.ts",
+    "agent:demo": "tsx examples/managed-agent/demo.ts",
+    "agent:ops": "tsx examples/managed-agent/ops.ts",
     "aspire:run": "aspire run --apphost ./apphost.mts"
   },
   "dependencies": {

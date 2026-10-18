@@ -24,6 +24,8 @@ and model setup; this guide owns the implementation workflow.
 | [`src/inference-gateway/src`](../src/inference-gateway/src) | Model route checks, capability authorization, upstream identity, usage reporting |
 | [`src/harness-hosting/src`](../src/harness-hosting/src) | TypeScript Copilot SDK runner, session mapping, permission handlers (batch and hosted), tool bindings |
 | [`src/service-defaults/src`](../src/service-defaults/src) | Shared HTTP, auth, logging, Postgres, configuration, and registry helpers |
+| [`src/agent-client/src`](../src/agent-client/src) | Experimental client: define a conversation harness in code (`defineAgent`), create sessions (`AgentPlatform`), and open the CLI on them through the loopback relay supervisor that `pnpm host:connect` also uses |
+| [`examples/managed-agent`](../examples/managed-agent) | `pnpm agent:demo`: a code-defined agent created on the local platform and opened in the CLI |
 | [`execution-profiles`](../execution-profiles) | Approved profile manifests and Python SDK sample implementation |
 | [`tools/python`](../tools/python) | Packaged Python tool implementations |
 | [`examples/customer-config`](../examples/customer-config) | Committed seed harnesses and policy; editable copies live in the ignored customer workspace |

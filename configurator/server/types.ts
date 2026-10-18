@@ -309,10 +309,23 @@ export interface LocalSettings {
   demoHost?: DemoHostSettings;
   foundryEndpoint: string;
   foundryDeployments: string[];
+  /** Bare Copilot model IDs the gateway exposes as `github/<id>`; empty exposes every usable model. */
+  githubInferenceModels: string[];
   npmRegistry: string;
   pipIndexUrl: string;
   /** Replaces nuget.org for Aspire CLI restores (corporate proxies). */
   nugetServiceIndex: string;
+}
+
+/** A GitHub Copilot model the stored token can use, as the inference gateway would route it. */
+export interface GitHubInferenceModel {
+  id: string;
+  name: string;
+  /** The gateway model name harnesses and policy use: `github/<id>`. */
+  routedAs: string;
+  policyState?: string;
+  /** Premium request multiplier relative to the plan's base rate. */
+  multiplier?: number;
 }
 
 export interface DeployTarget {
@@ -334,6 +347,8 @@ export interface SettingsInfo {
   selectedTarget?: string;
   /** Whether the demo host GitHub credential exists. The credential itself is never returned. */
   demoHostCredentialStored: boolean;
+  /** Whether the GitHub inference token exists. The token itself is never returned. */
+  githubInferenceCredentialStored: boolean;
   /** Where local values are stored (Aspire user secrets file), for display. */
   secretsPath?: string;
 }
