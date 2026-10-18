@@ -74,6 +74,10 @@ executor                         runner
 
    - `inference.token` is a job-scoped capability for the inference gateway. It is not a provider credential and
      is only valid for this attempt, its approved models, and its remaining token budget.
+   - Before creating its session, a runner reads `GET {baseUrl}models/{model}` (no capability needed) and uses its
+     `wire_api`, `completions` or `responses`, as the provider's wire API; when the gateway does not describe the
+     model, it uses `completions`. The model and the harness's sub-agent models must share one wire API. Both shipped
+     runners do this.
    - `workspace` is private to the attempt and deleted afterwards.
    - `eventDetail` is `sanitized` by default. An executor configured with `JOB_EVENT_DETAIL=full` requests
      bounded SDK event detail from the runner.

@@ -172,6 +172,48 @@ describe("Aspire user secrets", () => {
   });
 });
 
+describe("GitHub inference settings", () => {
+  const githubToken = "github_pat_test-only-inference-token-0001";
+
+  it("reads and writes Copilot models as a comma-joined parameter and removes it when empty", async () => {
+    await settings.writeLocal({ ...local, githubInferenceModels: ["claude-sonnet-5.5", "gpt-5.4", "gpt-5.4"] });
+    expect(JSON.parse(await readFile(secretsPath, "utf8"))["Parameters:github-inference-models"]).toBe("claude-sonnet-5.5,gpt-5.4");
+    expect((await settings.read()).local.githubInferenceModels).toEqual(["claude-sonnet-5.5", "gpt-5.4"]);
+
+    await settings.writeLocal({ ...local, githubInferenceModels: [] });
+    expect(JSON.parse(await readFile(secretsPath, "utf8"))).not.toHaveProperty("Parameters:github-inference-models");
+    expect((await settings.read()).local.githubInferenceModels).toEqual([]);
+  });
+
+  it("rejects prefixed or malformed model IDs", () => {
+    expect(LocalSettingsSchema.safeParse({ ...local, githubInferenceModels: ["github/gpt-5.4"] }).success).toBe(false);
+    expect(LocalSettingsSchema.safeParse({ ...local, githubInferenceModels: ["gpt 5"] }).success).toBe(false);
+    expect(LocalSettingsSchema.safeParse({ ...local, githubInferenceModels: Array.from({ length: 51 }, (_, i) => `m${i}`) }).success).toBe(false);
+  });
+
+  it("stores the token write-only and clears it with an empty value", async () => {
+    await writeFile(secretsPath, JSON.stringify({ "Parameters:dev-api-key": apiKey }), "utf8");
+    expect((await settings.read()).githubInferenceCredentialStored).toBe(false);
+
+    await settings.writeGitHubInferenceToken(githubToken);
+    const info = await settings.read();
+    expect(info.githubInferenceCredentialStored).toBe(true);
+    expect(JSON.stringify(info)).not.toContain(githubToken);
+    expect(await settings.githubInferenceToken()).toBe(githubToken);
+
+    await settings.writeLocal(local);
+    expect(await settings.githubInferenceToken()).toBe(githubToken);
+
+    await settings.writeGitHubInferenceToken("");
+    expect(await settings.githubInferenceToken()).toBeUndefined();
+    expect(JSON.parse(await readFile(secretsPath, "utf8"))).toEqual({
+      "Parameters:dev-api-key": apiKey,
+      "Parameters:foundry-endpoint": local.foundryEndpoint,
+      "Parameters:foundry-deployments": "test-model",
+    });
+  });
+});
+
 describe("Try it local connection", () => {
   const port = 4999;
   const token = "test-only-configurator-token";

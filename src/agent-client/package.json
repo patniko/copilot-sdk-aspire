@@ -1,0 +1,28 @@
+{
+  "name": "@copilot-agent/client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Client for the agent platform: define a conversation harness in code, create a managed session, and open the Copilot CLI on it over AHP.",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@copilot-agent/contracts": "workspace:*",
+    "@copilot-agent/service-defaults": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.3"
+  }
+}

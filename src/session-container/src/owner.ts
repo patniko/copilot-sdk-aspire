@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { CopilotClient, RuntimeConnection, type AhpHost, type CopilotSession, type SessionConfig } from "@github/copilot-sdk";
-import { promotionContinuation, renderSkillMarkdown, RuntimeSessionId } from "@copilot-agent/contracts";
+import { gatewayWireApi, promotionContinuation, renderSkillMarkdown, RuntimeSessionId } from "@copilot-agent/contracts";
 import { bindTools, buildSessionOptions, hostPermissionHandler, hostToolGuard } from "@copilot-agent/harness-hosting";
 import { SupervisorMessage, type OwnerConfiguration } from "./protocol.js";
 
@@ -93,6 +93,7 @@ async function start(config: OwnerConfiguration): Promise<void> {
     ? (retained.runtimeSessionId ?? spec.sessionId)
     : (spec.promotion?.runtimeSessionId ?? spec.sessionId));
   const models = [...new Set([spec.model, ...(definition.agents ?? []).flatMap((agent) => agent.model ? [agent.model] : [])])];
+  const wireApi = await gatewayWireApi(config.gatewayUrl, models);
   // The in-process runtime uses this process's working directory; it cannot take a client-level one.
   process.chdir(workspace);
   client = new CopilotClient({
@@ -123,7 +124,7 @@ async function start(config: OwnerConfiguration): Promise<void> {
     enableConfigDiscovery: false,
     skipCustomInstructions: true,
     provider: {
-      type: "openai", baseUrl: config.gatewayUrl, wireApi: "completions",
+      type: "openai", baseUrl: config.gatewayUrl, wireApi,
       bearerTokenProvider: async () => {
         if (stopping) throw new Error("The session container is stopping.");
         if (!activeTurn) {

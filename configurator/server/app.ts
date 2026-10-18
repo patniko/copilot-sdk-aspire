@@ -20,6 +20,7 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import { z, ZodError } from "zod";
 import { AuthoringError, AuthoringRequest, AuthoringService, type DraftGenerator } from "./authoring.js";
 import { GitHubAuthError, GitHubDeviceAuth } from "./github-auth.js";
+import { discoverGitHubModels, type GitHubModelLister, GitHubModelsError, sdkModelLister } from "./github-models.js";
 import { harnessConnections, harnessHostingDetail, readOwnerHosts, readServiceView, staleVersions } from "./hosting.js";
 import { mapHarnessDefinition, mapPlannerPlan } from "./import.js";
 import { bumpPatch, compareVersions, Repo, RepoError } from "./repo.js";
@@ -72,6 +73,8 @@ export interface AppOptions {
   authoringGenerator?: DraftGenerator;
   /** Injectable read of the running agent-api's hosting views; production forwards `GET /v1/hosting[/{harness}]`. */
   hostingViewFetcher?: (target: TryTarget, path: string) => Promise<{ status: number; body: unknown }>;
+  /** Injectable GitHub Copilot model listing; production starts a Copilot SDK client with the stored inference token. */
+  githubModelLister?: GitHubModelLister;
 }
 
 const SLUG = /^[a-z][a-z0-9-]{1,62}$/;
@@ -156,7 +159,7 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     if (error instanceof SettingsError) {
       return reply.status(400).send({ error: error.message });
     }
-    if (error instanceof GitHubAuthError) {
+    if (error instanceof GitHubAuthError || error instanceof GitHubModelsError) {
       return reply.status(error.statusCode).send({ error: error.message });
     }
     if (error instanceof TaskConflictError) {
@@ -663,6 +666,27 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     await settings.writeLocal(request.body);
     await refreshAspireEnv();
     return settings.read();
+  });
+  app.put("/api/settings/github-inference-token", async (request, reply) => {
+    const body = z
+      .object({
+        token: z.string().refine((token) => token === "" || (token.length >= 20 && token.length <= 400 && !/\s/.test(token)), {
+          message: "Enter a GitHub token of 20 to 400 characters without spaces, or an empty value to remove it.",
+        }),
+      })
+      .strict()
+      .parse(request.body);
+    await settings.writeGitHubInferenceToken(body.token);
+    reply.header("cache-control", "no-store");
+    return settings.read();
+  });
+  app.get("/api/github-inference/models", async (_request, reply) => {
+    const token = await settings.githubInferenceToken();
+    if (!token) {
+      throw new GitHubModelsError(400, "Save a GitHub inference token first, then discover models.");
+    }
+    reply.header("cache-control", "no-store");
+    return { models: await discoverGitHubModels(token, options.githubModelLister ?? sdkModelLister) };
   });
   app.put("/api/settings/targets", async (request) => {
     await settings.writeTargets(request.body);

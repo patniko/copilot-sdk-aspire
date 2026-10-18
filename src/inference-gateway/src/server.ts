@@ -2,12 +2,18 @@ import type { InferenceCapabilityClaims, CapabilityIntrospection, UsageReport } 
 import { bearerToken, createService, verifyInferenceCapability } from "@copilot-agent/service-defaults";
 import { randomUUID } from "node:crypto";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { RouteTable } from "./routes.js";
+import type { ResolvedUpstream } from "./github-upstream.js";
+import { routeOwner, routeWireApi, type InferenceRoute, type RouteTable } from "./routes.js";
 
 export interface GatewayDependencies {
   signingKey: string;
   routes: RouteTable;
   upstreamToken: () => Promise<string>;
+  /** Resolves GitHub Copilot routes (`auth: "github"`); absent when GitHub inference is not configured. */
+  github?: {
+    endpoint: (deployment: string) => Promise<ResolvedUpstream>;
+    invalidate: (deployment: string) => void;
+  };
   introspect: (jti: string) => Promise<CapabilityIntrospection>;
   reportUsage: (report: UsageReport) => Promise<void>;
   beginRequest?: (jti: string, requestId: string) => Promise<void>;
@@ -62,12 +68,26 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
     return {
       object: "list",
       data: claims.mdl
-        .filter((m) => deps.routes.routes.has(m))
-        .map((id) => ({ id, object: "model", created: 0, owned_by: "inference-gateway" })),
+        .flatMap((id) => {
+          const route = deps.routes.routes.get(id);
+          return route ? [describe(route)] : [];
+        }),
     };
   });
 
-  app.post("/openai/v1/chat/completions", async (request, reply) => {
+  // Runtimes choose their provider's wire API before they hold a capability, so one routed model's description is
+  // public: it reveals only that the name is routed and how. Listing every model still requires a capability.
+  app.get("/openai/v1/models/*", async (request, reply) => {
+    const id = (request.params as { "*": string })["*"];
+    const route = deps.routes.routes.get(id);
+    if (!route) return openAiError(reply, 404, "model_not_found", "The model is not routed by this gateway.");
+    return describe(route);
+  });
+
+  app.post("/openai/v1/chat/completions", async (request, reply) => forward(request, reply, "chat/completions"));
+  app.post("/openai/v1/responses", async (request, reply) => forward(request, reply, "responses"));
+
+  async function forward(request: FastifyRequest, reply: FastifyReply, path: "chat/completions" | "responses") {
     const claims = await authorize(request, reply);
     if (!claims) {
       return reply;
@@ -80,6 +100,10 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
     const route = deps.routes.routes.get(body.model);
     if (!route || !claims.mdl.includes(body.model)) {
       return openAiError(reply, 403, "model_not_allowed", "The model is not approved for this execution.");
+    }
+    const wireApi = routeWireApi(route);
+    if (wireApi !== (path === "responses" ? "responses" : "completions")) {
+      return openAiError(reply, 400, "unsupported_api_for_model", `The model is served over /${wireApi === "responses" ? "responses" : "chat/completions"}.`);
     }
 
     let status: CapabilityIntrospection;
@@ -110,9 +134,16 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
       }
     }
     let upstreamToken: string | undefined;
-    if (route.auth === "entra") {
+    let upstreamBase = route.baseUrl;
+    let upstreamHeaders: Record<string, string> = {};
+    if (route.auth === "entra" || route.auth === "github") {
       try {
-        upstreamToken = await deps.upstreamToken();
+        if (route.auth === "entra") {
+          upstreamToken = await deps.upstreamToken();
+        } else {
+          if (!deps.github) throw new Error("GitHub inference is not configured.");
+          ({ baseUrl: upstreamBase, headers: upstreamHeaders } = await deps.github.endpoint(route.deployment));
+        }
       } catch (error) {
         request.log.error({ err: error }, "upstream credential unavailable");
         if (reserved) {
@@ -125,7 +156,8 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
 
     const streaming = body.stream === true;
     const upstreamBody: ChatBody = { ...body, model: route.deployment };
-    if (streaming) {
+    // Responses streams always end with usage; chat completion streams include it only on request.
+    if (streaming && path === "chat/completions") {
       upstreamBody.stream_options = { ...(body.stream_options ?? {}), include_usage: true };
     }
 
@@ -155,6 +187,8 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
 
     try {
       const headers: Record<string, string> = {
+        ...upstreamHeaders,
+        ...(route.auth === "github" ? { "x-interaction-id": requestId } : {}),
         "content-type": "application/json",
         accept: streaming ? "text/event-stream" : "application/json",
         "user-agent": "copilot-agent-inference-gateway/0.1",
@@ -162,7 +196,7 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
       if (upstreamToken) {
         headers.authorization = `Bearer ${upstreamToken}`;
       }
-      const upstream = await fetch(`${route.baseUrl}/chat/completions`, {
+      const upstream = await fetch(`${upstreamBase}/${path}`, {
         method: "POST",
         headers,
         body: JSON.stringify(upstreamBody),
@@ -172,6 +206,9 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
       if (upstream.status >= 300 && upstream.status < 400) {
         await upstream.body?.cancel();
         return openAiError(reply, 502, "upstream_redirect_refused", "The upstream attempted a redirect.");
+      }
+      if (route.auth === "github" && (upstream.status === 401 || upstream.status === 403)) {
+        deps.github?.invalidate(route.deployment);
       }
 
       const contentType = upstream.headers.get("content-type") ?? "application/json";
@@ -253,21 +290,34 @@ export function buildGateway(deps: GatewayDependencies): FastifyInstance {
           .catch((error) => request.log.error({ err: error, ...correlation }, reserved ? "inference reservation settlement pending" : "usage report lost"));
       }
     }
-  });
+  }
 
   app.all("/openai/*", async (_request, reply) => openAiError(reply, 404, "not_found", "Unsupported endpoint."));
 
   return app;
 }
 
+function describe(route: InferenceRoute) {
+  return { id: route.model, object: "model" as const, created: 0, owned_by: routeOwner(route), wire_api: routeWireApi(route) };
+}
+
+interface Usage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+}
+
+/** Usage from a chat completion (`usage.prompt_tokens`) or a Responses payload or `response.completed` event (`input_tokens`). */
 function extractUsage(json: string): { input: number; output: number } | undefined {
   try {
-    const parsed = JSON.parse(json) as { usage?: { prompt_tokens?: number; completion_tokens?: number } | null };
-    if (!parsed.usage) {
+    const parsed = JSON.parse(json) as { usage?: Usage | null; response?: { usage?: Usage | null } | null };
+    const usage = parsed.usage ?? parsed.response?.usage;
+    if (!usage) {
       return undefined;
     }
-    const input = parsed.usage.prompt_tokens;
-    const output = parsed.usage.completion_tokens;
+    const input = usage.prompt_tokens ?? usage.input_tokens;
+    const output = usage.completion_tokens ?? usage.output_tokens;
     if (typeof input !== "number" || typeof output !== "number"
       || ![input, output].every((value) => Number.isSafeInteger(value) && value >= 0 && value <= 10_000_000)) return undefined;
     return { input, output };

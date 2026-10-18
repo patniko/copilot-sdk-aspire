@@ -4,6 +4,7 @@ import type { FoundryDeployment, LocalSettings } from "../../server/types";
 import { api, errorMessage } from "../api";
 import { FoundryPicker } from "../components/FoundryPicker";
 import { DemoHostFields } from "../components/DemoHostFields";
+import { GitHubInferenceFields } from "../components/GitHubInferenceFields";
 import { deploymentDetails } from "../components/AzurePickers";
 import { UrlInput } from "../components/UrlInput";
 import { Badge, Card, ChipsInput, CopyButton, Empty, Field, PageHeader, SecretInput, Spinner, stateTone } from "../components/ui";
@@ -100,6 +101,7 @@ export function LocalRunView() {
   const localBusy = tasks.some((t) => t.status === "running" && t.kind.startsWith("local"));
   const checkBusy = tasks.some((t) => t.status === "running" && ["test-unit", "test-all", "build"].includes(t.kind));
   const dirty = draft && settings && JSON.stringify(draft) !== JSON.stringify(settings.local);
+  const foundryOptional = settings?.githubInferenceCredentialStored ? " Optional while GitHub Copilot inference is configured." : "";
 
   async function save() {
     if (!draft) return;
@@ -123,7 +125,7 @@ export function LocalRunView() {
     <div className="space-y-6">
       <PageHeader
         title="Run locally"
-        description="Aspire runs PostgreSQL and the executor in containers and the API, dispatcher, and gateway as Node processes. The gateway uses your Azure CLI identity for the model; agents never see it."
+        description="Aspire runs PostgreSQL and the executor in containers and the API, dispatcher, and gateway as Node processes. The gateway calls models with your Azure CLI identity (Foundry) or a stored GitHub token (Copilot models); agents never see either."
       />
 
       <Card
@@ -295,10 +297,10 @@ export function LocalRunView() {
                 }}
               />
             </div>
-            <Field label="Foundry endpoint" help="local.foundryEndpoint" hint="OpenAI v1 endpoint, e.g. https://<account>.openai.azure.com/openai/v1" error={fieldErrors.foundryEndpoint}>
+            <Field label="Foundry endpoint" help="local.foundryEndpoint" hint={`OpenAI v1 endpoint, e.g. https://<account>.openai.azure.com/openai/v1.${foundryOptional}`} error={fieldErrors.foundryEndpoint}>
               <UrlInput label="Foundry endpoint" https probePath="/models" value={draft.foundryEndpoint} onChange={(foundryEndpoint) => setDraft({ ...draft, foundryEndpoint })} />
             </Field>
-            <Field label="Model deployments" help="local.foundryDeployments" hint="Deployment names the gateway routes; jobs use the policy-approved model names." error={fieldErrors.foundryDeployments}>
+            <Field label="Model deployments" help="local.foundryDeployments" hint={`Deployment names the gateway routes; jobs use the policy-approved model names.${foundryOptional}`} error={fieldErrors.foundryDeployments}>
               <ChipsInput
                 values={draft.foundryDeployments}
                 onChange={(values) => setDraft({ ...draft, foundryDeployments: values })}
@@ -307,6 +309,13 @@ export function LocalRunView() {
                 details={deploymentDetails(discovered)}
               />
             </Field>
+            <div className="md:col-span-2">
+              <GitHubInferenceFields
+                models={draft.githubInferenceModels ?? []}
+                onChange={(githubInferenceModels) => setDraft({ ...draft, githubInferenceModels })}
+                error={fieldErrors.githubInferenceModels}
+              />
+            </div>
             <Field label="npm registry for image builds" help="local.registries" hint="Leave empty for registry.npmjs.org." error={fieldErrors.npmRegistry}>
               <UrlInput label="npm registry" placeholder="https://registry.npmjs.org" value={draft.npmRegistry} onChange={(npmRegistry) => setDraft({ ...draft, npmRegistry })} />
             </Field>

@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.server.json --noEmit"
   },
   "dependencies": {
+    "@copilot-agent/client": "workspace:*",
     "@copilot-agent/contracts": "workspace:*",
     "@copilot-agent/service-defaults": "workspace:*",
     "@github/copilot-sdk": "1.0.16",

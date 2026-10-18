@@ -86,6 +86,8 @@ export const SharedSessionHarness = z.object({
   definition: HarnessDefinition.optional(),
   /** Digest of the harness's effective operator policy at admission, for provenance. */
   policyDigest: z.string().regex(DIGEST).optional(),
+  /** `inline` for a definition the caller submitted (base policy `allowInlineHarnesses`); omitted for published harnesses. */
+  source: z.literal("inline").optional(),
 }).strict();
 export type SharedSessionHarness = z.infer<typeof SharedSessionHarness>;
 
@@ -108,12 +110,24 @@ export const SharedSessionDefinition = z.object({
 }).strict();
 export type SharedSessionDefinition = z.infer<typeof SharedSessionDefinition>;
 
-/** Create a session for a published conversation harness. Omitting `version` admits the latest one. */
+/**
+ * A new conversation from a published harness (`harness`, optional `version`) or from a harness definition the caller
+ * submits (`definition`). Submitted definitions need the base policy's `allowInlineHarnesses` and pass the same checks
+ * as a published harness; they are snapshotted with their digest and never published.
+ */
 export const SharedSessionCreation = z.object({
-  harness: z.string().regex(SLUG),
+  harness: z.string().regex(SLUG).optional(),
   version: z.string().regex(SEMVER).optional(),
+  definition: HarnessDefinition.optional(),
   label: z.string().trim().max(120).default(""),
-}).strict();
+}).strict().superRefine((creation, ctx) => {
+  if ((creation.harness === undefined) === (creation.definition === undefined)) {
+    ctx.addIssue({ code: "custom", path: ["harness"], message: "Name a published harness or submit a definition, not both." });
+  }
+  if (creation.definition && creation.version !== undefined) {
+    ctx.addIssue({ code: "custom", path: ["version"], message: "A submitted definition carries its own version." });
+  }
+});
 export type SharedSessionCreation = z.infer<typeof SharedSessionCreation>;
 export const SharedSessionClosure = z.object({ cancelChildren: z.boolean().default(false) }).strict();
 export const SharedPrincipalBindings = z.record(z.string().regex(/^[A-Za-z0-9._@-]{1,128}$/), z.number().int().positive().safe());

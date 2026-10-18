@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { CopilotClient, RuntimeConnection, type AhpHost, type CopilotSession, type SessionConfig } from "@github/copilot-sdk";
-import { canonicalSessionId, HostedSession, renderSkillMarkdown, type HostControlRequest } from "@copilot-agent/contracts";
+import { canonicalSessionId, gatewayWireApi, HostedSession, renderSkillMarkdown, type HostControlRequest } from "@copilot-agent/contracts";
 import { bindTools, buildSessionOptions } from "@copilot-agent/harness-hosting";
 import { SupervisorMessage, type OwnerConfiguration } from "./protocol.js";
 import { hostPermissionHandler, hostToolGuard } from "./policy.js";
@@ -115,6 +115,9 @@ async function start(config: OwnerConfiguration): Promise<void> {
     const mapped = buildSessionOptions(definition, tools.map((tool) => tool.name), skills, "conversation");
     const availableTools = mapped.availableTools;
     if (!Array.isArray(availableTools)) throw new Error("The host requires an explicit tool allowlist.");
+    const wireApi = await gatewayWireApi(managedConfig.gatewayUrl, [
+      admitted.model, ...(definition.agents ?? []).flatMap((agent) => agent.model ? [agent.model] : []),
+    ]);
     const token = async (): Promise<string> => {
       if (stopping) throw new Error("The host is stopping.");
       if (activeSession && activeSession !== id) throw new Error("Another hosted session is running. Wait or abort its turn.");
@@ -138,7 +141,7 @@ async function start(config: OwnerConfiguration): Promise<void> {
       tools,
       enableConfigDiscovery: false,
       skipCustomInstructions: true,
-      provider: { type: "openai", baseUrl: managedConfig.gatewayUrl, wireApi: "completions", bearerTokenProvider: token },
+      provider: { type: "openai", baseUrl: managedConfig.gatewayUrl, wireApi, bearerTokenProvider: token },
       onPermissionRequest: hostPermissionHandler(definition),
       hooks: {
         onPreToolUse: async (input) => {

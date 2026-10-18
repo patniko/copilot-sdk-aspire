@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-  effectiveHarnessHosting, handoffFailureNotice, handoffNotice, handoffNoticeMarker, humanAuthorityMessages, PromotionResponse,
+  effectiveHarnessHosting, gatewayWireApi, handoffFailureNotice, handoffNotice, handoffNoticeMarker, humanAuthorityMessages, PromotionResponse,
   SessionContainerSettings, SharedPrincipalBindings, SharedWorkerLimits,
   type ConnectionTicket, type HandoffPayload, type HostingTransport, type PromotionRequestBody, type SharedSessionCreation,
 } from "@copilot-agent/contracts";
@@ -389,6 +389,10 @@ export class SharedSessionService {
       return activation;
     };
     const settings = sharedSessionSettings(plan.definition);
+    const wireApi = await gatewayWireApi(this.options.gatewayUrl, [
+      plan.model, ...(plan.approval.judgeModel ? [plan.approval.judgeModel] : []),
+      ...(plan.definition.agents ?? []).flatMap((agent) => agent.model ? [agent.model] : []),
+    ]);
     try {
       const connection = await this.#runtime.open({
         id: row.id, principal: row.principal, githubUserId: row.githubUserId, model: plan.model,
@@ -414,7 +418,7 @@ export class SharedSessionService {
           return policy.handle(request, invocation);
         },
         provider: (context) => ({
-          type: "openai", baseUrl: this.options.gatewayUrl, wireApi: "completions",
+          type: "openai", baseUrl: this.options.gatewayUrl, wireApi,
           bearerTokenProvider: async () => {
             const resident = bind(context);
             const signal = AbortSignal.any([context.signal, resident.controller.signal]);

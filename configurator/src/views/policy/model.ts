@@ -114,13 +114,14 @@ export const FIELD_LABELS: Record<keyof ExecutionPolicy, string> = {
   permissionHandlers: "Permission handlers",
   mcpServers: "MCP servers",
   hosting: "Hosting",
+  allowInlineHarnesses: "Code-defined harnesses",
 };
 
 /** A short, human-readable rendering of one policy value. */
 export function formatPolicyValue(field: keyof ExecutionPolicy, value: unknown): string {
   if (value === undefined) {
     if (field === "maxReasoningEffort") return "no cap";
-    if (field === "allowLongContext") return "no";
+    if (field === "allowLongContext" || field === "allowInlineHarnesses") return "no";
     if (field === "approvalModes") return "manual";
     if (field === "hosting") return "defaults (isolated only)";
     return "none";

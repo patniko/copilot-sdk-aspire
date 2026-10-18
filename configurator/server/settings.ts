@@ -21,12 +21,16 @@ const httpsUrl = z
 
 const optionalHttpsUrl = z.union([z.literal(""), httpsUrl]);
 const deployment = z.string().regex(/^[A-Za-z0-9._-]{1,64}$/, "Deployment names use letters, digits, '.', '_' and '-'.");
+const copilotModel = z
+  .string()
+  .regex(/^[A-Za-z0-9._-]{1,100}$/, "Use bare Copilot model IDs (letters, digits, '.', '_' and '-') without the github/ prefix.");
 
 export const LocalSettingsSchema = z
   .object({
     demoHost: DemoHostSettings.optional(),
     foundryEndpoint: optionalHttpsUrl,
     foundryDeployments: z.array(deployment).max(20),
+    githubInferenceModels: z.array(copilotModel).max(50).default([]),
     npmRegistry: optionalHttpsUrl,
     pipIndexUrl: optionalHttpsUrl,
     nugetServiceIndex: optionalHttpsUrl,
@@ -65,6 +69,8 @@ type StoredSettings = z.infer<typeof StoredSettings>;
 const SECRET_KEYS = {
   foundryEndpoint: "Parameters:foundry-endpoint",
   foundryDeployments: "Parameters:foundry-deployments",
+  githubInferenceModels: "Parameters:github-inference-models",
+  githubInferenceToken: "Parameters:github-inference-token",
   npmRegistry: "Parameters:npm-registry",
   pipIndexUrl: "Parameters:pip-index-url",
 } as const;
@@ -171,6 +177,17 @@ export class Settings {
     });
   }
 
+  /** Server-side only: the GitHub token the inference gateway uses for Copilot models. Never returned by read(). */
+  async githubInferenceToken(): Promise<string | undefined> {
+    const value = (await this.#readSecrets())[SECRET_KEYS.githubInferenceToken];
+    return typeof value === "string" && value.trim() ? value : undefined;
+  }
+
+  /** Stores the GitHub inference token; an empty token removes it. */
+  async writeGitHubInferenceToken(token: string): Promise<void> {
+    await this.#writeSecrets({ [SECRET_KEYS.githubInferenceToken]: token || undefined });
+  }
+
   async #readStored(): Promise<StoredSettings> {
     try {
       return StoredSettings.parse(JSON.parse(await readFile(this.file, "utf8")));
@@ -202,6 +219,10 @@ export class Settings {
         .split(",")
         .map((d) => d.trim())
         .filter(Boolean),
+      githubInferenceModels: text(SECRET_KEYS.githubInferenceModels)
+        .split(",")
+        .map((m) => m.trim())
+        .filter(Boolean),
       npmRegistry: text(SECRET_KEYS.npmRegistry),
       pipIndexUrl: text(SECRET_KEYS.pipIndexUrl),
       nugetServiceIndex: stored.nugetServiceIndex,
@@ -218,6 +239,7 @@ export class Settings {
       targets,
       selectedTarget: stored.selectedTarget ?? targets[0]?.name,
       demoHostCredentialStored: Boolean(text("Parameters:demo-host-github-token")),
+      githubInferenceCredentialStored: Boolean(text(SECRET_KEYS.githubInferenceToken).trim()),
       secretsPath: await this.secretsPath(),
     };
   }
@@ -227,6 +249,7 @@ export class Settings {
     await this.#writeSecrets({
       [SECRET_KEYS.foundryEndpoint]: local.foundryEndpoint,
       [SECRET_KEYS.foundryDeployments]: local.foundryDeployments.join(","),
+      [SECRET_KEYS.githubInferenceModels]: [...new Set(local.githubInferenceModels)].join(","),
       [SECRET_KEYS.npmRegistry]: local.npmRegistry,
       [SECRET_KEYS.pipIndexUrl]: local.pipIndexUrl,
       "Parameters:demo-host-transport": local.demoHost?.transport === "disabled" ? undefined : local.demoHost?.transport,

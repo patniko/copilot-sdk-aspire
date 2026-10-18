@@ -16,8 +16,8 @@ Store no credentials there, protect its delivery like application configuration,
 
 | Boundary | Mechanism | Verified by |
 | --- | --- | --- |
-| No provider credential in execution | Runners get a job-scoped HS256 capability (attempt, principal, models, token budget, expiry). The gateway verifies it, checks revocation and budget with the dispatcher, strips every caller header, and attaches its own Entra token. | `tests/unit/gateway.test.ts`, end-to-end test, live run against Foundry |
-| No direct-provider fallback | Routes come from trusted configuration only; HTTPS required; no credentials in URLs; redirects refused; authorization failures fail closed. | `tests/unit/gateway.test.ts` |
+| No provider credential in execution | Runners get a job-scoped HS256 capability (attempt, principal, models, token budget, expiry). The gateway verifies it, checks revocation and budget with the dispatcher, strips every caller header, and attaches its own upstream credential: its Entra token for Foundry routes, or the operator's GitHub token and Copilot API headers for [GitHub Copilot routes](#github-copilot-inference). | `tests/unit/gateway.test.ts`, end-to-end test, live run against Foundry |
+| No direct-provider fallback | Routes come from trusted configuration, or from the account the gateway's GitHub credential discovers, only; HTTPS required; no credentials in URLs; redirects refused; authorization failures fail closed. | `tests/unit/gateway.test.ts`, `tests/unit/github-inference.test.ts` |
 | Least-privilege model access | Only the gateway's managed identity holds `Cognitive Services OpenAI User`, scoped to the one Foundry account. | Generated Bicep (`inference-gateway-roles-foundry`) |
 | Runner process isolation | Runners execute as an unprivileged user dedicated to their executor slot (uid 10001–10008), with a private 0700 workspace and an allowlisted environment (PATH, HOME/TMP in the workspace, locale, non-secret profile settings). Concurrent attempts on one executor cannot read each other's workspaces. The executor's environment, including its dispatcher key and the platform identity header, is unreadable to the runner. | Container inspection of a live runner and Copilot runtime process |
 | Executor holds no data or provider access | The executor has no database reference, no Azure role, and no ingress; it authenticates to the dispatcher with one service key. | Generated Bicep (`agent-executor`) |
@@ -48,6 +48,35 @@ Store no credentials there, protect its delivery like application configuration,
 | API keys for callers | Suitable for development and service-to-service use. | Microsoft Entra ID authentication with application authorization. |
 | MCP partially implemented | Local (stdio) MCP is not available, and remote MCP is available only in shared placement, through the [remote MCP client](#shared-placement-egress-and-remote-mcp) with one service credential per server. Per-user sign-in (OAuth) is not implemented. | Implement local MCP with the same capability and gateway model; extend remote MCP to container placements; add per-user OAuth. |
 | Single trust boundary per deployment | Principals are isolated in the API and ledger, but share execution infrastructure. | Do not market as cross-customer isolation. |
+| GitHub Copilot inference uses one operator credential | Every principal's `github/…` requests use the single GitHub token configured on the gateway, are billed to that account's Copilot plan, and follow GitHub's data handling rather than the Foundry deployment's. Copilot counts each model request the gateway forwards; tool-call follow-ups are not marked as agent-initiated. See [GitHub Copilot inference](#github-copilot-inference). | Per-principal GitHub identities, or a GitHub App installation token, before use beyond one operator's own workloads. |
+
+## GitHub Copilot inference
+
+Optional. When `github-inference-token` is configured, the gateway starts its own Copilot SDK client with that token,
+lists the account's models, and resolves each model's Copilot API endpoint and headers through the SDK
+(`session.provider.getEndpoint`). It routes them as `github/<model>`; a policy must approve those names like any other
+model, and budgets, revocation, and usage accounting apply unchanged.
+
+- The token stays in the gateway process and the Copilot runtime it starts with a minimal environment (none of the
+  gateway's service keys). Runners, shared workers, session containers, and hosts still hold only capabilities.
+- Use a token limited to Copilot requests, such as a fine-grained personal access token with the **Copilot Requests**
+  permission. A broader OAuth or classic token works but gives the gateway more than it needs.
+- Runtimes choose their provider's wire API (`/chat/completions` or `/responses`) before they hold a capability, so
+  `GET /openai/v1/models/{model}` needs no capability. It returns only whether that model name is routed, by whom, and
+  over which API; listing models still requires one. A session's models must share one wire API.
+- This is separate from the [GitHub-native host profile](#experimental-host-boundaries), which runs Copilot's own
+  sessions and permissions rather than harnesses.
+
+## Definitions submitted in code
+
+Off by default. With `allowInlineHarnesses` in the base policy, any authenticated principal bound to a GitHub account
+can start a conversation from a harness definition it submits ([API](API.md#definitions-submitted-in-code)). Such a
+definition cannot exceed what a published harness may do: it takes the base policy, never a per-harness override,
+and passes the same admission and hosting checks, re-run on every activation. What changes is who authors the agent:
+instructions, tools within the approved bindings, and permissions come from the caller rather than from an operator
+review. Enable it only where callers may already choose among everything the base policy allows; tighten the base
+policy (models, built-in tools, permission and approval modes, hosting modes) to bound it. Definitions are recorded
+with the session for audit but are not listed or reviewed anywhere else.
 
 ## Local authoring boundaries
 

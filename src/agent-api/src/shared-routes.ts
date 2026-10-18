@@ -4,7 +4,7 @@ import {
   ConnectionTicket, PromotionRequestBody, PromotionResponse, SharedConnection, SharedConnectionRequest, SharedSessionClosure,
   SharedSessionCreation, SharedSessionView,
 } from "@copilot-agent/contracts";
-import { harnessHostingView, hostingError, HttpError, type HostingCatalog } from "@copilot-agent/service-defaults";
+import { harnessHostingView, hostingError, HttpError, inlineHarnessSnapshot, type HostingCatalog } from "@copilot-agent/service-defaults";
 import type { DelegationStore, HandoffStore } from "@copilot-agent/job-store";
 import type { ContainerSessionService } from "./container-sessions.js";
 
@@ -82,20 +82,29 @@ export function registerSharedSessionRoutes(
   app.post("/v1/sessions", async (request, reply) => {
     const principal = principalOf(request);
     const body = SharedSessionCreation.safeParse(request.body ?? {});
-    if (!body.success) throw new HttpError(400, "invalid_request", "Name a published conversation harness: { \"harness\": \"<name>\", \"label\": \"...\" }.");
+    if (!body.success) {
+      throw new HttpError(400, "invalid_request",
+        "Name a published conversation harness ({ \"harness\": \"<name>\" }) or submit one ({ \"definition\": { ... } }), with an optional label.",
+        { issues: body.error.issues.slice(0, 20).map((issue) => ({ path: issue.path.join("."), message: issue.message })) });
+    }
     let creation = body.data;
     if (catalog) {
-      const versions = catalog.harnesses.get(creation.harness);
-      const snapshot = creation.version === undefined ? versions?.[0] : versions?.find((entry) => entry.definition.version === creation.version);
-      if (!snapshot) throw new HttpError(404, "harness_not_found", "The requested harness version is not published.");
+      let snapshot;
+      if (creation.definition) {
+        snapshot = inlineHarnessSnapshot(creation.definition, catalog.harnesses, catalog.policies);
+      } else {
+        const versions = catalog.harnesses.get(creation.harness!);
+        snapshot = creation.version === undefined ? versions?.[0] : versions?.find((entry) => entry.definition.version === creation.version);
+        if (!snapshot) throw new HttpError(404, "harness_not_found", "The requested harness version is not published.");
+      }
       const view = harnessHostingView(catalog, snapshot, principal);
       if (view.interaction !== "conversation") {
         throw new HttpError(422, "policy_rejected", "Batch harnesses run as jobs; create conversations from conversation harnesses.");
       }
       if (view.problems[0]) throw hostingError(view.problems[0]);
-      creation = { ...creation, version: snapshot.definition.version };
+      if (!creation.definition) creation = { ...creation, version: snapshot.definition.version };
       if (view.placement === "container" && containers) {
-        const session = await containers.create(principal, creation);
+        const session = await containers.create(principal, creation, snapshot);
         return reply.header("location", `/v1/sessions/${session.id}`).status(201).send(session);
       }
       if (view.placement !== "shared") {

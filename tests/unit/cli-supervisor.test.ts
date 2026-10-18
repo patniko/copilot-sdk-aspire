@@ -9,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { BROKER_MOVED_CLOSE } from "@copilot-agent/contracts";
-import { superviseSessionCli, type SessionConnection } from "../../configurator/server/cli-supervisor.js";
+import { superviseSessionCli, type SessionConnection } from "../../src/agent-client/src/cli-supervisor.js";
 import { SessionRouteChanged } from "../../configurator/server/connect-route.js";
 
 const fakeCli = join(import.meta.dirname, "..", "fakes", "fake-ahp-cli.mjs");

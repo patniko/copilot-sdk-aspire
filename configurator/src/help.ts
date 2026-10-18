@@ -620,14 +620,32 @@ export const help: Record<string, HelpTopic> = {
     title: "Foundry endpoint",
     option: "Parameters:foundry-endpoint",
     scope: "Local machine",
-    summary: "The Azure AI Foundry (OpenAI-compatible) endpoint the local inference gateway calls, using your Azure CLI sign-in.",
+    summary:
+      "The Azure AI Foundry (OpenAI-compatible) endpoint the local inference gateway calls, using your Azure CLI sign-in. Optional locally when GitHub Copilot inference is configured.",
     example: "https://<account>.openai.azure.com/openai/v1",
   },
   "local.foundryDeployments": {
     title: "Foundry deployments",
     option: "Parameters:foundry-deployments",
     scope: "Local machine",
-    summary: "Model deployment names the gateway routes. Each should match a model in the policy.",
+    summary:
+      "Model deployment names the gateway routes. Each should match a model in the policy. Optional locally when GitHub Copilot inference is configured.",
+  },
+  "local.githubInferenceToken": {
+    title: "GitHub inference token",
+    option: "Parameters:github-inference-token",
+    scope: "Local machine",
+    summary:
+      "A GitHub token with Copilot access (for example a fine-grained PAT with the Copilot Requests permission). The local gateway uses it to serve the account's Copilot models; agents never see it. Requests are billed to that account's Copilot plan.",
+    boundary: "Write-only: stored in the AppHost user secrets and never returned to the browser. Rerun the AppHost to apply a change.",
+  },
+  "local.githubInferenceModels": {
+    title: "GitHub Copilot models",
+    option: "Parameters:github-inference-models",
+    scope: "Local machine",
+    summary:
+      "Bare Copilot model IDs the gateway exposes as github/<id>. Leave empty to expose every model the account may use. Harnesses and the policy's approved models must use the github/<id> names.",
+    example: "claude-sonnet-5.5, gpt-5.4",
   },
   "local.registries": {
     title: "Package registries",

@@ -78,7 +78,32 @@ aspire secret get "Parameters:dev-api-key"
 
 Treat the output as a secret. Do not put it in documentation, screenshots, or committed configuration.
 
+## GitHub Copilot models
+
+The gateway can serve the models your GitHub account can use through Copilot, beside or instead of Foundry. Locally,
+Foundry becomes optional once a GitHub token is configured:
+
+```powershell
+# A fine-grained personal access token with the "Copilot Requests" permission is enough.
+aspire secret set "Parameters:github-inference-token" "<token>"
+# Optional: expose only these Copilot model IDs (default: every model the account may use).
+aspire secret set "Parameters:github-inference-models" "claude-sonnet-5.5,gpt-5.4"
+```
+
+Restart the AppHost. The gateway lists the account's models and routes each as `github/<model>`, for example
+`github/claude-sonnet-5.5`. Add those names to the policy's approved models and to a harness's `model.preferred` or
+`model.allowed`; the gateway logs the routed models and the API each uses. Requests are billed to that account's
+Copilot plan, and every principal shares the one token; see [boundaries](SECURITY.md#github-copilot-inference).
+A harness, its sub-agents, and its approval judge must use models served over the same API (`/chat/completions` or
+`/responses`): Claude models use chat completions, and recent GPT models use Responses.
+
 ## Demo agent host
+
+To define an agent in code instead of publishing a harness, see the
+[managed-agent example](../examples/managed-agent/README.md): `pnpm agent:demo -- --mode shared|isolated|promotable|orchestrator`
+submits the definition, the platform
+checks it against the base policy and runs it, and the CLI opens on the new session
+([API](API.md#definitions-submitted-in-code), [boundaries](SECURITY.md#definitions-submitted-in-code)).
 
 For experimental shared conversations instead, follow
 [local hybrid deployment](DEPLOYMENT.md#experimental-local-hybrid-deployment). Use

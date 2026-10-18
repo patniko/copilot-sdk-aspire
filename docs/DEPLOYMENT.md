@@ -61,6 +61,8 @@ environment variables (or CI secrets):
 | `Parameters__foundry-resource-group` | resource group of that account |
 | `Parameters__job-event-detail` | optional `sanitized` (default) or `full`; full persists sensitive diagnostic SDK detail |
 | `Parameters__npm-registry`, `Parameters__pip-index-url` | optional package proxies for image builds |
+| `Parameters__github-inference-token` | optional GitHub token for [GitHub Copilot models](USER-GUIDE.md#github-copilot-models), stored as a Container Apps secret on the gateway; Foundry inputs remain required when publishing |
+| `Parameters__github-inference-models` | optional comma-separated Copilot model IDs to expose; default all the account may use |
 
 The dev API key, executor key, gateway key, and capability signing key are generated on first deploy and kept in the
 local Aspire deployment state; they are stored in Azure as Container Apps secrets.

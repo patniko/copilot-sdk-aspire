@@ -4,7 +4,7 @@
  * pseudo-terminal through {@link QualificationCli.supervise}; it is not a product entry point.
  */
 import { SharedConnection } from "@copilot-agent/contracts";
-import { superviseSessionCli } from "../../configurator/server/cli-supervisor.js";
+import { superviseSessionCli } from "../../src/agent-client/src/cli-supervisor.js";
 import { reprovisionSession } from "../../configurator/server/connect-route.js";
 
 function required(name: string): string {

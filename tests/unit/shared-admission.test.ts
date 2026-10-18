@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HarnessDefinition, SharedSessionDefinition, type ExecutionPolicy, type HarnessSnapshot } from "@copilot-agent/contracts";
+import { HarnessDefinition, SharedSessionCreation, SharedSessionDefinition, type ExecutionPolicy, type HarnessSnapshot } from "@copilot-agent/contracts";
 import { canonicalJson, HttpError, policyDigest, sha256Hex } from "@copilot-agent/service-defaults";
 import { approvalPlan, SharedAdmission } from "../../src/session-host/src/admission.js";
 import { SharedConfiguration } from "../../src/session-host/src/configuration.js";
@@ -120,6 +120,45 @@ describe("shared admission", () => {
     expect(await failure(sharedAdmission(registry).connectable(admitted, "github", "alice"))).toMatchObject({ status: 422, code: "transport_unsupported" });
     const githubOnly = await sharedRegistry([harness], { hosting: { modes: ["isolated", "shared"], transports: ["github"] } });
     expect(await failure(sharedAdmission(githubOnly).connectable(admitted, "direct", "alice"))).toMatchObject({ status: 422, code: "transport_not_allowed" });
+  });
+
+  it("admits submitted definitions under the base policy only when the operator allows them", async () => {
+    const published = sharedHarness("plain");
+    const submitted = sharedHarness("from-code").definition;
+    const closed = await sharedRegistry([published]);
+    expect(await failure(sharedAdmission(closed).admit("alice", { definition: submitted, label: "" }))).toMatchObject({
+      status: 403, code: "inline_harnesses_disabled", details: { prerequisite: { kind: "policy", name: "allowInlineHarnesses" } },
+    });
+    const open = await sharedRegistry([published], { allowInlineHarnesses: true });
+    const admitted = await sharedAdmission(open).admit("alice", { definition: submitted, label: "demo" });
+    expect(admitted.harness).toMatchObject({
+      name: "from-code", source: "inline", mode: "shared", digest: `sha256:${sha256Hex(canonicalJson(submitted))}`,
+    });
+    expect(admitted.harness?.definition).toEqual(submitted);
+    expect((await sharedAdmission(open).admit("alice", { harness: "plain", label: "" })).harness?.source).toBeUndefined();
+    // A published name would borrow that harness's per-harness policy override, so it is refused.
+    expect(await failure(sharedAdmission(open).admit("alice", { definition: published.definition, label: "" })))
+      .toMatchObject({ status: 409, code: "harness_name_published" });
+    // Every check a published harness gets still applies.
+    expect(await failure(sharedAdmission(open).admit("alice", {
+      definition: sharedHarness("unapproved", { model: { preferred: "other", allowed: ["other"] } }).definition, label: "",
+    }))).toMatchObject({ status: 422, code: "policy_rejected" });
+    expect(await failure(sharedAdmission(open).admit("alice", { definition: { ...submitted, interaction: undefined, hosting: undefined }, label: "" })))
+      .toMatchObject({ status: 422, code: "policy_rejected", details: { path: "definition.interaction" } });
+    // Turning the setting off stops existing submitted sessions from activating or connecting; published ones are unaffected.
+    await sharedAdmission(open).activation(admitted, "alice");
+    expect(await failure(sharedAdmission(closed).activation(admitted, "alice"))).toMatchObject({ status: 403, code: "inline_harnesses_disabled" });
+    expect(await failure(sharedAdmission(closed).connectable(admitted, "direct", "alice"))).toMatchObject({ status: 403, code: "inline_harnesses_disabled" });
+    await sharedAdmission(closed).activation(await sharedAdmission(closed).admit("alice", { harness: "plain", label: "" }), "alice");
+  });
+
+  it("accepts either a published harness or a submitted definition when creating a session", () => {
+    const definition = sharedHarness("from-code").definition;
+    expect(SharedSessionCreation.safeParse({ harness: "plain" }).success).toBe(true);
+    expect(SharedSessionCreation.safeParse({ definition }).success).toBe(true);
+    expect(SharedSessionCreation.safeParse({}).success).toBe(false);
+    expect(SharedSessionCreation.safeParse({ harness: "plain", definition }).success).toBe(false);
+    expect(SharedSessionCreation.safeParse({ definition, version: "1.0.0" }).success).toBe(false);
   });
 
   it("offers attached clients only the runtime approval modes policy allows", () => {

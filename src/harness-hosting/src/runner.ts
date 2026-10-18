@@ -9,6 +9,7 @@ import {
   type RunnerEventDetail,
   type RunnerFailureCode,
   type RunnerStart,
+  gatewayWireApi,
 } from "@copilot-agent/contracts";
 import { CopilotClient, defineTool, type SessionEvent } from "@github/copilot-sdk";
 import { Ajv2020 } from "ajv/dist/2020.js";
@@ -198,13 +199,16 @@ export async function runHarness(options: RunOptions): Promise<void> {
 
   await client.start();
   try {
+    const wireApi = await gatewayWireApi(start.inference.baseUrl, [
+      start.inference.model, ...(definition.agents ?? []).flatMap((agent) => agent.model ? [agent.model] : []),
+    ]);
     const session = await client.createSession({
       model: start.inference.model,
       provider: {
         type: "openai",
         baseUrl: start.inference.baseUrl,
         apiKey: start.inference.token,
-        wireApi: "completions",
+        wireApi,
       },
       tools: allTools,
       ...sessionOptions,
