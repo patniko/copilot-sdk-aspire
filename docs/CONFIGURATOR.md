@@ -203,6 +203,25 @@ This page does not edit those settings or display live allocations yet. First-to
 cost estimates remain unavailable rather than fabricated; Azure and two-real-account qualification
 are still open.
 
+## Demos
+
+**Demos** launches the code-defined [managed-agent demo agents](../examples/managed-agent/README.md), one per hosting
+mode (shared, isolated, promotable, orchestrator), on the local stack without remembering commands. Each card shows
+the agent and an animated picture of where it runs; **Launch** submits its definition to `POST /v1/sessions`
+([definitions submitted in code](API.md#definitions-submitted-in-code)) and opens the Copilot CLI on the new session
+in a new terminal window, running `pnpm host:connect --resume <id>`. The page then follows the session: a four-step
+progress strip, the definition as the `defineAgent` call that made it, where the session runs (the shared worker or
+its container, with the move animated during promotion), its budget, an orchestrator's workers, and their approvals,
+which you answer on the page. **Promote now**, **Open CLI**, and **Close** act on the session.
+
+- A readiness strip checks the stack, the base policy (`allowInlineHarnesses`, the four hosting modes, and worker
+  ceilings), the published worker harnesses, an approved model, and the CLI. **Prepare policy and reload API** adds
+  only what is missing to the base policy and restarts `agent-api`.
+- The model list is the base policy's approved models; the page prefers `github/claude-sonnet-5.5`.
+- The CLI is `COPILOT_DEMO_CLI`, else the local hybrid build when it exists, else `copilot`. If no terminal can be
+  opened, the page shows the command to run instead. The API key stays in the companion server.
+- The terminal is a console window on Windows, Terminal on macOS, and `x-terminal-emulator` on Linux.
+
 ## Experimental demo host
 
 Local run and each deployment target have independent **Demo agent host** settings: disabled, direct,
@@ -427,7 +446,9 @@ The companion server can edit files and run commands, so it is locked down:
 - Every API call needs the per-launch token from the session URL; cross-origin requests are refused.
 - Runs only a fixed set of commands (`pnpm build`/`test`, `aspire start`/`stop`/`resource restart`/`publish`/`deploy`,
   `az login`, and read-only Azure CLI discovery: `az account show`/`list`/`list-locations`, `az group list`, and
-  Foundry account and deployment lists). Values that reach a command line (names, IDs, URLs) are validated against
+  Foundry account and deployment lists). **Demos** also opens a terminal window running
+  `pnpm host:connect --resume <session-uuid> --cli <configured CLI>`, built only from a validated session ID and the
+  server-side CLI path. Values that reach a command line (names, IDs, URLs) are validated against
   strict patterns, and shell-routed commands refuse metacharacters.
 - URL **Test** buttons send one unauthenticated GET from this machine to the entered `http(s)` URL and return only
   the HTTP status or connection error, never the response body.

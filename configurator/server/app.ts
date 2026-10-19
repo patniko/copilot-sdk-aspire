@@ -21,6 +21,7 @@ import { z, ZodError } from "zod";
 import { AuthoringError, AuthoringRequest, AuthoringService, type DraftGenerator } from "./authoring.js";
 import { GitHubAuthError, GitHubDeviceAuth } from "./github-auth.js";
 import { discoverGitHubModels, type GitHubModelLister, GitHubModelsError, sdkModelLister } from "./github-models.js";
+import { DemoError, DemoService, type TerminalLauncher } from "./demos.js";
 import { harnessConnections, harnessHostingDetail, readOwnerHosts, readServiceView, staleVersions } from "./hosting.js";
 import { mapHarnessDefinition, mapPlannerPlan } from "./import.js";
 import { bumpPatch, compareVersions, Repo, RepoError } from "./repo.js";
@@ -75,6 +76,10 @@ export interface AppOptions {
   hostingViewFetcher?: (target: TryTarget, path: string) => Promise<{ status: number; body: unknown }>;
   /** Injectable GitHub Copilot model listing; production starts a Copilot SDK client with the stored inference token. */
   githubModelLister?: GitHubModelLister;
+  /** Injectable terminal-window launcher for the Demos page; production opens a new local terminal window. */
+  demoTerminal?: TerminalLauncher;
+  /** The Copilot CLI the Demos page opens; production uses COPILOT_DEMO_CLI or the local hybrid build. */
+  demoCli?: string;
 }
 
 const SLUG = /^[a-z][a-z0-9-]{1,62}$/;
@@ -113,6 +118,10 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
   const status = new StatusService({ root, aspireEnv });
   const tasks = new TaskRunner(root, aspireEnv);
   const tryService = new TryService(root, settings, status);
+  const demos = new DemoService({
+    root, repo, tryService, status,
+    ...(options.demoCli ? { cli: options.demoCli } : {}), ...(options.demoTerminal ? { openTerminal: options.demoTerminal } : {}),
+  });
   const githubAuth = new GitHubDeviceAuth(
     options.githubOAuthClientId,
     (githubToken, owner) => settings.writeDemoHostGitHubIdentity(githubToken, owner),
@@ -161,6 +170,9 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
     }
     if (error instanceof GitHubAuthError || error instanceof GitHubModelsError) {
       return reply.status(error.statusCode).send({ error: error.message });
+    }
+    if (error instanceof DemoError) {
+      return reply.status(error.statusCode).send({ error: error.message, ...(error.code ? { code: error.code } : {}), ...(error.details ? { details: error.details } : {}) });
     }
     if (error instanceof TaskConflictError) {
       return reply.status(409).send({ error: error.message });
@@ -903,6 +915,31 @@ export async function buildApp(options: AppOptions): Promise<FastifyInstance> {
       reply,
       tryService.forward(tryTarget(request), "POST", `/v1/jobs/${jobId(request)}/input-requests/${requestId}/respond`, body),
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Demos: code-defined managed agents in each hosting mode, on the local stack
+  // ---------------------------------------------------------------------------
+
+  const demoMode = z.enum(["shared", "isolated", "promotable", "orchestrator"]);
+  const sessionId = (request: FastifyRequest) => z.string().uuid().parse((request.params as { id: string }).id);
+  app.get("/api/demos", async (request) => {
+    const model = z.string().max(200).optional().parse((request.query as { model?: string }).model);
+    return demos.info(model);
+  });
+  app.post("/api/demos/prepare", async () => demos.prepare());
+  app.post("/api/demos/launch", async (request) => {
+    const body = z.object({ mode: demoMode, model: z.string().min(1).max(200), label: z.string().trim().max(120).optional() }).strict().parse(request.body);
+    return demos.launch(body.mode, body.model, body.label);
+  });
+  app.get("/api/demos/sessions/:id", async (request) => demos.session(sessionId(request)));
+  app.post("/api/demos/sessions/:id/cli", async (request) => demos.openCli(sessionId(request)));
+  app.post("/api/demos/sessions/:id/promote", async (request) => demos.promote(sessionId(request)));
+  app.post("/api/demos/sessions/:id/close", async (request) => demos.close(sessionId(request)));
+  app.get("/api/demos/worker-requests", async () => demos.workerRequests());
+  app.post("/api/demos/sessions/:id/input-requests/:requestId/respond", async (request) => {
+    const requestId = z.string().uuid().parse((request.params as { requestId: string }).requestId);
+    return demos.respond(sessionId(request), requestId, InputResponseSubmission.parse(request.body));
   });
 
   // ---------------------------------------------------------------------------

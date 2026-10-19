@@ -10,6 +10,7 @@ import {
   Laptop,
   LayoutDashboard,
   Moon,
+  Play,
   Redo,
   Rocket,
   Save,
@@ -30,6 +31,7 @@ import { PolicyView } from "./views/Policy";
 import { TryView } from "./views/Try";
 
 const HostingView = lazy(() => import("./views/Hosting").then((module) => ({ default: module.HostingView })));
+const DemosView = lazy(() => import("./views/Demos").then((module) => ({ default: module.DemosView })));
 
 const NAV: Array<{ id: View; label: string; icon: ReactNode }> = [
   { id: "overview", label: "Overview", icon: <LayoutDashboard /> },
@@ -39,6 +41,7 @@ const NAV: Array<{ id: View; label: string; icon: ReactNode }> = [
   { id: "deploy", label: "Deploy", icon: <Rocket /> },
   { id: "hosting", label: "Hosting", icon: <GitBranch /> },
   { id: "try", label: "Try it", icon: <FlaskConical /> },
+  { id: "demos", label: "Demos", icon: <Play /> },
 ];
 
 function useTheme(): [boolean, () => void] {
@@ -167,6 +170,7 @@ export function App() {
           {view === "deploy" && <DeployView />}
           {view === "hosting" && <Suspense fallback={<div role="status"><Spinner /> Loading hosting topology...</div>}><HostingView /></Suspense>}
           {view === "try" && <TryView />}
+          {view === "demos" && <Suspense fallback={<div role="status"><Spinner /> Loading demos...</div>}><DemosView /></Suspense>}
         </main>
 
         <aside className="hidden 2xl:block 2xl:sticky 2xl:top-[120px] 2xl:self-start">

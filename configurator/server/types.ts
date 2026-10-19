@@ -465,3 +465,40 @@ export interface FoundryDeployment {
 }
 
 export type TryTarget = "local" | "azure";
+
+// Demos page (configurator/server/demos.ts)
+
+export interface DemoCheck {
+  id: "stack" | "inline" | "modes" | "workers" | "model" | "cli";
+  label: string;
+  ok: boolean;
+  detail: string;
+  /** What the page can do about it: rewrite the base policy, or start the stack from Local run. */
+  fix?: "prepare" | "start";
+}
+
+export interface DemoModeInfo {
+  mode: "shared" | "isolated" | "promotable" | "orchestrator";
+  title: string;
+  tagline: string;
+  story: string;
+  prompts: string[];
+  /** The harness definition the launch submits, for the selected model. */
+  definition: HarnessDefinition;
+  /** Why this mode cannot launch right now; empty when it can. */
+  problems: string[];
+}
+
+export interface DemosInfo {
+  checks: DemoCheck[];
+  modes: DemoModeInfo[];
+  models: string[];
+  model: string;
+  cli: { command: string; found: boolean };
+}
+
+export interface DemoLaunch {
+  session: unknown;
+  definition: HarnessDefinition;
+  terminal: { opened: boolean; command: string; error?: string };
+}
