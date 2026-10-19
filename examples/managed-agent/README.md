@@ -64,6 +64,9 @@ models, tools, permission and approval modes, and the hosting mode and its host.
 
 ## Run of show
 
+Prefer clicking? The configurator's [**Demos** page](../../docs/CONFIGURATOR.md#demos) (`pnpm configure`) launches the
+same four agents, opens the CLI in a new terminal, and shows placement, promotion, workers, and approvals live.
+
 Use two terminals from the repository root: one for the CLI, one for `pnpm agent:ops`.
 
 ```powershell
@@ -98,9 +101,10 @@ Other helpers: `pnpm agent:ops -- sessions` lists open conversations, and `pnpm 
 
 ## Troubleshooting
 
-- **Session containers never start (`container_unavailable`), or a promotion stays `starting`.** If the machine slept
-  or the database paused, the execution controller can lose its lease; by design it then stops provisioning. Restart
-  `execution-controller` from the Aspire dashboard (`aspire resource execution-controller restart --apphost apphost.mts`).
+- **Session containers never start (`container_unavailable`), or a promotion stays `starting`.** The execution
+  controller reclaims its lease by itself after the host sleeps or the database connection drops, when no other
+  controller holds it. If it still does not recover, restart `execution-controller` from the Aspire dashboard
+  (`aspire resource execution-controller restart --apphost apphost.mts`).
 - **`create_worker` says the budget cannot fund another worker.** Workers are paid from the coordinator's budget, which
   always holds back one coordinator turn; give the orchestrator a larger `limits.maxInferenceTokens` (the demo uses 500,000).
 - **A service fails to parse sessions after pulling changes.** Rebuild (`pnpm build`) and restart the host services

@@ -221,8 +221,10 @@ describe("resumable session containers", () => {
     const vanished = await env.create();
     const keptStart = await env.connect("a", kept.id);
     const vanishedStart = await env.connect("a", vanished.id);
-    await pool.query("UPDATE execution_controller SET lease_until=clock_timestamp() WHERE namespace=$1", [env.namespace]);
+    // Another controller takes ownership: the first cannot reclaim a live lease it does not hold, so it stops.
+    await pool.query("UPDATE execution_controller SET owner=$2,lease_until=clock_timestamp()+interval '30 seconds' WHERE namespace=$1", [env.namespace, randomUUID()]);
     await wait(() => !first.healthy, "the replaced controller to lose ownership");
+    await pool.query("UPDATE execution_controller SET lease_until=clock_timestamp() WHERE namespace=$1", [env.namespace]);
     const orphan = env.fake.orphan(images["session:test"]);
     env.fake.containers.delete(vanishedStart.container.id);
     const creations = env.fake.operations.filter((operation) => operation.startsWith("create-session:")).length;
@@ -242,6 +244,21 @@ describe("resumable session containers", () => {
     expect(await env.active()).toBe(0);
     expect(env.fake.containers.size).toBe(0);
     expect(await env.view("a", kept.id)).toMatchObject({ closed: false, container: { state: "dormant", activations: 1 } });
+  }, 60_000);
+
+  it("reclaims a lease that lapsed while nobody else held it, as after the host slept, and keeps provisioning", async () => {
+    const env = await environment();
+    const controller = env.controller();
+    await controller.start();
+    await pool.query("UPDATE execution_controller SET lease_until=clock_timestamp()-interval '1 minute' WHERE namespace=$1", [env.namespace]);
+    await wait(async () => (await pool.query<{ live: boolean }>(
+      "SELECT lease_until>clock_timestamp() AS live FROM execution_controller WHERE namespace=$1", [env.namespace])).rows[0]?.live === true,
+      "the lease to be reclaimed");
+    const session = await env.create();
+    const { connection } = await env.connect("a", session.id);
+    expect(connection.destination).toBe("container");
+    expect(controller.healthy).toBe(true);
+    await controller.stop();
   }, 60_000);
 
   it("counts session allocations against deployment and principal limits under concurrent requests", async () => {

@@ -1,12 +1,21 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { ExecutionContainerSettings, SessionContainerSettings, SharedWorkerLimits, TERMINAL_STATES } from "@copilot-agent/contracts";
 import {
-  AllocationStore, DelegationStore, JobStore,
+  AllocationStore, DelegationStore, JobStore, StoreError,
   type BoundVolume, type ControllerLease, type ExecutionAllocation, type JobAllocation, type SessionAllocation,
 } from "@copilot-agent/job-store";
 import type { Logger } from "@copilot-agent/service-defaults";
 import { DockerExecutionAdapter, type ExecutionAdapter, type ObservedContainer } from "./docker.js";
 import { SharedFileError, type SharedFileOperation, type SharedFileResult } from "./shared-files.js";
+
+/** Rejects when `promise` does not settle within `ms`. */
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("timed out")), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
 
 export interface ControllerOptions {
   allocations: AllocationStore;
@@ -58,20 +67,37 @@ export class ExecutionController {
     this.#heartbeat = setInterval(() => {
       if (this.#renewing || this.#lifetime.signal.aborted || !this.#lease) return;
       this.#renewing = true;
-      void this.options.allocations.heartbeat(this.#lease).catch(() => {
-        this.#healthy = false;
-        this.#lifetime.abort(new Error("Controller ownership was lost."));
-        this.options.logger.error("Execution controller ownership was lost; provisioning stopped.");
-      }).finally(() => { this.#renewing = false; });
+      // A heartbeat on a connection that died while the host slept can hang; bound it so the lease can be reclaimed.
+      void withTimeout(this.options.allocations.heartbeat(this.#lease), 10_000)
+        .catch(() => this.#reclaim())
+        .finally(() => { this.#renewing = false; });
     }, 5_000);
     await this.tick();
     this.#timer = setInterval(() => {
       if (this.#cycle || this.#stopping || this.#lifetime.signal.aborted) return;
-      this.#cycle = this.tick().catch((error) => {
+      this.#cycle = this.tick().catch(async (error) => {
         this.#healthy = false;
         this.options.logger.error({ err: error }, "execution reconciliation failed");
+        if (error instanceof StoreError && error.code === "invalid_state" && /lease was lost/.test(error.message)) await this.#reclaim();
       }).finally(() => { this.#cycle = undefined; });
     }, 1_000);
+  }
+
+  /**
+   * Reclaims a lapsed lease (for example after the host slept) when no other controller holds it. `acquire` refuses
+   * while another controller's lease is live; this controller then stops provisioning, as before.
+   */
+  async #reclaim(): Promise<void> {
+    const lease = this.#lease;
+    if (!lease || this.#lifetime.signal.aborted || this.#stopping) return;
+    try {
+      this.#lease = await this.options.allocations.acquire(lease.namespace, lease.owner);
+      this.options.logger.warn("Execution controller lease lapsed and was reclaimed; reconciling.");
+    } catch {
+      this.#healthy = false;
+      this.#lifetime.abort(new Error("Controller ownership was lost."));
+      this.options.logger.error("Execution controller ownership was lost; provisioning stopped.");
+    }
   }
 
   async tick(): Promise<void> {
