@@ -358,6 +358,7 @@ for reproducibility and evidence limitations.
 | Job waits or hits its deadline | Check the approvals inbox and the harness duration limit |
 | Saved files do not affect new jobs | Reload the local API for harness edits; rebuild/redeploy baked configuration in Azure |
 | Package feeds are blocked | Use your approved proxies; see [Deployment troubleshooting](DEPLOYMENT.md#troubleshooting) |
+| Executor or demo host stays **Building**, then **FailedToStart** | Read its console log. `context deadline exceeded` means the image build outran Aspire's build timeout, usually on a slow package proxy; see [Deployment troubleshooting](DEPLOYMENT.md#troubleshooting) |
 
 For API automation, use the [API reference](API.md) and [REST Client requests](../http/agent-api.http).
 For Azure, follow [Deployment](DEPLOYMENT.md); local user secrets are not deployment inputs.

@@ -642,6 +642,18 @@ separately.
   builds. If nuget.org is blocked, point the Aspire CLI at your NuGet proxy with
   `ASPIRE_CLI_NUGET_SERVICE_INDEX=<proxy>/v3/index.json` and add a local, untracked `NuGet.config` whose
   `packageSourceMapping` maps `*` to that proxy (the CLI otherwise also queries nuget.org).
+- **Local image build stops after about ten minutes.** Aspire cancels a container build that runs past its build
+  timeout: the resource stays **Building**, then shows **FailedToStart** with `context deadline exceeded` in its
+  console log. Behind a slow package proxy, rebuilding the image's dependency layer (after a lockfile or workspace
+  `package.json` change) can take that long. Packages that finished downloading stay in the build's pnpm store cache,
+  so restarting the resource resumes from there. To finish a long build without the timeout, build the stage once
+  with the same proxy arguments (the `agent-host` target includes the executor), then restart the resource:
+
+  ```powershell
+  docker buildx build -f deploy/Dockerfile --target agent-host --output type=cacheonly `
+    --build-arg NPM_REGISTRY=<npm-proxy> --build-arg PIP_INDEX_URL=<pip-proxy> .
+  aspire resource agent-host start --apphost apphost.mts
+  ```
 - **Lockfile changes after `aspire run`.** The CLI installs the AppHost with `pnpm install --ignore-workspace`.
   Keep lockfile-affecting settings out of `pnpm-workspace.yaml` (see the note there) so frozen image installs keep
   working.

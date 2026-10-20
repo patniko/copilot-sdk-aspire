@@ -10,6 +10,7 @@ FROM ${NODE_IMAGE} AS build
 ARG NPM_REGISTRY=https://registry.npmjs.org/
 ENV CI=true \
     npm_config_registry=${NPM_REGISTRY} \
+    npm_config_store_dir=/pnpm/store \
     npm_config_update_notifier=false
 RUN npm install -g pnpm@10.34.5 --registry="${NPM_REGISTRY}" --no-audit --no-fund
 WORKDIR /repo
@@ -28,11 +29,15 @@ COPY src/harness-hosting/package.json src/harness-hosting/
 COPY src/agent-client/package.json src/agent-client/
 COPY tests/package.json tests/
 COPY configurator/package.json configurator/
-RUN pnpm install --frozen-lockfile --filter "./contracts" --filter "./src/**"
+# The pnpm store is a BuildKit cache mount, so rebuilding this layer (or retrying a build cancelled behind a slow
+# package proxy) downloads only packages the store lacks. Every step that installs from the store must mount it.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    pnpm install --frozen-lockfile --filter "./contracts" --filter "./src/**"
 COPY contracts contracts
 COPY src src
 RUN pnpm -r --filter "./contracts" --filter "./src/**" run build
-RUN for service in agent-api job-dispatcher inference-gateway agent-executor harness-hosting agent-host; do \
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm/store \
+    for service in agent-api job-dispatcher inference-gateway agent-executor harness-hosting agent-host; do \
       pnpm --filter "@copilot-agent/${service}" deploy --legacy --prod "/out/${service}" || exit 1; \
     done
 
